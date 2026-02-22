@@ -7,13 +7,13 @@ description: |
   "저장소 전략 토론", "컨셉 토론", "debate" 키워드 시 자동 트리거됩니다.
 ---
 
-# AI Deliberation 스킬 (v2 — Multi-Session)
+# AI Deliberation 스킬 (v2.3 — Multi-Session)
 
 Claude/Codex를 포함해 MCP를 지원하는 임의 CLI들이 구조화된 토론을 진행합니다.
 **여러 토론을 동시에 병렬 진행할 수 있습니다.**
 
 ## MCP 서버 위치
-- **서버**: `~/.local/lib/mcp-deliberation/index.js` (v2.0.0)
+- **서버**: `~/.local/lib/mcp-deliberation/index.js` (v2.3.0)
 - **상태**: `~/.local/lib/mcp-deliberation/state/{프로젝트명}/sessions/{session_id}.json`
 - **등록**: 각 CLI 환경의 MCP 설정에 `deliberation` 서버 등록
 
@@ -29,7 +29,7 @@ Claude/Codex를 포함해 MCP를 지원하는 임의 CLI들이 구조화된 토�
 | `deliberation_browser_llm_tabs` | 브라우저 LLM 탭 목록 (웹 기반 LLM 참여용) | 불필요 |
 | `deliberation_clipboard_prepare_turn` | 클립보드 기반 턴 준비 (프롬프트 생성) | 선택적* |
 | `deliberation_clipboard_submit_turn` | 클립보드 기반 턴 제출 (응답 붙여넣기) | 선택적* |
-| `deliberation_route_turn` | 현재 차례의 speaker를 적절한 CLI로 라우팅 | 선택적* |
+| `deliberation_route_turn` | 현재 차례 speaker의 transport(CLI/clipboard/manual)를 자동 라우팅 | 선택적* |
 | `deliberation_respond` | 현재 차례의 응답 제출 | 선택적* |
 | `deliberation_history` | 전체 토론 기록 조회 | 선택적* |
 | `deliberation_synthesize` | 합성 보고서 생성 및 토론 완료 | 선택적* |
@@ -49,24 +49,28 @@ Claude/Codex를 포함해 MCP를 지원하는 임의 CLI들이 구조화된 토�
 다음 키워드가 감지되면 이 스킬을 자동으로 활성화합니다:
 - "deliberation", "deliberate", "토론", "debate"
 - "deliberation 시작", "토론 시작", "토론해", "토론하자"
-- "deliberation_start", "deliberation_respond"
+- "deliberation_start", "deliberation_respond", "deliberation_route_turn"
+- "speaker candidates", "브라우저 LLM", "clipboard submit"
 - "{주제} 토론", "{주제} deliberation"
 
 ## 워크플로우
 
-### A. 병렬 토론 (NEW)
-1. `deliberation_start` (topic: "주제A") → session_id_A 획득
-2. `deliberation_start` (topic: "주제B") → session_id_B 획득
-3. `deliberation_list_active` → 진행 중인 세션 확인
-4. 각 세션에 `deliberation_respond` (session_id 지정) → 독립적으로 진행
-5. 각각 `deliberation_synthesize` → 개별 합성
+### A. 사용자 선택형 진행 (권장)
+1. `deliberation_speaker_candidates` → 참가 가능한 CLI/브라우저 speaker 확인
+2. (선택) `deliberation_browser_llm_tabs` → 웹 LLM 탭 점검
+3. `deliberation_start` (speakers 명시) → session_id 획득
+4. `deliberation_route_turn` → 현재 차례 speaker transport 확인 + turn_id 확보
+5. 라우팅 결과에 따라 제출:
+- CLI speaker: `deliberation_respond(session_id, speaker, content, turn_id)`
+- Browser speaker: `deliberation_clipboard_prepare_turn` → 응답 복사 → `deliberation_clipboard_submit_turn(session_id, speaker, turn_id)`
+6. 반복 후 `deliberation_synthesize(session_id)` → 합성 완료
 
-### B. 수동 진행 (턴 기반)
-1. `deliberation_start` → 토론 시작, session_id 기록
-2. `deliberation_context` → 프로젝트 컨텍스트 확인
-3. CLI-A에서 `deliberation_respond` (speaker: "claude", session_id) → 첫 응답
-4. CLI-B에서 `deliberation_respond` (speaker: "gemini", session_id) → 다음 응답
-5. 반복 후 `deliberation_synthesize` (session_id) → 합성
+### B. 병렬 세션 운영
+1. `deliberation_start` (topic: "주제A") → session_id_A
+2. `deliberation_start` (topic: "주제B") → session_id_B
+3. `deliberation_list_active` → 진행 중 세션 확인
+4. 각 세션을 `session_id`로 명시해 독립 진행
+5. 각각 `deliberation_synthesize`로 개별 종료
 
 ### C. 자동 진행 (스크립트)
 ```bash
@@ -123,3 +127,5 @@ bash deliberation-monitor.sh --tmux
 2. session_id는 `deliberation_start` 응답에서 확인
 3. 토론 결과는 Obsidian vault에 자동 아카이브 (프로젝트 폴더 존재 시)
 4. `deliberation-{session_id}.md`가 프로젝트 루트에 실시간 동기화됨
+5. `Transport closed` 발생 시 현재 CLI 세션 재시작 후 재시도 (stdio 연결은 세션 바인딩)
+6. 멀티 세션 운영 중 `pkill -f mcp-deliberation` 사용 금지 (다른 세션 연결까지 끊길 수 있음)
