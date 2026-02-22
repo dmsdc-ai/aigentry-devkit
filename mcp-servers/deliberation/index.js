@@ -791,17 +791,31 @@ function formatSpeakerCandidatesReport({ candidates, browserNote }) {
   return out;
 }
 
-function mapParticipantProfiles(speakers, candidates) {
+function mapParticipantProfiles(speakers, candidates, typeOverrides) {
   const bySpeaker = new Map();
   for (const c of candidates || []) {
     const key = normalizeSpeaker(c.speaker);
     if (key) bySpeaker.set(key, c);
   }
 
+  const overrides = typeOverrides || {};
+
   const profiles = [];
   for (const raw of speakers || []) {
     const speaker = normalizeSpeaker(raw);
     if (!speaker) continue;
+
+    // Check for explicit type override
+    const overrideType = overrides[speaker] || overrides[raw];
+    if (overrideType) {
+      profiles.push({
+        speaker,
+        type: overrideType,
+        ...(overrideType === "browser_auto" ? { provider: "chatgpt" } : {}),
+      });
+      continue;
+    }
+
     const candidate = bySpeaker.get(speaker);
     if (!candidate) {
       profiles.push({
@@ -873,6 +887,8 @@ function formatTransportGuidance(transport, state, speaker) {
       return `CLI speaker입니다. \`deliberation_respond(session_id: "${sid}", speaker: "${speaker}", content: "...")\`로 직접 응답하세요.`;
     case "clipboard":
       return `브라우저 LLM speaker입니다. 다음 순서로 진행하세요:\n1. \`deliberation_clipboard_prepare_turn(session_id: "${sid}")\` → 클립보드에 프롬프트 복사\n2. 브라우저 LLM에 붙여넣고 응답 생성\n3. 응답을 복사한 뒤 \`deliberation_clipboard_submit_turn(session_id: "${sid}", speaker: "${speaker}")\` 호출`;
+    case "browser_auto":
+      return `자동 브라우저 speaker입니다. \`deliberation_browser_auto_turn(session_id: "${sid}")\`으로 자동 진행됩니다. CDP를 통해 브라우저 LLM에 직접 입력하고 응답을 읽습니다.`;
     case "manual":
     default:
       return `수동 speaker입니다. 응답을 직접 작성해 \`deliberation_respond(session_id: "${sid}", speaker: "${speaker}", content: "...")\`로 제출하세요.`;
@@ -1686,8 +1702,9 @@ server.tool(
     speakers: z.array(z.string().trim().min(1).max(64)).min(1).optional().describe("참가자 이름 목록 (예: codex, claude, web-chatgpt-1)"),
     require_manual_speakers: z.boolean().default(true).describe("true면 speakers를 반드시 직접 지정해야 시작"),
     auto_discover_speakers: z.boolean().default(false).describe("speakers 생략 시 PATH 기반 자동 탐색 여부 (require_manual_speakers=false일 때만 사용)"),
+    participant_types: z.record(z.string(), z.enum(["cli", "browser", "browser_auto", "manual"])).optional().describe("speaker별 타입 오버라이드 (예: {\"chatgpt\": \"browser_auto\"})"),
   },
-  safeToolHandler("deliberation_start", async ({ topic, rounds, first_speaker, speakers, require_manual_speakers, auto_discover_speakers }) => {
+  safeToolHandler("deliberation_start", async ({ topic, rounds, first_speaker, speakers, require_manual_speakers, auto_discover_speakers, participant_types }) => {
     const sessionId = generateSessionId(topic);
     const hasManualSpeakers = Array.isArray(speakers) && speakers.length > 0;
     const candidateSnapshot = await collectSpeakerCandidates({ include_cli: true, include_browser: true });
@@ -1730,7 +1747,7 @@ server.tool(
       current_round: 1,
       current_speaker: normalizedFirstSpeaker,
       speakers: speakerOrder,
-      participant_profiles: mapParticipantProfiles(speakerOrder, candidateSnapshot.candidates),
+      participant_profiles: mapParticipantProfiles(speakerOrder, candidateSnapshot.candidates, participant_types),
       log: [],
       synthesis: null,
       pending_turn_id: generateTurnId(),
@@ -2004,6 +2021,10 @@ server.tool(
       }
     }
 
+    if (transport === "browser_auto") {
+      extra = `\n\n💡 자동 브라우저 모드입니다. \`deliberation_browser_auto_turn(session_id: "${state.id}")\`으로 자동 진행할 수 있습니다.`;
+    }
+
     const profileInfo = profile
       ? `\n**프로필:** ${profile.type}${profile.url ? ` | ${profile.url}` : ""}${profile.command ? ` | command: ${profile.command}` : ""}`
       : "";
@@ -2012,6 +2033,98 @@ server.tool(
       content: [{
         type: "text",
         text: `## 턴 라우팅 — ${state.id}\n\n**현재 speaker:** ${speaker}\n**Transport:** ${transport}${reason ? ` (fallback: ${reason})` : ""}${profileInfo}\n**Turn ID:** ${turnId || "(없음)"}\n**라운드:** ${state.current_round}/${state.max_rounds}\n\n${guidance}${extra}\n\n${PRODUCT_DISCLAIMER}`,
+      }],
+    };
+  })
+);
+
+server.tool(
+  "deliberation_browser_auto_turn",
+  "브라우저 LLM에 자동으로 턴을 전송하고 응답을 수집합니다 (CDP 기반).",
+  {
+    session_id: z.string().optional().describe("세션 ID (여러 세션 진행 중이면 필수)"),
+    provider: z.string().optional().default("chatgpt").describe("LLM 프로바이더 (chatgpt, claude, gemini)"),
+    timeout_sec: z.number().optional().default(45).describe("응답 대기 타임아웃 (초)"),
+  },
+  safeToolHandler("deliberation_browser_auto_turn", async ({ session_id, provider, timeout_sec }) => {
+    const resolved = resolveSessionId(session_id);
+    if (!resolved) {
+      return { content: [{ type: "text", text: "활성 deliberation이 없습니다." }] };
+    }
+    if (resolved === "MULTIPLE") {
+      return { content: [{ type: "text", text: multipleSessionsError() }] };
+    }
+
+    const state = loadSession(resolved);
+    if (!state || state.status !== "active") {
+      return { content: [{ type: "text", text: `세션 "${resolved}"이 활성 상태가 아닙니다.` }] };
+    }
+
+    const speaker = state.current_speaker;
+    if (speaker === "none") {
+      return { content: [{ type: "text", text: "현재 발언 차례인 speaker가 없습니다." }] };
+    }
+
+    const { transport } = resolveTransportForSpeaker(state, speaker);
+    if (transport !== "browser_auto" && transport !== "clipboard") {
+      return { content: [{ type: "text", text: `speaker "${speaker}"는 브라우저 타입이 아닙니다 (transport: ${transport}). CLI speaker는 deliberation_respond를 사용하세요.` }] };
+    }
+
+    const turnId = state.pending_turn_id || generateTurnId();
+    const port = getBrowserPort();
+
+    // Step 1: Attach
+    const attachResult = await port.attach(resolved, { provider });
+    if (!attachResult.ok) {
+      return { content: [{ type: "text", text: `❌ 브라우저 탭 바인딩 실패: ${attachResult.error.message}\n\n**에러 코드:** ${attachResult.error.code}\n**도메인:** ${attachResult.error.domain}\n\nCDP 디버깅 포트가 활성화된 브라우저가 실행 중인지 확인하세요.\n\`google-chrome --remote-debugging-port=9222\`\n\n${PRODUCT_DISCLAIMER}` }] };
+    }
+
+    // Step 2: Build turn prompt
+    const turnPrompt = buildClipboardTurnPrompt(state, speaker, null, 3);
+
+    // Step 3: Send turn with degradation
+    const sendResult = await port.sendTurnWithDegradation(resolved, turnId, turnPrompt);
+    if (!sendResult.ok) {
+      // Fallback to clipboard
+      return submitDeliberationTurn({
+        session_id: resolved,
+        speaker,
+        content: `[browser_auto 실패 — fallback] ${sendResult.error.message}`,
+        turn_id: turnId,
+        channel_used: "browser_auto_fallback",
+        fallback_reason: sendResult.error.code,
+      });
+    }
+
+    // Step 4: Wait for response
+    const waitResult = await port.waitTurnResult(resolved, turnId, timeout_sec);
+    if (!waitResult.ok) {
+      return { content: [{ type: "text", text: `⏱️ 브라우저 LLM 응답 대기 타임아웃 (${timeout_sec}초)\n\n**에러:** ${waitResult.error.message}\n\nclipboard fallback으로 수동 진행하세요:\n1. \`deliberation_clipboard_prepare_turn(session_id: "${resolved}")\`\n2. 브라우저에 붙여넣기\n3. \`deliberation_clipboard_submit_turn(session_id: "${resolved}")\`\n\n${PRODUCT_DISCLAIMER}` }] };
+    }
+
+    // Step 5: Submit the response
+    const response = waitResult.data.response;
+    const result = submitDeliberationTurn({
+      session_id: resolved,
+      speaker,
+      content: response,
+      turn_id: turnId,
+      channel_used: "browser_auto",
+      fallback_reason: null,
+    });
+
+    // Step 6: Capture degradation state before detach
+    const degradationState = port.getDegradationState(resolved);
+
+    await port.detach(resolved);
+    const degradationInfo = degradationState
+      ? `\n**Degradation:** ${JSON.stringify(degradationState)}`
+      : "";
+
+    return {
+      content: [{
+        type: "text",
+        text: `✅ 브라우저 자동 턴 완료!\n\n**Provider:** ${provider}\n**Turn ID:** ${turnId}\n**응답 길이:** ${response.length}자\n**소요 시간:** ${waitResult.data.elapsedMs}ms${degradationInfo}\n\n${result.content[0].text}`,
       }],
     };
   })
