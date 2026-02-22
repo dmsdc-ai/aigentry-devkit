@@ -13,6 +13,15 @@ DEVKIT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLAUDE_DIR="$HOME/.claude"
 MCP_DEST="$HOME/.local/lib/mcp-deliberation"
 PLATFORM="$(uname -s 2>/dev/null || echo unknown)"
+FORCE=0
+
+for arg in "$@"; do
+  case "$arg" in
+    --force|-f)
+      FORCE=1
+      ;;
+  esac
+done
 
 # 색상
 GREEN='\033[0;32m'
@@ -68,17 +77,22 @@ for skill_dir in "$DEVKIT_DIR"/skills/*/; do
   skill_name=$(basename "$skill_dir")
   target="$SKILLS_DEST/$skill_name"
 
-  if [ -L "$target" ]; then
-    rm "$target"
+  if [ -e "$target" ]; then
+    if [ "$FORCE" -eq 1 ]; then
+      rm -rf "$target"
+    else
+      warn "$skill_name already exists (skipping, use --force to overwrite)"
+      continue
+    fi
   fi
 
-  if [ -d "$target" ]; then
-    warn "$skill_name already exists (skipping, use --force to overwrite)"
+  if [ ! -d "$skill_dir" ]; then
+    warn "Skill source missing: $skill_dir"
     continue
   fi
 
-  ln -s "$skill_dir" "$target"
-  info "Linked skill: $skill_name"
+  cp -R "$skill_dir" "$target"
+  info "Installed skill: $skill_name"
 done
 
 # ── HUD / Statusline ──
@@ -87,7 +101,7 @@ header "3. HUD Statusline"
 HUD_DEST="$CLAUDE_DIR/hud"
 mkdir -p "$HUD_DEST"
 
-if [ ! -f "$HUD_DEST/simple-status.sh" ] || [ "${1:-}" = "--force" ]; then
+if [ ! -f "$HUD_DEST/simple-status.sh" ] || [ "$FORCE" -eq 1 ]; then
   cp "$DEVKIT_DIR/hud/simple-status.sh" "$HUD_DEST/simple-status.sh"
   chmod +x "$HUD_DEST/simple-status.sh"
   info "Installed HUD: simple-status.sh"
@@ -98,14 +112,15 @@ fi
 # ── MCP Deliberation Server ──
 header "4. MCP Deliberation Server"
 
+if [ "$FORCE" -eq 1 ] && [ -d "$MCP_DEST" ]; then
+  rm -rf "$MCP_DEST"
+fi
 mkdir -p "$MCP_DEST"
-cp "$DEVKIT_DIR/mcp-servers/deliberation/index.js" "$MCP_DEST/"
-cp "$DEVKIT_DIR/mcp-servers/deliberation/package.json" "$MCP_DEST/"
-cp "$DEVKIT_DIR/mcp-servers/deliberation/session-monitor.sh" "$MCP_DEST/"
+cp -R "$DEVKIT_DIR/mcp-servers/deliberation/." "$MCP_DEST/"
 chmod +x "$MCP_DEST/session-monitor.sh"
 
 info "Installing dependencies..."
-(cd "$MCP_DEST" && npm install --silent 2>/dev/null)
+(cd "$MCP_DEST" && npm install --omit=dev)
 info "MCP deliberation server installed at $MCP_DEST"
 
 # ── MCP 등록 ──
@@ -115,13 +130,18 @@ MCP_CONFIG="$CLAUDE_DIR/.mcp.json"
 
 if [ -f "$MCP_CONFIG" ]; then
   # deliberation 서버가 이미 등록되어 있는지 확인
-  if node -e "const c=JSON.parse(require('fs').readFileSync('$MCP_CONFIG','utf-8'));process.exit(c.mcpServers?.deliberation?0:1)" 2>/dev/null; then
+  if node -e "const fs=require('fs');let c={};try{c=JSON.parse(fs.readFileSync('$MCP_CONFIG','utf-8'));}catch{}process.exit(c.mcpServers?.deliberation?0:1)" 2>/dev/null; then
     info "Deliberation MCP already registered"
   else
     # 기존 설정에 deliberation 추가
     node -e "
       const fs = require('fs');
-      const c = JSON.parse(fs.readFileSync('$MCP_CONFIG', 'utf-8'));
+      let c = {};
+      try {
+        c = JSON.parse(fs.readFileSync('$MCP_CONFIG', 'utf-8'));
+      } catch {
+        c = {};
+      }
       if (!c.mcpServers) c.mcpServers = {};
       c.mcpServers.deliberation = {
         command: 'node',

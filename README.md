@@ -59,6 +59,8 @@ All OS (recommended):
 npx -y @dmsdc-ai/aigentry-devkit install
 ```
 
+`git clone` is not required for this path. The npm package contains the full installer + runtime files.
+
 Force reinstall:
 
 ```bash
@@ -86,9 +88,9 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 The installer will:
 
 1. Verify Node.js and optional dependencies (Claude Code CLI, tmux, direnv)
-2. Link skills to `~/.claude/skills/`
+2. Install skills to `~/.claude/skills/`
 3. Install HUD statusline to `~/.claude/hud/`
-4. Set up MCP Deliberation Server at `~/.local/lib/mcp-deliberation/`
+4. Set up full MCP Deliberation runtime at `~/.local/lib/mcp-deliberation/` (server + browser adapters + selectors + monitor)
 5. Register MCP server in `~/.claude/.mcp.json`
 6. Create configuration templates from templates
 7. Attempt Codex CLI integration (if available)
@@ -105,9 +107,10 @@ After installation, restart Claude/Codex for changes to take effect:
 To verify installation:
 
 ```bash
-ls -la ~/.claude/skills/      # Check skills are linked
+ls -la ~/.claude/skills/      # Check skills are installed
 ls -la ~/.claude/hud/         # Check HUD is installed
 ls -la ~/.local/lib/mcp-deliberation/  # Check MCP server
+ls -la ~/.local/lib/mcp-deliberation/selectors/  # Check browser selector assets
 cat ~/.claude/.mcp.json       # Verify MCP registration
 ```
 
@@ -313,7 +316,7 @@ direnv allow
 
 ### Skills not loading
 
-1. Verify skills are linked: `ls -la ~/.claude/skills/`
+1. Verify skills are installed: `ls -la ~/.claude/skills/`
 2. Restart your MCP client process (Claude/Codex/etc.)
 3. Check for keyword matches in skill definitions
 
@@ -321,8 +324,9 @@ direnv allow
 
 1. Verify MCP registration: `cat ~/.claude/.mcp.json`
 2. Check installation: `ls ~/.local/lib/mcp-deliberation/`
-3. Restart your MCP client process (Claude/Codex/etc.)
-4. Review MCP server logs in Claude Code console
+3. Reinstall runtime files: `npx -y @dmsdc-ai/aigentry-devkit install --force`
+4. Restart your MCP client process (Claude/Codex/etc.)
+5. Review runtime log: `tail -n 120 ~/.local/lib/mcp-deliberation/runtime.log`
 
 ### MCP `Transport closed` in multi-session use
 
@@ -418,7 +422,7 @@ Language-specific requirements for skills:
 npx @dmsdc-ai/aigentry-devkit install
   ├─ dispatches to install.sh (macOS/Linux) or install.ps1 (Windows)
   ├─ Check prerequisites (Node.js, npm, optional tools)
-  ├─ Link skills to ~/.claude/skills/
+  ├─ Install skills to ~/.claude/skills/
   ├─ Install HUD to ~/.claude/hud/
   ├─ Deploy MCP server to ~/.local/lib/mcp-deliberation/
   ├─ Register MCP in ~/.claude/.mcp.json

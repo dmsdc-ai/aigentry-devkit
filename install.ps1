@@ -94,14 +94,20 @@ if (-not (Test-Path $hudTarget) -or $Force) {
 
 Write-Header "4. MCP Deliberation Server"
 
+if ($Force -and (Test-Path $McpDest)) {
+  Remove-Item -Path $McpDest -Recurse -Force
+}
 New-Item -ItemType Directory -Path $McpDest -Force | Out-Null
-Copy-Item -Path (Join-Path $DevkitDir "mcp-servers\deliberation\index.js") -Destination (Join-Path $McpDest "index.js") -Force
-Copy-Item -Path (Join-Path $DevkitDir "mcp-servers\deliberation\package.json") -Destination (Join-Path $McpDest "package.json") -Force
-Copy-Item -Path (Join-Path $DevkitDir "mcp-servers\deliberation\session-monitor.sh") -Destination (Join-Path $McpDest "session-monitor.sh") -Force
+$mcpSource = Join-Path $DevkitDir "mcp-servers\deliberation"
+Copy-Item -Path (Join-Path $mcpSource "*") -Destination $McpDest -Recurse -Force
 
 Write-Info "Installing dependencies..."
 Push-Location $McpDest
-npm install --silent | Out-Null
+npm install --omit=dev
+if ($LASTEXITCODE -ne 0) {
+  Pop-Location
+  throw "npm install failed in $McpDest"
+}
 Pop-Location
 Write-Info "MCP deliberation server installed at $McpDest"
 

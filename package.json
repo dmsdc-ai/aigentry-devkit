@@ -1,6 +1,6 @@
 {
   "name": "@dmsdc-ai/aigentry-devkit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Cross-platform installer and tooling bundle for aigentry-devkit",
   "license": "MIT",
   "repository": {
@@ -28,9 +28,7 @@
     "hud/**",
     "install.sh",
     "install.ps1",
-    "mcp-servers/deliberation/index.js",
-    "mcp-servers/deliberation/package.json",
-    "mcp-servers/deliberation/session-monitor.sh",
+    "mcp-servers/deliberation/**",
     "skills/clipboard-image/**",
     "skills/deliberation/**",
     "skills/deliberation-executor/**",
