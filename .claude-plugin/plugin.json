@@ -1,0 +1,21 @@
+{
+  "name": "aigentry-devkit",
+  "description": "AI development environment kit: skills, hooks, MCP servers, and HUD for Claude Code and Codex CLI",
+  "version": "1.0.0",
+  "author": {
+    "name": "dmsdc-ai",
+    "url": "https://github.com/dmsdc-ai"
+  },
+  "homepage": "https://github.com/dmsdc-ai/aigentry-devkit",
+  "repository": "https://github.com/dmsdc-ai/aigentry-devkit",
+  "license": "MIT",
+  "keywords": [
+    "skills",
+    "deliberation",
+    "mcp",
+    "hud",
+    "ai-development",
+    "claude-code",
+    "codex"
+  ]
+}

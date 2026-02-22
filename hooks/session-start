@@ -1,0 +1,37 @@
+#!/bin/bash
+#
+# Session start hook — load bootstrap context
+#
+# Injects the available skills list into the conversation context
+# so the agent knows what capabilities are available.
+#
+
+PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SKILLS_DIR="$PLUGIN_ROOT/skills"
+
+# Build skills index
+SKILLS_LIST=""
+for skill_dir in "$SKILLS_DIR"/*/; do
+  [ -d "$skill_dir" ] || continue
+  skill_name=$(basename "$skill_dir")
+  skill_file="$skill_dir/SKILL.md"
+  if [ -f "$skill_file" ]; then
+    # Extract description from YAML frontmatter
+    desc=$(sed -n '/^---$/,/^---$/p' "$skill_file" | grep -E '^\s*description:' | head -1 | sed 's/.*description:\s*//' | head -c 100)
+    SKILLS_LIST="$SKILLS_LIST\n- **$skill_name**: $desc"
+  fi
+done
+
+if [ -z "$SKILLS_LIST" ]; then
+  exit 0
+fi
+
+CONTEXT="aigentry-devkit: Available skills:$SKILLS_LIST\n\nUse the Skill tool to invoke any skill by name."
+
+# Output in Claude Code hook format
+ESCAPED=$(echo -e "$CONTEXT" | node -e '
+  let d=""; process.stdin.on("data",c=>d+=c);
+  process.stdin.on("end",()=>console.log(JSON.stringify(d)));
+' 2>/dev/null)
+
+echo "{\"hookSpecificOutput\":{\"additionalContext\":$ESCAPED}}"

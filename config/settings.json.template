@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [],
+    "deny": []
+  },
+  "env": {
+    "CLAUDE_CODE_ENABLE_STATUSLINE": "1",
+    "CLAUDE_CODE_STATUSLINE_COMMAND": "bash {{HOME}}/.claude/hud/simple-status.sh"
+  },
+  "plugins": [],
+  "skipDangerousModePermissionPrompt": false
+}

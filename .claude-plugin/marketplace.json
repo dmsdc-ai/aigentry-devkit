@@ -1,0 +1,16 @@
+{
+  "name": "aigentry-devkit",
+  "description": "AI development environment marketplace by dmsdc-ai",
+  "owner": {
+    "name": "dmsdc-ai",
+    "url": "https://github.com/dmsdc-ai"
+  },
+  "plugins": [
+    {
+      "name": "aigentry-devkit",
+      "description": "AI development environment kit: skills, hooks, MCP servers, and HUD",
+      "version": "1.0.0",
+      "source": "./"
+    }
+  ]
+}

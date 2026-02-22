@@ -1,0 +1,120 @@
+---
+name: deliberation
+description: |
+  AI 간 deliberation(토론) 세션을 관리합니다. 멀티 세션 병렬 토론 지원.
+  MCP deliberation 서버를 통해 Claude와 Codex가 구조화된 토론을 진행합니다.
+  "deliberation", "deliberate", "토론", "토론 시작", "deliberation 시작",
+  "저장소 전략 토론", "컨셉 토론", "debate" 키워드 시 자동 트리거됩니다.
+---
+
+# AI Deliberation 스킬 (v2 — Multi-Session)
+
+Claude CLI와 Codex CLI가 MCP deliberation 서버를 통해 구조화된 토론을 진행합니다.
+**여러 토론을 동시에 병렬 진행할 수 있습니다.**
+
+## MCP 서버 위치
+- **서버**: `~/.local/lib/mcp-deliberation/index.js` (v2.0.0)
+- **상태**: `~/.local/lib/mcp-deliberation/state/{프로젝트명}/sessions/{session_id}.json`
+- **등록**: Claude Code 글로벌 (`~/.claude/.mcp.json`) + Codex 글로벌
+
+## 사용 가능한 MCP 도구
+
+| 도구 | 설명 | session_id |
+|------|------|:---:|
+| `deliberation_start` | 새 토론 시작 → **session_id 반환** | 반환 |
+| `deliberation_list_active` | 진행 중인 모든 세션 목록 | 불필요 |
+| `deliberation_status` | 토론 상태 조회 | 선택적* |
+| `deliberation_context` | 프로젝트 컨텍스트 로드 | 불필요 |
+| `deliberation_respond` | 현재 차례의 응답 제출 | 선택적* |
+| `deliberation_history` | 전체 토론 기록 조회 | 선택적* |
+| `deliberation_synthesize` | 합성 보고서 생성 및 토론 완료 | 선택적* |
+| `deliberation_list` | 과거 토론 아카이브 목록 | 불필요 |
+| `deliberation_reset` | 세션 초기화 (지정 시 해당 세션만, 미지정 시 전체) | 선택적 |
+
+*\*선택적: 활성 세션이 1개면 자동 선택. 여러 세션 진행 중이면 필수.*
+
+## session_id 규칙
+
+- `deliberation_start` 호출 시 session_id가 자동 생성되어 반환됨
+- 이후 모든 도구 호출에 해당 session_id를 전달
+- 활성 세션이 1개뿐이면 session_id 생략 가능 (자동 선택)
+- 여러 세션이 동시 진행 중이면 반드시 session_id 지정
+
+## 자동 트리거 키워드
+다음 키워드가 감지되면 이 스킬을 자동으로 활성화합니다:
+- "deliberation", "deliberate", "토론", "debate"
+- "deliberation 시작", "토론 시작", "토론해", "토론하자"
+- "deliberation_start", "deliberation_respond"
+- "{주제} 토론", "{주제} deliberation"
+
+## 워크플로우
+
+### A. 병렬 토론 (NEW)
+1. `deliberation_start` (topic: "주제A") → session_id_A 획득
+2. `deliberation_start` (topic: "주제B") → session_id_B 획득
+3. `deliberation_list_active` → 진행 중인 세션 확인
+4. 각 세션에 `deliberation_respond` (session_id 지정) → 독립적으로 진행
+5. 각각 `deliberation_synthesize` → 개별 합성
+
+### B. 수동 진행 (턴 기반)
+1. `deliberation_start` → 토론 시작, session_id 기록
+2. `deliberation_context` → 프로젝트 컨텍스트 확인
+3. `deliberation_respond` (speaker: "claude", session_id) → Claude 응답
+4. Codex CLI에서 `deliberation_respond` (speaker: "codex", session_id) → Codex 응답
+5. 반복 후 `deliberation_synthesize` (session_id) → 합성
+
+### C. 자동 진행 (스크립트)
+```bash
+# 새 토론
+bash auto-deliberate.sh "저장소 전략"
+
+# 5라운드로 진행
+bash auto-deliberate.sh "API 설계" 5
+
+# 기존 세션 재개
+bash auto-deliberate.sh --resume <session_id>
+```
+
+### D. 모니터링
+```bash
+# 모든 활성 세션 모니터링
+bash deliberation-monitor.sh
+
+# 특정 세션만
+bash deliberation-monitor.sh <session_id>
+
+# tmux에서
+bash deliberation-monitor.sh --tmux
+```
+
+## 역할 규칙
+
+### Claude 역할: 비판적 분석가
+- 제안의 약점을 먼저 찾는다
+- 구체적 근거와 수치를 요구한다
+- 리스크를 명시하되 대안을 함께 제시한다
+
+### Codex 역할: 현실적 실행가
+- 실행 가능성을 우선 평가한다
+- 구체적 기술 스택과 구현 방안을 제시한다
+- 비용/복잡도/일정을 현실적으로 산정한다
+
+## 응답 형식
+
+매 턴의 응답은 다음 구조를 따릅니다:
+
+```markdown
+**상대 평가:** (동의/반박/보완)
+**핵심 입장:** (구체적 제안)
+**근거:** (2-3개)
+**리스크/우려:** (약점 1-2개)
+**상대에게 질문:** (1-2개)
+**합의 가능 포인트:** (동의할 수 있는 것)
+**미합의 포인트:** (결론 안 난 것)
+```
+
+## 주의사항
+1. 여러 deliberation을 동시에 병렬 진행 가능
+2. session_id는 `deliberation_start` 응답에서 확인
+3. 토론 결과는 Obsidian vault에 자동 아카이브 (프로젝트 폴더 존재 시)
+4. `deliberation-{session_id}.md`가 프로젝트 루트에 실시간 동기화됨
