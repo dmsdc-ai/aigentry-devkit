@@ -22,9 +22,14 @@ Claude/Codex를 포함해 MCP를 지원하는 임의 CLI들이 구조화된 토�
 | 도구 | 설명 | session_id |
 |------|------|:---:|
 | `deliberation_start` | 새 토론 시작 → **session_id 반환** | 반환 |
+| `deliberation_speaker_candidates` | 참가 가능한 speaker 후보 목록 조회 | 불필요 |
 | `deliberation_list_active` | 진행 중인 모든 세션 목록 | 불필요 |
 | `deliberation_status` | 토론 상태 조회 | 선택적* |
 | `deliberation_context` | 프로젝트 컨텍스트 로드 | 불필요 |
+| `deliberation_browser_llm_tabs` | 브라우저 LLM 탭 목록 (웹 기반 LLM 참여용) | 불필요 |
+| `deliberation_clipboard_prepare_turn` | 클립보드 기반 턴 준비 (프롬프트 생성) | 선택적* |
+| `deliberation_clipboard_submit_turn` | 클립보드 기반 턴 제출 (응답 붙여넣기) | 선택적* |
+| `deliberation_route_turn` | 현재 차례의 speaker를 적절한 CLI로 라우팅 | 선택적* |
 | `deliberation_respond` | 현재 차례의 응답 제출 | 선택적* |
 | `deliberation_history` | 전체 토론 기록 조회 | 선택적* |
 | `deliberation_synthesize` | 합성 보고서 생성 및 토론 완료 | 선택적* |
