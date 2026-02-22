@@ -1295,6 +1295,8 @@ function openPhysicalTerminal(sessionId) {
           "-e",
           'tell application "Terminal"',
           "-e",
+          "activate",
+          "-e",
           `do script ${appleScriptQuote(attachCmd)}`,
           "-e",
           "delay 0.15",
