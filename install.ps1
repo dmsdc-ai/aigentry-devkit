@@ -138,6 +138,48 @@ $cfg.mcpServers | Add-Member -MemberType NoteProperty -Name deliberation -Value 
 $cfg | ConvertTo-Json -Depth 8 | Set-Content -Path $mcpConfig -Encoding utf8
 Write-Info "Registered deliberation MCP in $mcpConfig"
 
+if (Get-Command claude -ErrorAction SilentlyContinue) {
+  $claudeScopeSupported = $false
+  try {
+    $claudeAddHelp = claude mcp add --help 2>$null | Out-String
+    if ($claudeAddHelp -match "--scope") {
+      $claudeScopeSupported = $true
+    }
+  } catch {}
+
+  if ($claudeScopeSupported) {
+    try { claude mcp remove --scope local deliberation 2>$null | Out-Null } catch {}
+    try { claude mcp remove --scope user deliberation 2>$null | Out-Null } catch {}
+
+    try {
+      claude mcp add --scope user deliberation -- node (Join-Path $McpDest "index.js") | Out-Null
+      Write-Info "Registered deliberation MCP in Claude Code user scope (~/.claude.json)"
+    } catch {
+      Write-Warn "Claude Code MCP registration failed. Run manually: claude mcp add --scope user deliberation -- node $McpDest\\index.js"
+    }
+  } else {
+    try {
+      claude mcp add deliberation -- node (Join-Path $McpDest "index.js") | Out-Null
+      Write-Info "Registered deliberation MCP in Claude Code"
+    } catch {
+      Write-Warn "Claude Code MCP registration failed (legacy CLI)."
+    }
+  }
+
+  try {
+    $claudeMcpList = claude mcp list 2>$null | Out-String
+    if ($claudeMcpList -match "(?m)^deliberation:") {
+      Write-Info "Claude Code MCP verification passed (deliberation found)"
+    } else {
+      Write-Warn "Claude Code MCP verification failed. Restart Claude and run: claude mcp list"
+    }
+  } catch {
+    Write-Warn "Claude Code MCP verification failed (claude mcp list unavailable)"
+  }
+} else {
+  Write-Warn "Claude CLI not found. Skipping Claude MCP registration."
+}
+
 Write-Header "6. Config Templates"
 
 $settingsDest = Join-Path $ClaudeDir "settings.json"

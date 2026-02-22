@@ -166,6 +166,33 @@ MCPEOF
   info "Created $MCP_CONFIG with deliberation MCP"
 fi
 
+# Claude Code CLI 등록 (최신 런타임 경로)
+if command -v claude >/dev/null 2>&1; then
+  if claude mcp add --help 2>/dev/null | grep -q -- '--scope'; then
+    claude mcp remove --scope local deliberation >/dev/null 2>&1 || true
+    claude mcp remove --scope user deliberation >/dev/null 2>&1 || true
+    if claude mcp add --scope user deliberation -- node "$MCP_DEST/index.js" >/dev/null 2>&1; then
+      info "Registered deliberation MCP in Claude Code user scope (~/.claude.json)"
+    else
+      warn "Claude Code MCP registration failed. Run manually: claude mcp add --scope user deliberation -- node $MCP_DEST/index.js"
+    fi
+  else
+    if claude mcp add deliberation -- node "$MCP_DEST/index.js" >/dev/null 2>&1; then
+      info "Registered deliberation MCP in Claude Code"
+    else
+      warn "Claude Code MCP registration failed (legacy CLI)."
+    fi
+  fi
+
+  if claude mcp list 2>/dev/null | grep -q '^deliberation:'; then
+    info "Claude Code MCP verification passed (deliberation found)"
+  else
+    warn "Claude Code MCP verification failed. Restart Claude and run: claude mcp list"
+  fi
+else
+  warn "Claude CLI not found. Skipping Claude MCP registration."
+fi
+
 # ── Config 템플릿 ──
 header "6. Config Templates"
 

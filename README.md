@@ -56,7 +56,7 @@ Pre-configured settings with template substitution:
 All OS (recommended):
 
 ```bash
-npx -y @dmsdc-ai/aigentry-devkit install
+npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit install
 ```
 
 `git clone` is not required for this path. The npm package contains the full installer + runtime files.
@@ -64,7 +64,7 @@ npx -y @dmsdc-ai/aigentry-devkit install
 Force reinstall:
 
 ```bash
-npx -y @dmsdc-ai/aigentry-devkit install --force
+npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit install --force
 ```
 
 Manual install (local clone) is still available:
@@ -324,7 +324,7 @@ direnv allow
 
 1. Verify MCP registration: `cat ~/.claude/.mcp.json`
 2. Check installation: `ls ~/.local/lib/mcp-deliberation/`
-3. Reinstall runtime files: `npx -y @dmsdc-ai/aigentry-devkit install --force`
+3. Reinstall runtime files: `npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit install --force`
 4. Restart your MCP client process (Claude/Codex/etc.)
 5. Review runtime log: `tail -n 120 ~/.local/lib/mcp-deliberation/runtime.log`
 
@@ -419,7 +419,7 @@ Language-specific requirements for skills:
 ### Installation Flow
 
 ```
-npx @dmsdc-ai/aigentry-devkit install
+npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit install
   ├─ dispatches to install.sh (macOS/Linux) or install.ps1 (Windows)
   ├─ Check prerequisites (Node.js, npm, optional tools)
   ├─ Install skills to ~/.claude/skills/

@@ -15,8 +15,8 @@ function printHelp() {
     "  aigentry-devkit --help",
     "",
     "Examples:",
-    "  npx -y @dmsdc-ai/aigentry-devkit install",
-    "  npx -y @dmsdc-ai/aigentry-devkit install --force",
+    "  npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit install",
+    "  npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit install --force",
   ].join("\n");
   process.stdout.write(`${text}\n`);
 }
