@@ -3,6 +3,18 @@
   "version": "0.1.0",
   "description": "Cross-platform installer and tooling bundle for aigentry-devkit",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dmsdc-ai/aigentry-devkit.git"
+  },
+  "homepage": "https://github.com/dmsdc-ai/aigentry-devkit#readme",
+  "bugs": {
+    "url": "https://github.com/dmsdc-ai/aigentry-devkit/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "bin": {
     "aigentry-devkit": "bin/aigentry-devkit.js"
   },
