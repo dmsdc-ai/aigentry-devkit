@@ -2,16 +2,16 @@
 
 **Your AI development environment, packaged.**
 
-A comprehensive development kit that bundles skills, hooks, MCP servers, HUD/statusline, and configuration templates for Claude Code and Codex CLI. Install once, use everywhere.
+A comprehensive development kit that bundles skills, hooks, MCP servers, HUD/statusline, and configuration templates for Claude Code, Codex CLI, and other MCP-compatible CLIs. Install once, use everywhere.
 
 ## Features
 
 ### Skills (Reusable AI Capabilities)
 
-Four production-ready skills that extend Claude Code and Codex CLI:
+Four production-ready skills that extend Claude Code, Codex CLI, and other MCP-compatible CLIs:
 
 - **Clipboard Image Viewer** - Capture and analyze clipboard images directly from your terminal
-- **AI Deliberation** - Multi-session parallel debates between Claude and Codex with structured turn-taking and synthesis
+- **AI Deliberation** - Multi-session parallel debates across arbitrary CLI participants with structured turn-taking and synthesis
 - **Environment Manager** - direnv-based hierarchical environment variable management with global and project-scoped variables
 - **YouTube Analyzer** - Extract and analyze YouTube video metadata, captions, and transcripts without downloading
 
@@ -89,7 +89,7 @@ cat ~/.claude/.mcp.json       # Verify MCP registration
 
 ### Skills
 
-Skills are automatically available in Claude Code and Codex CLI. They activate based on keywords:
+Skills are automatically available in Claude Code, Codex CLI, and compatible MCP clients. They activate based on keywords:
 
 #### Clipboard Image
 Triggers: "clipboard", "paste image", "캡처 확인"
@@ -149,16 +149,18 @@ The deliberation server provides these tools:
 Example workflow:
 
 ```bash
-# Start Claude Code with MCP deliberation enabled
-claude
+# Start any CLI with MCP deliberation enabled
+<your-cli>
 
-# In Claude Code:
+# In CLI A:
 # > "deliberation: API design - REST vs GraphQL?"
-# MCP Server: "deliberation_start" returns session_id: "sess_12345"
-# Claude responds with analysis
-# User switches to Codex: "deliberation_respond session_id=sess_12345 speaker=codex"
-# Codex responds
-# Back in Claude: "deliberation_synthesize session_id=sess_12345"
+# MCP Server: deliberation_start(topic="...", speakers=["claude","codex","gemini"]) returns session_id
+# Submit turns with deliberate speakers:
+# deliberation_respond session_id=sess_12345 speaker=claude
+# deliberation_respond session_id=sess_12345 speaker=gemini
+# deliberation_respond session_id=sess_12345 speaker=codex
+# After rounds complete:
+# deliberation_synthesize session_id=sess_12345
 ```
 
 ### HUD Statusline
@@ -222,6 +224,12 @@ If Codex CLI is installed, the installer attempts to register the MCP deliberati
 
 ```bash
 codex mcp add deliberation -- node ~/.local/lib/mcp-deliberation/index.js
+```
+
+Other CLIs can join deliberation by registering the same MCP server command in their MCP/client configuration:
+
+```bash
+node ~/.local/lib/mcp-deliberation/index.js
 ```
 
 ### Environment Management

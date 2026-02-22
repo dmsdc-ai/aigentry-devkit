@@ -22,8 +22,112 @@ MAGENTA='\033[0;35m'
 BOLD='\033[1m'
 DIM='\033[2m'
 NC='\033[0m'
+BOX_CONTENT_WIDTH=60
+BOX_RULE="$(printf '%*s' "$((BOX_CONTENT_WIDTH + 2))" '' | tr ' ' '═')"
 
-clear_screen() { printf '\033[2J\033[H'; }
+fit_to_width() {
+  TEXT="$1" WIDTH="$2" node -e "
+    const raw = String(process.env.TEXT ?? '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const target = Number(process.env.WIDTH ?? '60');
+
+    const isWide = (cp) =>
+      cp >= 0x1100 && (
+        cp <= 0x115f || cp === 0x2329 || cp === 0x232a ||
+        (cp >= 0x2e80 && cp <= 0xa4cf && cp !== 0x303f) ||
+        (cp >= 0xac00 && cp <= 0xd7a3) ||
+        (cp >= 0xf900 && cp <= 0xfaff) ||
+        (cp >= 0xfe10 && cp <= 0xfe19) ||
+        (cp >= 0xfe30 && cp <= 0xfe6f) ||
+        (cp >= 0xff00 && cp <= 0xff60) ||
+        (cp >= 0xffe0 && cp <= 0xffe6) ||
+        (cp >= 0x1f300 && cp <= 0x1f64f) ||
+        (cp >= 0x1f900 && cp <= 0x1f9ff) ||
+        (cp >= 0x20000 && cp <= 0x3fffd)
+      );
+
+    const charWidth = (ch) => {
+      const cp = ch.codePointAt(0);
+      if (!cp || cp < 32 || (cp >= 0x7f && cp < 0xa0)) return 0;
+      return isWide(cp) ? 2 : 1;
+    };
+
+    const src = Array.from(raw);
+    const out = [];
+    let width = 0;
+    let truncated = false;
+    for (const ch of src) {
+      const w = charWidth(ch);
+      if (width + w > target) {
+        truncated = true;
+        break;
+      }
+      out.push(ch);
+      width += w;
+    }
+
+    if (truncated && target >= 3) {
+      while (out.length > 0 && width + 3 > target) {
+        const last = out.pop();
+        width -= charWidth(last);
+      }
+      out.push('.', '.', '.');
+      width += 3;
+    }
+
+    process.stdout.write(out.join('') + ' '.repeat(Math.max(0, target - width)));
+  " 2>/dev/null
+}
+
+print_box_border() {
+  printf "%b%s%b\n" "$BOLD" "$1${BOX_RULE}$2" "$NC"
+}
+
+print_box_row() {
+  local text="$1"
+  local color="${2:-$NC}"
+  local fitted
+  fitted="$(fit_to_width "$text" "$BOX_CONTENT_WIDTH")"
+  printf "%b║%b %b%s%b %b║%b\n" "$BOLD" "$NC" "$color" "$fitted" "$NC" "$BOLD" "$NC"
+}
+
+pane_in_copy_mode() {
+  if [ -z "$TMUX" ] || [ -z "${TMUX_PANE:-}" ]; then
+    return 1
+  fi
+  [ "$(tmux display-message -p -t "$TMUX_PANE" "#{pane_in_mode}" 2>/dev/null)" = "1" ]
+}
+
+state_signature() {
+  if [ ! -f "$STATE_FILE" ]; then
+    echo "MISSING"
+    return
+  fi
+
+  node -e "
+    const fs = require('fs');
+    try {
+      const s = JSON.parse(fs.readFileSync('$STATE_FILE','utf-8'));
+      const logs = Array.isArray(s.log) ? s.log : [];
+      const last = logs.length > 0 ? logs[logs.length - 1] : {};
+      const sig = [
+        s.status ?? '',
+        s.current_round ?? '',
+        s.max_rounds ?? '',
+        s.current_speaker ?? '',
+        Array.isArray(s.speakers) ? s.speakers.join(',') : '',
+        logs.length,
+        last.timestamp ?? '',
+        s.updated ?? '',
+        s.synthesis ? s.synthesis.length : 0
+      ].join('|');
+      console.log(sig);
+    } catch {
+      console.log('PARSE_ERROR');
+    }
+  " 2>/dev/null
+}
 
 get_field() {
   node -e "
@@ -48,6 +152,7 @@ render() {
   local status=$(get_field "status")
   local round=$(get_field "current_round")
   local max_rounds=$(get_field "max_rounds")
+  local participant_count=$(get_field "speakers")
   local speaker=$(get_field "current_speaker")
   local responses=$(get_field "log")
 
@@ -60,7 +165,10 @@ render() {
   esac
 
   # 프로그레스 바
-  local total=$((max_rounds * 2))
+  if ! [[ "$participant_count" =~ ^[0-9]+$ ]]; then participant_count=2; fi
+  if [ "$participant_count" -lt 1 ]; then participant_count=1; fi
+
+  local total=$((max_rounds * participant_count))
   local filled=$responses
   [ "$filled" -gt "$total" ] 2>/dev/null && filled=$total
   local bar=""
@@ -68,15 +176,15 @@ render() {
   for ((i=filled; i<total; i++)); do bar+="░"; done
 
   # 헤더
-  echo -e "${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
-  echo -e "${BOLD}║${NC}  ${YELLOW}$topic${NC}"
-  echo -e "${BOLD}╠══════════════════════════════════════════════════════════════╣${NC}"
-  echo -e "${BOLD}║${NC}  Session:  ${MAGENTA}$SESSION_ID${NC}"
-  echo -e "${BOLD}║${NC}  Project:  ${CYAN}$PROJECT${NC}"
-  echo -e "${BOLD}║${NC}  Status:   ${status_color}$status${NC}"
-  echo -e "${BOLD}║${NC}  Round:    ${BOLD}$round/$max_rounds${NC}  |  Next: ${BOLD}$speaker${NC}"
-  echo -e "${BOLD}║${NC}  Progress: [${GREEN}${bar}${NC}] ${responses}/${total}"
-  echo -e "${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
+  print_box_border "╔" "╗"
+  print_box_row "$topic" "$YELLOW"
+  print_box_border "╠" "╣"
+  print_box_row "Session:  $SESSION_ID" "$MAGENTA"
+  print_box_row "Project:  $PROJECT" "$CYAN"
+  print_box_row "Status:   $status" "$status_color"
+  print_box_row "Round:    $round/$max_rounds  |  Next: $speaker" "$BOLD"
+  print_box_row "Progress: [$bar] $responses/$total" "$GREEN"
+  print_box_border "╚" "╝"
   echo ""
 
   # 토론 기록
@@ -96,27 +204,35 @@ render() {
 
       if (s.log.length === 0) {
         console.log('\x1b[2m  아직 응답이 없습니다. ' + s.current_speaker + ' 차례 대기 중...\x1b[0m');
-        return;
+        process.exit(0);
       }
 
       console.log('\x1b[1m── Debate Log ──\x1b[0m');
       console.log('');
 
+      const palette = ['\x1b[34m', '\x1b[33m', '\x1b[35m', '\x1b[36m', '\x1b[32m', '\x1b[31m'];
+      const icons = ['🔵', '🟡', '🟣', '🟢', '🟠', '⚪'];
+      const hash = (name) => {
+        let out = 0;
+        for (let i = 0; i < name.length; i += 1) out = (out * 31 + name.charCodeAt(i)) >>> 0;
+        return out;
+      };
+      const styleFor = (name) => {
+        const idx = hash(String(name ?? '')) % palette.length;
+        return { color: palette[idx], icon: icons[idx % icons.length] };
+      };
+
       for (const entry of s.log) {
-        const color = entry.speaker === 'claude' ? '\x1b[34m' : '\x1b[33m';
-        const icon = entry.speaker === 'claude' ? '🔵' : '🟡';
+        const { color, icon } = styleFor(entry.speaker);
         console.log(color + '\x1b[1m' + icon + ' ' + entry.speaker + ' — Round ' + entry.round + '\x1b[0m');
 
         const lines = entry.content.split('\n');
-        const maxLines = 12;
-        const show = lines.slice(0, maxLines);
-        show.forEach(l => console.log('  ' + l));
-        if (lines.length > maxLines) console.log('  \x1b[2m...(' + (lines.length - maxLines) + ' more lines)\x1b[0m');
+        lines.forEach(l => console.log('  ' + l));
         console.log('');
       }
 
       if (s.status === 'active') {
-        const nextColor = s.current_speaker === 'claude' ? '\x1b[34m' : '\x1b[33m';
+        const nextColor = styleFor(s.current_speaker).color;
         console.log(nextColor + '  ⏳ Waiting for ' + s.current_speaker + ' (Round ' + s.current_round + ')...\x1b[0m');
       } else if (s.status === 'awaiting_synthesis') {
         console.log('\x1b[36m  🏁 모든 라운드 종료. 합성 대기 중...\x1b[0m');
@@ -143,17 +259,57 @@ render() {
   fi
 }
 
-# 메인 루프
-while true; do
-  clear_screen
+draw_frame() {
+  # 전체 클리어 대신 홈 이동 + 하단 잔여 영역만 정리해서 깜빡임 감소
+  printf '\033[H'
   render
-  echo -e "${DIM}[$(date +%H:%M:%S)] Auto-refresh 2s | Ctrl+C to close${NC}"
+  printf '\033[J'
+  echo -e "${DIM}Auto-refresh on change (poll 2s) | Scroll: mouse wheel / PgUp (tmux copy-mode) | Ctrl+C${NC}"
+}
 
-  # 파일이 삭제되었으면 종료
+# 커서 숨김 (종료 시 복구)
+printf '\033[?25l'
+trap 'printf "\033[?25h"' EXIT INT TERM
+printf '\033[2J\033[H'
+
+# tmux에서 스크롤(휠/업다운) 동작을 위해 mouse/copy history 옵션 활성화
+if [ -n "$TMUX" ]; then
+  tmux set-option -g mouse on >/dev/null 2>&1 || true
+  tmux set-option -g history-limit 200000 >/dev/null 2>&1 || true
+fi
+
+# 메인 루프
+last_sig=""
+seen_file=0
+while true; do
+  if pane_in_copy_mode; then
+    # 사용자가 스크롤 중이면 렌더 업데이트를 멈춰 화면 점프를 방지
+    sleep 1
+    continue
+  fi
+
   if [ ! -f "$STATE_FILE" ]; then
-    echo -e "${RED}세션이 삭제되었습니다.${NC}"
-    sleep 3
-    exit 0
+    if [ "$seen_file" -eq 1 ]; then
+      printf '\033[H\033[J'
+      echo -e "${RED}세션이 삭제되었습니다.${NC}"
+      sleep 3
+      exit 0
+    fi
+
+    if [ "$last_sig" != "MISSING" ]; then
+      draw_frame
+      last_sig="MISSING"
+    fi
+
+    sleep 2
+    continue
+  fi
+
+  seen_file=1
+  sig="$(state_signature)"
+  if [ "$sig" != "$last_sig" ]; then
+    draw_frame
+    last_sig="$sig"
   fi
 
   sleep 2

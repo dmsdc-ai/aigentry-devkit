@@ -33,6 +33,7 @@ const HOME = os.homedir();
 const GLOBAL_STATE_DIR = path.join(HOME, ".local", "lib", "mcp-deliberation", "state");
 const OBSIDIAN_VAULT = path.join(HOME, "Documents", "Obsidian Vault");
 const OBSIDIAN_PROJECTS = path.join(OBSIDIAN_VAULT, "10-Projects");
+const DEFAULT_SPEAKERS = ["claude", "codex"];
 
 function getProjectSlug() {
   return path.basename(process.cwd());
@@ -56,6 +57,68 @@ function getArchiveDir() {
     return obsidianDir;
   }
   return path.join(getProjectStateDir(), "archive");
+}
+
+function normalizeSpeaker(raw) {
+  if (typeof raw !== "string") return null;
+  const normalized = raw.trim().toLowerCase();
+  if (!normalized || normalized === "none") return null;
+  return normalized;
+}
+
+function buildSpeakerOrder(speakers, fallbackSpeaker = DEFAULT_SPEAKERS[0], fallbackPlacement = "front") {
+  const ordered = [];
+  const seen = new Set();
+
+  const add = (candidate) => {
+    const speaker = normalizeSpeaker(candidate);
+    if (!speaker || seen.has(speaker)) return;
+    seen.add(speaker);
+    ordered.push(speaker);
+  };
+
+  if (fallbackPlacement === "front") {
+    add(fallbackSpeaker);
+  }
+
+  if (Array.isArray(speakers)) {
+    for (const speaker of speakers) {
+      add(speaker);
+    }
+  }
+
+  if (fallbackPlacement !== "front") {
+    add(fallbackSpeaker);
+  }
+
+  if (ordered.length === 0) {
+    for (const speaker of DEFAULT_SPEAKERS) {
+      add(speaker);
+    }
+  }
+
+  return ordered;
+}
+
+function normalizeSessionActors(state) {
+  if (!state || typeof state !== "object") return state;
+
+  const fallbackSpeaker = normalizeSpeaker(state.current_speaker)
+    || normalizeSpeaker(state.log?.[0]?.speaker)
+    || DEFAULT_SPEAKERS[0];
+  const speakers = buildSpeakerOrder(state.speakers, fallbackSpeaker, "end");
+  state.speakers = speakers;
+
+  const normalizedCurrent = normalizeSpeaker(state.current_speaker);
+  if (state.status === "active") {
+    state.current_speaker = (normalizedCurrent && speakers.includes(normalizedCurrent))
+      ? normalizedCurrent
+      : speakers[0];
+  } else if (normalizedCurrent) {
+    state.current_speaker = normalizedCurrent;
+  }
+
+  return state;
 }
 
 // ── Session ID generation ─────────────────────────────────────
@@ -139,7 +202,7 @@ function ensureDirs() {
 function loadSession(sessionId) {
   const file = getSessionFile(sessionId);
   if (!fs.existsSync(file)) return null;
-  return JSON.parse(fs.readFileSync(file, "utf-8"));
+  return normalizeSessionActors(JSON.parse(fs.readFileSync(file, "utf-8")));
 }
 
 function saveSession(state) {
@@ -189,6 +252,7 @@ function syncMarkdown(state) {
 }
 
 function stateToMarkdown(s) {
+  const speakerOrder = buildSpeakerOrder(s.speakers, s.current_speaker, "end");
   let md = `---
 title: "Deliberation - ${s.topic}"
 session_id: "${s.id}"
@@ -197,7 +261,7 @@ updated: ${s.updated || new Date().toISOString()}
 type: deliberation
 status: ${s.status}
 project: "${s.project}"
-participants: ${JSON.stringify(s.speakers)}
+participants: ${JSON.stringify(speakerOrder)}
 rounds: ${s.max_rounds}
 current_round: ${s.current_round}
 current_speaker: "${s.current_speaker}"
@@ -542,10 +606,15 @@ server.tool(
   {
     topic: z.string().describe("토론 주제"),
     rounds: z.number().default(3).describe("라운드 수 (기본 3)"),
-    first_speaker: z.enum(["claude", "codex"]).default("claude").describe("첫 발언자"),
+    first_speaker: z.string().trim().min(1).max(64).optional().describe("첫 발언자 CLI 이름 (미지정 시 speakers의 첫 항목)"),
+    speakers: z.array(z.string().trim().min(1).max(64)).min(1).optional().describe("참가자 CLI 이름 목록 (예: [\"claude\", \"codex\", \"gemini\"])"),
   },
-  async ({ topic, rounds, first_speaker }) => {
+  async ({ topic, rounds, first_speaker, speakers }) => {
     const sessionId = generateSessionId(topic);
+    const normalizedFirstSpeaker = normalizeSpeaker(first_speaker)
+      || normalizeSpeaker(speakers?.[0])
+      || DEFAULT_SPEAKERS[0];
+    const speakerOrder = buildSpeakerOrder(speakers, normalizedFirstSpeaker, "front");
 
     const state = {
       id: sessionId,
@@ -554,8 +623,8 @@ server.tool(
       status: "active",
       max_rounds: rounds,
       current_round: 1,
-      current_speaker: first_speaker,
-      speakers: ["claude", "codex"],
+      current_speaker: normalizedFirstSpeaker,
+      speakers: speakerOrder,
       log: [],
       synthesis: null,
       monitor_terminal_window_ids: [],
@@ -581,7 +650,7 @@ server.tool(
     return {
       content: [{
         type: "text",
-        text: `✅ Deliberation 시작!\n\n**세션:** ${sessionId}\n**프로젝트:** ${state.project}\n**주제:** ${topic}\n**라운드:** ${rounds}\n**첫 발언:** ${first_speaker}\n**동시 진행 세션:** ${active.length}개${terminalMsg}\n\n💡 이후 도구 호출 시 session_id: "${sessionId}" 를 사용하세요.`,
+        text: `✅ Deliberation 시작!\n\n**세션:** ${sessionId}\n**프로젝트:** ${state.project}\n**주제:** ${topic}\n**라운드:** ${rounds}\n**참가자:** ${speakerOrder.join(", ")}\n**첫 발언:** ${state.current_speaker}\n**동시 진행 세션:** ${active.length}개${terminalMsg}\n\n💡 이후 도구 호출 시 session_id: "${sessionId}" 를 사용하세요.`,
       }],
     };
   }
@@ -628,7 +697,7 @@ server.tool(
     return {
       content: [{
         type: "text",
-        text: `**세션:** ${state.id}\n**프로젝트:** ${state.project}\n**주제:** ${state.topic}\n**상태:** ${state.status}\n**라운드:** ${state.current_round}/${state.max_rounds}\n**현재 차례:** ${state.current_speaker}\n**응답 수:** ${state.log.length}`,
+        text: `**세션:** ${state.id}\n**프로젝트:** ${state.project}\n**주제:** ${state.topic}\n**상태:** ${state.status}\n**라운드:** ${state.current_round}/${state.max_rounds}\n**참가자:** ${state.speakers.join(", ")}\n**현재 차례:** ${state.current_speaker}\n**응답 수:** ${state.log.length}`,
       }],
     };
   }
@@ -655,7 +724,7 @@ server.tool(
   "현재 턴의 응답을 제출합니다.",
   {
     session_id: z.string().optional().describe("세션 ID (여러 세션 진행 중이면 필수)"),
-    speaker: z.enum(["claude", "codex"]).describe("응답자"),
+    speaker: z.string().trim().min(1).max(64).describe("응답자 CLI 이름"),
     content: z.string().describe("응답 내용 (마크다운)"),
   },
   async ({ session_id, speaker, content }) => {
@@ -672,23 +741,36 @@ server.tool(
       return { content: [{ type: "text", text: `세션 "${resolved}"이 활성 상태가 아닙니다.` }] };
     }
 
-    if (state.current_speaker !== speaker) {
+    const normalizedSpeaker = normalizeSpeaker(speaker);
+    if (!normalizedSpeaker) {
+      return { content: [{ type: "text", text: "speaker 값이 비어 있습니다. CLI 이름을 지정하세요." }] };
+    }
+
+    state.speakers = buildSpeakerOrder(state.speakers, state.current_speaker, "end");
+    const normalizedCurrentSpeaker = normalizeSpeaker(state.current_speaker);
+    if (!normalizedCurrentSpeaker || !state.speakers.includes(normalizedCurrentSpeaker)) {
+      state.current_speaker = state.speakers[0];
+    } else {
+      state.current_speaker = normalizedCurrentSpeaker;
+    }
+
+    if (state.current_speaker !== normalizedSpeaker) {
       return {
         content: [{
           type: "text",
-          text: `[${state.id}] 지금은 **${state.current_speaker}** 차례입니다. ${speaker}는 대기하세요.`,
+          text: `[${state.id}] 지금은 **${state.current_speaker}** 차례입니다. ${normalizedSpeaker}는 대기하세요.`,
         }],
       };
     }
 
     state.log.push({
       round: state.current_round,
-      speaker,
+      speaker: normalizedSpeaker,
       content,
       timestamp: new Date().toISOString(),
     });
 
-    const idx = state.speakers.indexOf(speaker);
+    const idx = state.speakers.indexOf(normalizedSpeaker);
     const nextIdx = (idx + 1) % state.speakers.length;
     state.current_speaker = state.speakers[nextIdx];
 
@@ -700,7 +782,7 @@ server.tool(
         return {
           content: [{
             type: "text",
-            text: `✅ [${state.id}] ${speaker} Round ${state.log[state.log.length - 1].round} 완료.\n\n🏁 **모든 라운드 종료!**\ndeliberation_synthesize(session_id: "${state.id}")로 합성 보고서를 작성하세요.`,
+            text: `✅ [${state.id}] ${normalizedSpeaker} Round ${state.log[state.log.length - 1].round} 완료.\n\n🏁 **모든 라운드 종료!**\ndeliberation_synthesize(session_id: "${state.id}")로 합성 보고서를 작성하세요.`,
           }],
         };
       }
@@ -711,7 +793,7 @@ server.tool(
     return {
       content: [{
         type: "text",
-        text: `✅ [${state.id}] ${speaker} Round ${state.log[state.log.length - 1].round} 완료.\n\n**다음:** ${state.current_speaker} (Round ${state.current_round})`,
+        text: `✅ [${state.id}] ${normalizedSpeaker} Round ${state.log[state.log.length - 1].round} 완료.\n\n**다음:** ${state.current_speaker} (Round ${state.current_round})`,
       }],
     };
   }

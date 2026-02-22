@@ -2,20 +2,20 @@
 name: deliberation
 description: |
   AI 간 deliberation(토론) 세션을 관리합니다. 멀티 세션 병렬 토론 지원.
-  MCP deliberation 서버를 통해 Claude와 Codex가 구조화된 토론을 진행합니다.
+  MCP deliberation 서버를 통해 MCP를 지원하는 모든 CLI가 구조화된 토론을 진행합니다.
   "deliberation", "deliberate", "토론", "토론 시작", "deliberation 시작",
   "저장소 전략 토론", "컨셉 토론", "debate" 키워드 시 자동 트리거됩니다.
 ---
 
 # AI Deliberation 스킬 (v2 — Multi-Session)
 
-Claude CLI와 Codex CLI가 MCP deliberation 서버를 통해 구조화된 토론을 진행합니다.
+Claude/Codex를 포함해 MCP를 지원하는 임의 CLI들이 구조화된 토론을 진행합니다.
 **여러 토론을 동시에 병렬 진행할 수 있습니다.**
 
 ## MCP 서버 위치
 - **서버**: `~/.local/lib/mcp-deliberation/index.js` (v2.0.0)
 - **상태**: `~/.local/lib/mcp-deliberation/state/{프로젝트명}/sessions/{session_id}.json`
-- **등록**: Claude Code 글로벌 (`~/.claude/.mcp.json`) + Codex 글로벌
+- **등록**: 각 CLI 환경의 MCP 설정에 `deliberation` 서버 등록
 
 ## 사용 가능한 MCP 도구
 
@@ -59,8 +59,8 @@ Claude CLI와 Codex CLI가 MCP deliberation 서버를 통해 구조화된 토론
 ### B. 수동 진행 (턴 기반)
 1. `deliberation_start` → 토론 시작, session_id 기록
 2. `deliberation_context` → 프로젝트 컨텍스트 확인
-3. `deliberation_respond` (speaker: "claude", session_id) → Claude 응답
-4. Codex CLI에서 `deliberation_respond` (speaker: "codex", session_id) → Codex 응답
+3. CLI-A에서 `deliberation_respond` (speaker: "claude", session_id) → 첫 응답
+4. CLI-B에서 `deliberation_respond` (speaker: "gemini", session_id) → 다음 응답
 5. 반복 후 `deliberation_synthesize` (session_id) → 합성
 
 ### C. 자동 진행 (스크립트)
@@ -89,12 +89,12 @@ bash deliberation-monitor.sh --tmux
 
 ## 역할 규칙
 
-### Claude 역할: 비판적 분석가
+### 역할 예시 A: 비판적 분석가
 - 제안의 약점을 먼저 찾는다
 - 구체적 근거와 수치를 요구한다
 - 리스크를 명시하되 대안을 함께 제시한다
 
-### Codex 역할: 현실적 실행가
+### 역할 예시 B: 현실적 실행가
 - 실행 가능성을 우선 평가한다
 - 구체적 기술 스택과 구현 방안을 제시한다
 - 비용/복잡도/일정을 현실적으로 산정한다
