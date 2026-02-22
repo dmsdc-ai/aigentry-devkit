@@ -12,6 +12,7 @@ set -euo pipefail
 DEVKIT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLAUDE_DIR="$HOME/.claude"
 MCP_DEST="$HOME/.local/lib/mcp-deliberation"
+PLATFORM="$(uname -s 2>/dev/null || echo unknown)"
 
 # 색상
 GREEN='\033[0;32m'
@@ -37,6 +38,13 @@ header "1. Prerequisites"
 command -v node >/dev/null 2>&1 || { warn "node not found. Install Node.js 18+"; exit 1; }
 command -v npm >/dev/null 2>&1 || { warn "npm not found. Install Node.js 18+"; exit 1; }
 info "Node.js $(node -v) found"
+info "Platform: $PLATFORM"
+
+case "$PLATFORM" in
+  MINGW*|MSYS*|CYGWIN*)
+    warn "Windows shell detected. Prefer PowerShell installer: powershell -ExecutionPolicy Bypass -File .\\install.ps1"
+    ;;
+esac
 
 if command -v tmux >/dev/null 2>&1; then
   info "tmux found (deliberation monitor will use it)"
@@ -172,9 +180,20 @@ if command -v codex >/dev/null 2>&1; then
   codex mcp add deliberation -- node "$MCP_DEST/index.js" 2>/dev/null && \
     info "Registered deliberation MCP in Codex" || \
     warn "Codex MCP registration failed (may already exist)"
+
+  if codex mcp list 2>/dev/null | grep -q "deliberation"; then
+    info "Codex MCP verification passed (deliberation found)"
+  else
+    warn "Codex MCP verification failed. Run manually: codex mcp add deliberation -- node $MCP_DEST/index.js"
+  fi
 else
   warn "Codex CLI not found. Skipping Codex integration."
 fi
+
+header "8. Cross-platform Notes"
+info "Codex is a deliberation participant CLI, not a separate MCP server."
+info "Browser LLM tab detection: macOS automation + CDP scan (Linux/Windows need browser remote-debugging port)."
+info "If browser tab auto-scan is unavailable, use clipboard workflow: prepare_turn -> paste in browser -> submit_turn."
 
 # ── 완료 ──
 header "Installation Complete!"
@@ -186,8 +205,9 @@ echo -e "    MCP Server: $MCP_DEST"
 echo -e "    Config:     $CLAUDE_DIR"
 echo ""
 echo -e "  ${BOLD}Next steps:${NC}"
-echo -e "    1. Restart Claude Code for changes to take effect"
+echo -e "    1. Restart Claude/Codex processes for MCP changes to take effect"
 echo -e "    2. Add other MCP servers to $MCP_CONFIG as needed"
 echo -e "    3. Configure your HUD in settings.json if not already done"
+echo -e "    4. For Linux/Windows browser scan, launch browser with --remote-debugging-port=9222"
 echo ""
 echo -e "  ${CYAN}Enjoy your AI development environment!${NC}"

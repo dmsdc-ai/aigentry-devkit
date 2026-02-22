@@ -7,15 +7,17 @@ description: |
   "저장소 전략 토론", "컨셉 토론", "debate" 키워드 시 자동 트리거됩니다.
 ---
 
-# AI Deliberation 스킬 (v2.3 — Multi-Session)
+# AI Deliberation 스킬 (v2.4 — Multi-Session)
 
 Claude/Codex를 포함해 MCP를 지원하는 임의 CLI들이 구조화된 토론을 진행합니다.
 **여러 토론을 동시에 병렬 진행할 수 있습니다.**
+**이 스킬은 토론/합의 전용이며, 실제 구현은 `deliberation-executor`로 handoff합니다.**
 
 ## MCP 서버 위치
-- **서버**: `~/.local/lib/mcp-deliberation/index.js` (v2.3.0)
+- **서버**: `~/.local/lib/mcp-deliberation/index.js` (v2.4.0)
 - **상태**: `~/.local/lib/mcp-deliberation/state/{프로젝트명}/sessions/{session_id}.json`
 - **등록**: 각 CLI 환경의 MCP 설정에 `deliberation` 서버 등록
+- **브라우저 탭 스캔**: macOS 자동화 + CDP(Windows/Linux는 remote-debugging port 권장)
 
 ## 사용 가능한 MCP 도구
 
@@ -64,6 +66,8 @@ Claude/Codex를 포함해 MCP를 지원하는 임의 CLI들이 구조화된 토�
 - CLI speaker: `deliberation_respond(session_id, speaker, content, turn_id)`
 - Browser speaker: `deliberation_clipboard_prepare_turn` → 응답 복사 → `deliberation_clipboard_submit_turn(session_id, speaker, turn_id)`
 6. 반복 후 `deliberation_synthesize(session_id)` → 합성 완료
+7. 구현이 필요하면 `deliberation-executor` 스킬로 handoff
+   예: "session_id {id} 합의안 구현해줘"
 
 ### B. 병렬 세션 운영
 1. `deliberation_start` (topic: "주제A") → session_id_A

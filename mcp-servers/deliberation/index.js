@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * MCP Deliberation Server (Global) — v2.3 Multi-Session + Transport Routing + Locking
+ * MCP Deliberation Server (Global) — v2.5 Multi-Session + Transport Routing + Cross-Platform + BrowserControlPort
  *
  * 모든 프로젝트에서 사용 가능한 AI 간 deliberation 서버.
  * 동시에 여러 deliberation을 병렬 진행할 수 있다.
@@ -21,15 +21,17 @@
  *   deliberation_browser_llm_tabs      브라우저 LLM 탭 목록 조회
  *   deliberation_clipboard_prepare_turn 브라우저 LLM용 턴 프롬프트를 클립보드로 복사
  *   deliberation_clipboard_submit_turn  클립보드 텍스트를 현재 턴 응답으로 제출
+ *   deliberation_browser_auto_turn      브라우저 LLM에 자동으로 턴을 전송하고 응답을 수집 (CDP 기반)
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { execFileSync, execSync } from "child_process";
+import { execFileSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import os from "os";
+import { OrchestratedBrowserPort } from "./browser-control-port.js";
 
 // ── Paths ──────────────────────────────────────────────────────
 
@@ -247,6 +249,15 @@ function commandExistsInPath(command) {
     return false;
   }
 
+  if (process.platform === "win32") {
+    try {
+      execFileSync("where", [command], { stdio: "ignore" });
+      return true;
+    } catch {
+      // keep PATH scan fallback for shells where "where" is unavailable
+    }
+  }
+
   const pathVar = process.env.PATH || "";
   const dirs = pathVar.split(path.delimiter).filter(Boolean);
   if (dirs.length === 0) return false;
@@ -267,6 +278,10 @@ function commandExistsInPath(command) {
     }
   }
   return false;
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
 
 function discoverLocalCliSpeakers() {
@@ -308,6 +323,13 @@ function resolveClipboardReader() {
   if (process.platform === "darwin" && commandExistsInPath("pbpaste")) {
     return { cmd: "pbpaste", args: [] };
   }
+  if (process.platform === "win32") {
+    const windowsShell = ["powershell.exe", "powershell", "pwsh.exe", "pwsh"]
+      .find(cmd => commandExistsInPath(cmd));
+    if (windowsShell) {
+      return { cmd: windowsShell, args: ["-NoProfile", "-Command", "Get-Clipboard -Raw"] };
+    }
+  }
   if (commandExistsInPath("wl-paste")) {
     return { cmd: "wl-paste", args: ["-n"] };
   }
@@ -317,15 +339,22 @@ function resolveClipboardReader() {
   if (commandExistsInPath("xsel")) {
     return { cmd: "xsel", args: ["--clipboard", "--output"] };
   }
-  if (process.platform === "win32" && commandExistsInPath("powershell")) {
-    return { cmd: "powershell", args: ["-NoProfile", "-Command", "Get-Clipboard"] };
-  }
   return null;
 }
 
 function resolveClipboardWriter() {
   if (process.platform === "darwin" && commandExistsInPath("pbcopy")) {
     return { cmd: "pbcopy", args: [] };
+  }
+  if (process.platform === "win32") {
+    if (commandExistsInPath("clip.exe") || commandExistsInPath("clip")) {
+      return { cmd: "clip", args: [] };
+    }
+    const windowsShell = ["powershell.exe", "powershell", "pwsh.exe", "pwsh"]
+      .find(cmd => commandExistsInPath(cmd));
+    if (windowsShell) {
+      return { cmd: windowsShell, args: ["-NoProfile", "-Command", "[Console]::In.ReadToEnd() | Set-Clipboard"] };
+    }
   }
   if (commandExistsInPath("wl-copy")) {
     return { cmd: "wl-copy", args: [] };
@@ -335,9 +364,6 @@ function resolveClipboardWriter() {
   }
   if (commandExistsInPath("xsel")) {
     return { cmd: "xsel", args: ["--clipboard", "--input"] };
-  }
-  if (process.platform === "win32" && commandExistsInPath("clip")) {
-    return { cmd: "clip", args: [] };
   }
   return null;
 }
@@ -367,9 +393,194 @@ function writeClipboardText(text) {
   });
 }
 
-function collectBrowserLlmTabs() {
+function isLlmUrl(url = "") {
+  const value = String(url || "").trim();
+  if (!value) return false;
+  try {
+    const parsed = new URL(value);
+    const host = parsed.hostname.toLowerCase();
+    return DEFAULT_LLM_DOMAINS.some(domain => host === domain || host.endsWith(`.${domain}`));
+  } catch {
+    const lowered = value.toLowerCase();
+    return DEFAULT_LLM_DOMAINS.some(domain => lowered.includes(domain));
+  }
+}
+
+function dedupeBrowserTabs(tabs = []) {
+  const out = [];
+  const seen = new Set();
+  for (const tab of tabs) {
+    const browser = String(tab?.browser || "").trim();
+    const title = String(tab?.title || "").trim();
+    const url = String(tab?.url || "").trim();
+    if (!url || !isLlmUrl(url)) continue;
+    const key = `${browser}\t${title}\t${url}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      browser: browser || "Browser",
+      title: title || "(untitled)",
+      url,
+    });
+  }
+  return out;
+}
+
+function parseInjectedBrowserTabsFromEnv() {
+  const raw = process.env.DELIBERATION_BROWSER_TABS_JSON;
+  if (!raw) {
+    return { tabs: [], note: null };
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return { tabs: [], note: "DELIBERATION_BROWSER_TABS_JSON 형식 오류: JSON 배열이어야 합니다." };
+    }
+
+    const tabs = dedupeBrowserTabs(parsed.map(item => ({
+      browser: item?.browser || "External Bridge",
+      title: item?.title || "(untitled)",
+      url: item?.url || "",
+    })));
+    return {
+      tabs,
+      note: tabs.length > 0 ? `환경변수 탭 주입 사용: ${tabs.length}개` : "DELIBERATION_BROWSER_TABS_JSON에 유효한 LLM URL이 없습니다.",
+    };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "unknown error";
+    return { tabs: [], note: `DELIBERATION_BROWSER_TABS_JSON 파싱 실패: ${reason}` };
+  }
+}
+
+function normalizeCdpEndpoint(raw) {
+  const value = String(raw || "").trim();
+  if (!value) return null;
+
+  const withProto = /^https?:\/\//i.test(value) ? value : `http://${value}`;
+  try {
+    const url = new URL(withProto);
+    if (!url.pathname || url.pathname === "/") {
+      url.pathname = "/json/list";
+    }
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function resolveCdpEndpoints() {
+  const fromEnv = (process.env.DELIBERATION_BROWSER_CDP_ENDPOINTS || "")
+    .split(/[,\s]+/)
+    .map(v => normalizeCdpEndpoint(v))
+    .filter(Boolean);
+  if (fromEnv.length > 0) {
+    return [...new Set(fromEnv)];
+  }
+
+  const ports = (process.env.DELIBERATION_BROWSER_CDP_PORTS || "9222,9223,9333")
+    .split(/[,\s]+/)
+    .map(v => Number.parseInt(v, 10))
+    .filter(v => Number.isInteger(v) && v > 0 && v < 65536);
+
+  const endpoints = [];
+  for (const port of ports) {
+    endpoints.push(`http://127.0.0.1:${port}/json/list`);
+    endpoints.push(`http://localhost:${port}/json/list`);
+  }
+  return [...new Set(endpoints)];
+}
+
+async function fetchJson(url, timeoutMs = 900) {
+  if (typeof fetch !== "function") {
+    throw new Error("fetch API unavailable in current Node runtime");
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      signal: controller.signal,
+      headers: { "accept": "application/json" },
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    return await response.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function inferBrowserFromCdpEndpoint(endpoint) {
+  try {
+    const parsed = new URL(endpoint);
+    const port = Number.parseInt(parsed.port, 10);
+    if (port === 9222) return "Google Chrome (CDP)";
+    if (port === 9223) return "Microsoft Edge (CDP)";
+    if (port === 9333) return "Brave Browser (CDP)";
+    return `Browser (CDP:${parsed.host})`;
+  } catch {
+    return "Browser (CDP)";
+  }
+}
+
+function summarizeFailures(items = [], max = 3) {
+  if (!Array.isArray(items) || items.length === 0) return null;
+  const shown = items.slice(0, max);
+  const suffix = items.length > max ? ` 외 ${items.length - max}개` : "";
+  return `${shown.join(", ")}${suffix}`;
+}
+
+async function collectBrowserLlmTabsViaCdp() {
+  const endpoints = resolveCdpEndpoints();
+  const tabs = [];
+  const failures = [];
+
+  for (const endpoint of endpoints) {
+    try {
+      const payload = await fetchJson(endpoint);
+      if (!Array.isArray(payload)) {
+        throw new Error("unexpected payload");
+      }
+
+      const browser = inferBrowserFromCdpEndpoint(endpoint);
+      for (const item of payload) {
+        if (!item || String(item.type) !== "page") continue;
+        const url = String(item.url || "").trim();
+        if (!isLlmUrl(url)) continue;
+        tabs.push({
+          browser,
+          title: String(item.title || "").trim() || "(untitled)",
+          url,
+        });
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "unknown error";
+      failures.push(`${endpoint} (${reason})`);
+    }
+  }
+
+  const uniqTabs = dedupeBrowserTabs(tabs);
+  if (uniqTabs.length > 0) {
+    const failSummary = summarizeFailures(failures);
+    return {
+      tabs: uniqTabs,
+      note: failSummary ? `일부 CDP 엔드포인트 접근 실패: ${failSummary}` : null,
+    };
+  }
+
+  const failSummary = summarizeFailures(failures);
+  return {
+    tabs: [],
+    note: `CDP에서 LLM 탭을 찾지 못했습니다. 브라우저를 --remote-debugging-port=9222로 실행하거나 DELIBERATION_BROWSER_TABS_JSON으로 탭 목록을 주입하세요.${failSummary ? ` (실패: ${failSummary})` : ""}`,
+  };
+}
+
+function collectBrowserLlmTabsViaAppleScript() {
   if (process.platform !== "darwin") {
-    return { tabs: [], note: "브라우저 탭 자동 스캔은 현재 macOS에서만 지원됩니다." };
+    return { tabs: [], note: "AppleScript 탭 스캔은 macOS에서만 지원됩니다." };
   }
 
   const escapedDomains = DEFAULT_LLM_DOMAINS.map(d => d.replace(/"/g, '\\"'));
@@ -456,6 +667,45 @@ function collectBrowserLlmTabs() {
   }
 }
 
+async function collectBrowserLlmTabs() {
+  const mode = (process.env.DELIBERATION_BROWSER_SCAN_MODE || "auto").trim().toLowerCase();
+  const tabs = [];
+  const notes = [];
+
+  const injected = parseInjectedBrowserTabsFromEnv();
+  tabs.push(...injected.tabs);
+  if (injected.note) notes.push(injected.note);
+
+  if (mode === "off") {
+    return {
+      tabs: dedupeBrowserTabs(tabs),
+      note: notes.length > 0 ? notes.join(" | ") : "브라우저 탭 자동 스캔이 비활성화되었습니다.",
+    };
+  }
+
+  const shouldUseAppleScript = mode === "auto" || mode === "applescript";
+  if (shouldUseAppleScript && process.platform === "darwin") {
+    const mac = collectBrowserLlmTabsViaAppleScript();
+    tabs.push(...mac.tabs);
+    if (mac.note) notes.push(mac.note);
+  } else if (mode === "applescript" && process.platform !== "darwin") {
+    notes.push("AppleScript 스캔은 macOS 전용입니다. CDP 스캔으로 전환하세요.");
+  }
+
+  const shouldUseCdp = mode === "auto" || mode === "cdp";
+  if (shouldUseCdp) {
+    const cdp = await collectBrowserLlmTabsViaCdp();
+    tabs.push(...cdp.tabs);
+    if (cdp.note) notes.push(cdp.note);
+  }
+
+  const uniqTabs = dedupeBrowserTabs(tabs);
+  return {
+    tabs: uniqTabs,
+    note: notes.length > 0 ? notes.join(" | ") : null,
+  };
+}
+
 function inferLlmProvider(url = "") {
   const value = String(url).toLowerCase();
   if (value.includes("claude.ai") || value.includes("anthropic.com")) return "claude";
@@ -471,7 +721,7 @@ function inferLlmProvider(url = "") {
   return "web-llm";
 }
 
-function collectSpeakerCandidates({ include_cli = true, include_browser = true } = {}) {
+async function collectSpeakerCandidates({ include_cli = true, include_browser = true } = {}) {
   const candidates = [];
   const seen = new Set();
 
@@ -495,7 +745,7 @@ function collectSpeakerCandidates({ include_cli = true, include_browser = true }
 
   let browserNote = null;
   if (include_browser) {
-    const { tabs, note } = collectBrowserLlmTabs();
+    const { tabs, note } = await collectBrowserLlmTabs();
     browserNote = note || null;
     const providerCounts = new Map();
     for (const tab of tabs) {
@@ -587,8 +837,19 @@ function mapParticipantProfiles(speakers, candidates) {
 const TRANSPORT_TYPES = {
   cli: "cli_respond",
   browser: "clipboard",
+  browser_auto: "browser_auto",
   manual: "manual",
 };
+
+// BrowserControlPort singleton — initialized lazily on first use
+let _browserPort = null;
+function getBrowserPort() {
+  if (!_browserPort) {
+    const cdpEndpoints = resolveCdpEndpoints();
+    _browserPort = new OrchestratedBrowserPort({ cdpEndpoints });
+  }
+  return _browserPort;
+}
 
 function resolveTransportForSpeaker(state, speaker) {
   const normalizedSpeaker = normalizeSpeaker(speaker);
@@ -879,6 +1140,58 @@ function appleScriptQuote(value) {
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
+function tryExecFile(command, args = []) {
+  try {
+    execFileSync(command, args, { stdio: "ignore", windowsHide: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveMonitorShell() {
+  if (commandExistsInPath("bash")) return "bash";
+  if (commandExistsInPath("sh")) return "sh";
+  return null;
+}
+
+function buildMonitorCommand(sessionId, project) {
+  const shell = resolveMonitorShell();
+  if (!shell) return null;
+  return `${shell} ${shellQuote(MONITOR_SCRIPT)} ${shellQuote(sessionId)} ${shellQuote(project)}`;
+}
+
+function hasTmuxSession(name) {
+  try {
+    execFileSync("tmux", ["has-session", "-t", name], { stdio: "ignore", windowsHide: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function tmuxWindowCount(name) {
+  try {
+    const output = execFileSync("tmux", ["list-windows", "-t", name], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
+    });
+    return String(output)
+      .split("\n")
+      .map(line => line.trim())
+      .filter(Boolean)
+      .length;
+  } catch {
+    return 0;
+  }
+}
+
+function buildTmuxAttachCommand(sessionId) {
+  const winName = tmuxWindowName(sessionId);
+  return `tmux attach -t ${shellQuote(TMUX_SESSION)} \\; select-window -t ${shellQuote(`${TMUX_SESSION}:${winName}`)}`;
+}
+
 function listPhysicalTerminalWindowIds() {
   if (process.platform !== "darwin") {
     return [];
@@ -916,59 +1229,111 @@ function listPhysicalTerminalWindowIds() {
 }
 
 function openPhysicalTerminal(sessionId) {
-  if (process.platform !== "darwin") {
-    return [];
-  }
-
   const winName = tmuxWindowName(sessionId);
   const attachCmd = `tmux attach -t "${TMUX_SESSION}" \\; select-window -t "${TMUX_SESSION}:${winName}"`;
-  const before = new Set(listPhysicalTerminalWindowIds());
 
-  try {
-    const output = execFileSync(
-      "osascript",
-      [
-        "-e",
-        'tell application "Terminal"',
-        "-e",
-        `do script ${appleScriptQuote(attachCmd)}`,
-        "-e",
-        "delay 0.15",
-        "-e",
-        "return id of front window",
-        "-e",
-        "end tell",
-      ],
-      { encoding: "utf-8" }
-    );
-    const frontId = Number.parseInt(String(output).trim(), 10);
-    const after = listPhysicalTerminalWindowIds();
-    const opened = after.filter(id => !before.has(id));
-    if (opened.length > 0) {
-      return [...new Set(opened)];
+  if (process.platform === "darwin") {
+    const before = new Set(listPhysicalTerminalWindowIds());
+    try {
+      const output = execFileSync(
+        "osascript",
+        [
+          "-e",
+          'tell application "Terminal"',
+          "-e",
+          `do script ${appleScriptQuote(attachCmd)}`,
+          "-e",
+          "delay 0.15",
+          "-e",
+          "return id of front window",
+          "-e",
+          "end tell",
+        ],
+        { encoding: "utf-8" }
+      );
+      const frontId = Number.parseInt(String(output).trim(), 10);
+      const after = listPhysicalTerminalWindowIds();
+      const opened = after.filter(id => !before.has(id));
+      if (opened.length > 0) {
+        return { opened: true, windowIds: [...new Set(opened)] };
+      }
+      if (Number.isInteger(frontId) && frontId > 0) {
+        return { opened: true, windowIds: [frontId] };
+      }
+      return { opened: false, windowIds: [] };
+    } catch {
+      return { opened: false, windowIds: [] };
     }
-    if (Number.isInteger(frontId) && frontId > 0) {
-      return [frontId];
-    }
-    return [];
-  } catch {
-    return [];
   }
+
+  if (process.platform === "linux") {
+    const shell = resolveMonitorShell() || "sh";
+    const launchCmd = `${buildTmuxAttachCommand(sessionId)}; exec ${shell}`;
+    const attempts = [
+      ["gnome-terminal", ["--", shell, "-lc", launchCmd]],
+      ["kgx", ["--", shell, "-lc", launchCmd]],
+      ["konsole", ["-e", shell, "-lc", launchCmd]],
+      ["x-terminal-emulator", ["-e", shell, "-lc", launchCmd]],
+      ["xterm", ["-e", shell, "-lc", launchCmd]],
+      ["alacritty", ["-e", shell, "-lc", launchCmd]],
+      ["kitty", [shell, "-lc", launchCmd]],
+      ["wezterm", ["start", "--", shell, "-lc", launchCmd]],
+    ];
+
+    for (const [command, args] of attempts) {
+      if (!commandExistsInPath(command)) continue;
+      if (tryExecFile(command, args)) {
+        return { opened: true, windowIds: [] };
+      }
+    }
+    return { opened: false, windowIds: [] };
+  }
+
+  if (process.platform === "win32") {
+    const attachForWindows = `tmux attach -t "${TMUX_SESSION}"`;
+    if ((commandExistsInPath("wt.exe") || commandExistsInPath("wt"))
+      && tryExecFile("wt", ["new-tab", "powershell", "-NoExit", "-Command", attachForWindows])) {
+      return { opened: true, windowIds: [] };
+    }
+
+    const shell = ["powershell.exe", "powershell", "pwsh.exe", "pwsh"]
+      .find(cmd => commandExistsInPath(cmd));
+    if (shell) {
+      const targetShell = shell.toLowerCase().startsWith("pwsh") ? "pwsh" : "powershell";
+      const escaped = attachForWindows.replace(/'/g, "''");
+      const script = `Start-Process ${targetShell} -ArgumentList '-NoExit','-Command','${escaped}'`;
+      if (tryExecFile(shell, ["-NoProfile", "-Command", script])) {
+        return { opened: true, windowIds: [] };
+      }
+    }
+  }
+
+  return { opened: false, windowIds: [] };
 }
 
 function spawnMonitorTerminal(sessionId) {
+  if (!commandExistsInPath("tmux")) {
+    return false;
+  }
+
   const project = getProjectSlug();
   const winName = tmuxWindowName(sessionId);
-  const cmd = `bash "${MONITOR_SCRIPT}" "${sessionId}" "${project}"`;
+  const cmd = buildMonitorCommand(sessionId, project);
+  if (!cmd) {
+    return false;
+  }
 
   try {
-    // tmux 세션이 있으면 새 윈도우 추가
-    try {
-      execSync(`tmux has-session -t "${TMUX_SESSION}" 2>/dev/null`, { stdio: "ignore" });
-      execSync(`tmux new-window -t "${TMUX_SESSION}" -n "${winName}" '${cmd}'`, { stdio: "ignore" });
-    } catch {
-      // tmux 세션이 없으면 새로 생성 (detached)
-      execSync(`tmux new-session -d -s "${TMUX_SESSION}" -n "${winName}" '${cmd}'`, { stdio: "ignore" });
+    if (hasTmuxSession(TMUX_SESSION)) {
+      execFileSync("tmux", ["new-window", "-t", TMUX_SESSION, "-n", winName, cmd], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+    } else {
+      execFileSync("tmux", ["new-session", "-d", "-s", TMUX_SESSION, "-n", winName, cmd], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
     }
     return true;
   } catch {
@@ -1110,16 +1475,19 @@ function closePhysicalTerminal(windowId) {
 function closeMonitorTerminal(sessionId, terminalWindowIds = []) {
   const winName = tmuxWindowName(sessionId);
   try {
-    // 해당 윈도우만 닫기
-    execSync(`tmux kill-window -t "${TMUX_SESSION}:${winName}" 2>/dev/null`, { stdio: "ignore" });
+    execFileSync("tmux", ["kill-window", "-t", `${TMUX_SESSION}:${winName}`], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+  } catch { /* ignore */ }
 
-    // 남은 윈도우가 없으면 세션도 정리
-    try {
-      const count = execSync(`tmux list-windows -t "${TMUX_SESSION}" 2>/dev/null | wc -l`, { encoding: "utf-8" }).trim();
-      if (parseInt(count) === 0) {
-        execSync(`tmux kill-session -t "${TMUX_SESSION}" 2>/dev/null`, { stdio: "ignore" });
-      }
-    } catch { /* ignore */ }
+  try {
+    if (tmuxWindowCount(TMUX_SESSION) === 0) {
+      execFileSync("tmux", ["kill-session", "-t", TMUX_SESSION], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+    }
   } catch { /* ignore */ }
 
   for (const windowId of terminalWindowIds) {
@@ -1147,7 +1515,7 @@ function getSessionWindowIds(state) {
 
 function closeAllMonitorTerminals() {
   try {
-    execSync(`tmux kill-session -t "${TMUX_SESSION}" 2>/dev/null`, { stdio: "ignore" });
+    execFileSync("tmux", ["kill-session", "-t", TMUX_SESSION], { stdio: "ignore", windowsHide: true });
   } catch { /* ignore */ }
 }
 
@@ -1305,7 +1673,7 @@ process.on("unhandledRejection", (reason) => {
 
 const server = new McpServer({
   name: "mcp-deliberation",
-  version: "2.3.0",
+  version: "2.4.0",
 });
 
 server.tool(
@@ -1322,7 +1690,7 @@ server.tool(
   safeToolHandler("deliberation_start", async ({ topic, rounds, first_speaker, speakers, require_manual_speakers, auto_discover_speakers }) => {
     const sessionId = generateSessionId(topic);
     const hasManualSpeakers = Array.isArray(speakers) && speakers.length > 0;
-    const candidateSnapshot = collectSpeakerCandidates({ include_cli: true, include_browser: true });
+    const candidateSnapshot = await collectSpeakerCandidates({ include_cli: true, include_browser: true });
 
     if (!hasManualSpeakers && require_manual_speakers) {
       const candidateText = formatSpeakerCandidatesReport(candidateSnapshot);
@@ -1376,9 +1744,14 @@ server.tool(
 
     const active = listActiveSessions();
     const tmuxOpened = spawnMonitorTerminal(sessionId);
-    const terminalWindowIds = tmuxOpened ? openPhysicalTerminal(sessionId) : [];
-    const physicalOpened = terminalWindowIds.length > 0;
-    if (physicalOpened) {
+    const terminalOpenResult = tmuxOpened
+      ? openPhysicalTerminal(sessionId)
+      : { opened: false, windowIds: [] };
+    const terminalWindowIds = Array.isArray(terminalOpenResult.windowIds)
+      ? terminalOpenResult.windowIds
+      : [];
+    const physicalOpened = terminalOpenResult.opened === true;
+    if (terminalWindowIds.length > 0) {
       withSessionLock(sessionId, () => {
         const latest = loadSession(sessionId);
         if (!latest) return;
@@ -1390,8 +1763,8 @@ server.tool(
     const terminalMsg = !tmuxOpened
       ? `\n⚠️ tmux를 찾을 수 없어 모니터 터미널 미생성`
       : physicalOpened
-        ? `\n🖥️ 모니터 터미널 강제 오픈됨 (Terminal): tmux attach -t ${TMUX_SESSION}`
-        : `\n⚠️ tmux 윈도우는 생성됐지만 Terminal 자동 오픈 실패. 수동 실행: tmux attach -t ${TMUX_SESSION}`;
+        ? `\n🖥️ 모니터 터미널 오픈됨: tmux attach -t ${TMUX_SESSION}`
+        : `\n⚠️ tmux 윈도우는 생성됐지만 외부 터미널 자동 오픈 실패. 수동 실행: tmux attach -t ${TMUX_SESSION}`;
     const manualNotDetected = hasManualSpeakers
       ? speakerOrder.filter(s => !candidateSnapshot.candidates.some(c => c.speaker === s))
       : [];
@@ -1421,7 +1794,7 @@ server.tool(
     include_browser: z.boolean().default(true).describe("브라우저 LLM 탭 후보 포함"),
   },
   async ({ include_cli, include_browser }) => {
-    const snapshot = collectSpeakerCandidates({ include_cli, include_browser });
+    const snapshot = await collectSpeakerCandidates({ include_cli, include_browser });
     const text = formatSpeakerCandidatesReport(snapshot);
     return { content: [{ type: "text", text: `${text}\n\n${PRODUCT_DISCLAIMER}` }] };
   }
@@ -1495,7 +1868,7 @@ server.tool(
   "현재 브라우저에서 열려 있는 LLM 탭(chatgpt/claude/gemini 등)을 조회합니다.",
   {},
   async () => {
-    const { tabs, note } = collectBrowserLlmTabs();
+    const { tabs, note } = await collectBrowserLlmTabs();
     if (tabs.length === 0) {
       const suffix = note ? `\n\n${note}` : "";
       return { content: [{ type: "text", text: `감지된 LLM 탭이 없습니다.${suffix}` }] };

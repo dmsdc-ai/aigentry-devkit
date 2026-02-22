@@ -8,10 +8,11 @@ A comprehensive development kit that bundles skills, hooks, MCP servers, HUD/sta
 
 ### Skills (Reusable AI Capabilities)
 
-Four production-ready skills that extend Claude Code, Codex CLI, and other MCP-compatible CLIs:
+Five production-ready skills that extend Claude Code, Codex CLI, and other MCP-compatible CLIs:
 
 - **Clipboard Image Viewer** - Capture and analyze clipboard images directly from your terminal
 - **AI Deliberation** - Multi-session parallel debates across arbitrary CLI participants with structured turn-taking and synthesis
+- **Deliberation Executor** - Convert deliberation synthesis into concrete implementation tasks and execute them
 - **Environment Manager** - direnv-based hierarchical environment variable management with global and project-scoped variables
 - **YouTube Analyzer** - Extract and analyze YouTube video metadata, captions, and transcripts without downloading
 
@@ -52,10 +53,20 @@ Pre-configured settings with template substitution:
 
 ### Quick Start
 
+macOS / Linux:
+
 ```bash
 git clone https://github.com/dmsdc-ai/aigentry-devkit.git
 cd aigentry-devkit
 bash install.sh
+```
+
+Windows (PowerShell):
+
+```powershell
+git clone https://github.com/dmsdc-ai/aigentry-devkit.git
+cd aigentry-devkit
+powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
 The installer will:
@@ -67,6 +78,7 @@ The installer will:
 5. Register MCP server in `~/.claude/.mcp.json`
 6. Create configuration templates from templates
 7. Attempt Codex CLI integration (if available)
+8. Print cross-platform browser scan/fallback notes
 
 ### Post-Installation
 
@@ -110,6 +122,17 @@ Start a multi-perspective debate:
 ```
 
 Multiple sessions run in parallel. Use `deliberation_start` to get a session ID, then reference it in subsequent calls.
+
+#### Deliberation Executor
+Triggers: "합의안 구현", "토론 결과 구현", "deliberation 구현", "synthesis 구현", "executor"
+
+Execute implementation from synthesis:
+```
+"session_id abc123 합의안 구현해줘"
+"토론 결과를 코드로 반영하고 테스트까지 진행해줘"
+```
+
+Use this after `deliberation_synthesize` when you want implementation, not just discussion.
 
 #### Environment Manager
 Triggers: "env", "환경변수", "environment", ".env", "direnv"
@@ -210,9 +233,11 @@ aigentry-devkit/
 ├── skills/                  # Reusable AI skills
 │   ├── clipboard-image/     # Image clipboard capture
 │   ├── deliberation/        # Debate management
+│   ├── deliberation-executor/ # Synthesis-to-implementation execution
 │   ├── env-manager/         # Environment variables
 │   └── youtube-analyzer/    # YouTube content analysis
-├── install.sh               # Installation script
+├── install.sh               # Installation script (macOS/Linux)
+├── install.ps1              # Installation script (Windows PowerShell)
 ├── LICENSE                  # MIT License
 └── README.md                # This file
 ```
@@ -234,6 +259,8 @@ If Codex CLI is installed, the installer attempts to register the MCP deliberati
 ```bash
 codex mcp add deliberation -- node ~/.local/lib/mcp-deliberation/index.js
 ```
+
+Important: Codex is a participant CLI in deliberation, not a separate MCP server you must install.
 
 Other CLIs can join deliberation by registering the same MCP server command in their MCP/client configuration:
 
@@ -280,10 +307,34 @@ direnv allow
 4. Check runtime log: `tail -n 120 ~/.local/lib/mcp-deliberation/runtime.log`
 5. Confirm lock directory exists: `ls ~/.local/lib/mcp-deliberation/state/<project>/.locks`
 
-Multi-session stability in v2.3 uses:
+Multi-session stability in v2.4 uses:
 - Session/project lock files (`.locks/`) to serialize writes
 - Atomic file writes for session/markdown persistence
 - Safe tool handlers + uncaught error logging to keep server process alive
+
+### Browser LLM tabs not detected (Linux/Windows)
+
+Browser tab scan is cross-platform, but Linux/Windows rely on CDP endpoints. Start your browser with a remote debugging port:
+
+Linux/macOS:
+```bash
+google-chrome --remote-debugging-port=9222
+```
+
+Windows (PowerShell):
+```powershell
+& "$Env:ProgramFiles\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222
+```
+
+Then run:
+```bash
+deliberation_browser_llm_tabs
+```
+
+If auto-scan is still unavailable, use the clipboard fallback:
+- `deliberation_clipboard_prepare_turn`
+- paste into browser LLM and copy response
+- `deliberation_clipboard_submit_turn`
 
 ### Environment variables not loading
 
@@ -327,6 +378,7 @@ Add templates to `config/` and update `install.sh` to deploy them.
 - **Codex CLI**: Latest (optional, for Codex integration)
 - **tmux**: Latest (optional, for deliberation monitoring)
 - **direnv**: Latest (optional, for environment management)
+- **PowerShell**: 7+ recommended on Windows
 
 Language-specific requirements for skills:
 
@@ -338,7 +390,7 @@ Language-specific requirements for skills:
 ### Installation Flow
 
 ```
-bash install.sh
+install.sh / install.ps1
   ├─ Check prerequisites (Node.js, npm, optional tools)
   ├─ Link skills to ~/.claude/skills/
   ├─ Install HUD to ~/.claude/hud/
@@ -387,7 +439,7 @@ User message with keywords
 | Node.js | 18+ | 20 LTS, 22 |
 | macOS | Ventura+ | Yes |
 | Linux | Ubuntu 22.04+ | Yes |
-| Windows | WSL2 | Partial |
+| Windows | 10/11 + PowerShell | Yes |
 
 ## Contributing
 
