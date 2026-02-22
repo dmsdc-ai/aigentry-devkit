@@ -174,7 +174,9 @@ The deliberation server provides these tools:
 | Tool | Purpose |
 |------|---------|
 | `deliberation_speaker_candidates` | List selectable speakers from local CLIs and open browser LLM tabs |
-| `deliberation_start` | Start new debate session with user-selected speakers, returns session_id |
+| `deliberation_start` | Start new debate session with user-selected speakers, returns session_id (`participant_types` override supported) |
+| `deliberation_route_turn` | Resolve current speaker transport and next action (`cli_respond` / `clipboard` / `browser_auto`) |
+| `deliberation_browser_auto_turn` | Send turn to browser LLM automatically via CDP and collect response |
 | `deliberation_respond` | Submit turn response |
 | `deliberation_browser_llm_tabs` | Inspect open browser LLM tabs |
 | `deliberation_clipboard_prepare_turn` | Copy current-turn prompt for browser LLM |
@@ -199,12 +201,18 @@ Example workflow:
 # deliberation_speaker_candidates()
 # 2) Start with manually selected speakers
 # deliberation_start(topic="...", speakers=["codex","web-claude-1","web-chatgpt-1"], first_speaker="codex")
+# optional: force transport profile per speaker
+# deliberation_start(topic="...", speakers=["codex","chatgpt"], participant_types={"chatgpt":"browser_auto"})
+# 3) Route the current turn
+# deliberation_route_turn session_id=sess_12345
 # Submit turns with deliberate speakers:
 # deliberation_respond session_id=sess_12345 speaker=codex
 # Browser turn flow:
 # deliberation_clipboard_prepare_turn session_id=sess_12345 speaker=web-claude-1
 # (paste into browser LLM, copy response)
 # deliberation_clipboard_submit_turn session_id=sess_12345 speaker=web-claude-1
+# Browser auto flow (CDP):
+# deliberation_browser_auto_turn session_id=sess_12345 provider=chatgpt
 # After rounds complete:
 # deliberation_synthesize session_id=sess_12345
 ```
@@ -227,6 +235,8 @@ The simple-status.sh script displays context in your shell prompt. Configure in 
 
 ```
 aigentry-devkit/
+├── bin/                     # npx entrypoint
+│   └── aigentry-devkit.js
 ├── .claude-plugin/           # Claude Code plugin manifests
 │   ├── plugin.json          # Plugin metadata
 │   └── marketplace.json     # Marketplace listing
@@ -252,6 +262,7 @@ aigentry-devkit/
 │   └── youtube-analyzer/    # YouTube content analysis
 ├── install.sh               # Installation script (macOS/Linux)
 ├── install.ps1              # Installation script (Windows PowerShell)
+├── package.json             # npm package metadata (@dmsdc-ai/aigentry-devkit)
 ├── LICENSE                  # MIT License
 └── README.md                # This file
 ```
@@ -303,14 +314,14 @@ direnv allow
 ### Skills not loading
 
 1. Verify skills are linked: `ls -la ~/.claude/skills/`
-2. Restart Claude Code
+2. Restart your MCP client process (Claude/Codex/etc.)
 3. Check for keyword matches in skill definitions
 
 ### MCP Deliberation not available
 
 1. Verify MCP registration: `cat ~/.claude/.mcp.json`
 2. Check installation: `ls ~/.local/lib/mcp-deliberation/`
-3. Restart Claude Code
+3. Restart your MCP client process (Claude/Codex/etc.)
 4. Review MCP server logs in Claude Code console
 
 ### MCP `Transport closed` in multi-session use
@@ -382,7 +393,7 @@ npm install
 
 ### Extending configuration
 
-Add templates to `config/` and update `install.sh` to deploy them.
+Add templates to `config/` and update both `install.sh` and `install.ps1` to deploy them.
 
 ## Requirements
 
@@ -418,7 +429,7 @@ npx @dmsdc-ai/aigentry-devkit install
 ### Runtime Flow
 
 ```
-Claude Code Start
+MCP Client Start (Claude/Codex/others)
   ├─ Load plugins from .claude-plugin/
   ├─ Execute SessionStart hooks
   │  └─ Run hooks/session-start (load skill index)
