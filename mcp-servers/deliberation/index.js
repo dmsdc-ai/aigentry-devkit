@@ -33,7 +33,21 @@ const HOME = os.homedir();
 const GLOBAL_STATE_DIR = path.join(HOME, ".local", "lib", "mcp-deliberation", "state");
 const OBSIDIAN_VAULT = path.join(HOME, "Documents", "Obsidian Vault");
 const OBSIDIAN_PROJECTS = path.join(OBSIDIAN_VAULT, "10-Projects");
-const DEFAULT_SPEAKERS = ["claude", "codex"];
+const DEFAULT_SPEAKERS = ["agent-a", "agent-b"];
+const DEFAULT_CLI_CANDIDATES = [
+  "claude",
+  "codex",
+  "gemini",
+  "qwen",
+  "chatgpt",
+  "aider",
+  "llm",
+  "opencode",
+  "cursor-agent",
+  "cursor",
+  "continue",
+];
+const MAX_AUTO_DISCOVERED_SPEAKERS = 12;
 
 function getProjectSlug() {
   return path.basename(process.cwd());
@@ -64,6 +78,66 @@ function normalizeSpeaker(raw) {
   const normalized = raw.trim().toLowerCase();
   if (!normalized || normalized === "none") return null;
   return normalized;
+}
+
+function dedupeSpeakers(items = []) {
+  const out = [];
+  const seen = new Set();
+  for (const item of items) {
+    const normalized = normalizeSpeaker(item);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+}
+
+function resolveCliCandidates() {
+  const fromEnv = (process.env.DELIBERATION_CLI_CANDIDATES || "")
+    .split(/[,\s]+/)
+    .map(v => v.trim())
+    .filter(Boolean);
+  return dedupeSpeakers([...fromEnv, ...DEFAULT_CLI_CANDIDATES]);
+}
+
+function commandExistsInPath(command) {
+  if (!command || !/^[a-zA-Z0-9._-]+$/.test(command)) {
+    return false;
+  }
+
+  const pathVar = process.env.PATH || "";
+  const dirs = pathVar.split(path.delimiter).filter(Boolean);
+  if (dirs.length === 0) return false;
+
+  const extensions = process.platform === "win32"
+    ? ["", ".exe", ".cmd", ".bat", ".ps1"]
+    : [""];
+
+  for (const dir of dirs) {
+    for (const ext of extensions) {
+      const fullPath = path.join(dir, `${command}${ext}`);
+      try {
+        fs.accessSync(fullPath, fs.constants.X_OK);
+        return true;
+      } catch {
+        // ignore and continue
+      }
+    }
+  }
+  return false;
+}
+
+function discoverLocalCliSpeakers() {
+  const found = [];
+  for (const candidate of resolveCliCandidates()) {
+    if (commandExistsInPath(candidate)) {
+      found.push(candidate);
+    }
+    if (found.length >= MAX_AUTO_DISCOVERED_SPEAKERS) {
+      break;
+    }
+  }
+  return found;
 }
 
 function buildSpeakerOrder(speakers, fallbackSpeaker = DEFAULT_SPEAKERS[0], fallbackPlacement = "front") {
@@ -607,14 +681,26 @@ server.tool(
     topic: z.string().describe("토론 주제"),
     rounds: z.number().default(3).describe("라운드 수 (기본 3)"),
     first_speaker: z.string().trim().min(1).max(64).optional().describe("첫 발언자 CLI 이름 (미지정 시 speakers의 첫 항목)"),
-    speakers: z.array(z.string().trim().min(1).max(64)).min(1).optional().describe("참가자 CLI 이름 목록 (예: [\"claude\", \"codex\", \"gemini\"])"),
+    speakers: z.array(z.string().trim().min(1).max(64)).min(1).optional().describe("참가자 CLI 이름 목록 (생략 시 로컬 CLI 자동 탐색)"),
+    auto_discover_speakers: z.boolean().default(true).describe("speakers 생략 시 PATH 기반 자동 탐색 여부"),
   },
-  async ({ topic, rounds, first_speaker, speakers }) => {
+  async ({ topic, rounds, first_speaker, speakers, auto_discover_speakers }) => {
     const sessionId = generateSessionId(topic);
+    const hasManualSpeakers = Array.isArray(speakers) && speakers.length > 0;
+    const autoDiscoveredSpeakers = (!hasManualSpeakers && auto_discover_speakers)
+      ? discoverLocalCliSpeakers()
+      : [];
+    const selectedSpeakers = hasManualSpeakers
+      ? speakers
+      : autoDiscoveredSpeakers;
+
     const normalizedFirstSpeaker = normalizeSpeaker(first_speaker)
-      || normalizeSpeaker(speakers?.[0])
+      || normalizeSpeaker(selectedSpeakers?.[0])
       || DEFAULT_SPEAKERS[0];
-    const speakerOrder = buildSpeakerOrder(speakers, normalizedFirstSpeaker, "front");
+    const speakerOrder = buildSpeakerOrder(selectedSpeakers, normalizedFirstSpeaker, "front");
+    const participantMode = hasManualSpeakers
+      ? "수동 지정"
+      : (autoDiscoveredSpeakers.length > 0 ? "자동 탐색(PATH)" : "기본값");
 
     const state = {
       id: sessionId,
@@ -650,7 +736,7 @@ server.tool(
     return {
       content: [{
         type: "text",
-        text: `✅ Deliberation 시작!\n\n**세션:** ${sessionId}\n**프로젝트:** ${state.project}\n**주제:** ${topic}\n**라운드:** ${rounds}\n**참가자:** ${speakerOrder.join(", ")}\n**첫 발언:** ${state.current_speaker}\n**동시 진행 세션:** ${active.length}개${terminalMsg}\n\n💡 이후 도구 호출 시 session_id: "${sessionId}" 를 사용하세요.`,
+        text: `✅ Deliberation 시작!\n\n**세션:** ${sessionId}\n**프로젝트:** ${state.project}\n**주제:** ${topic}\n**라운드:** ${rounds}\n**참가자 구성:** ${participantMode}\n**참가자:** ${speakerOrder.join(", ")}\n**첫 발언:** ${state.current_speaker}\n**동시 진행 세션:** ${active.length}개${terminalMsg}\n\n💡 이후 도구 호출 시 session_id: "${sessionId}" 를 사용하세요.`,
       }],
     };
   }
