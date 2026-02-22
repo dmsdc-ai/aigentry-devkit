@@ -1,0 +1,38 @@
+{
+  "name": "@dmsdc-ai/aigentry-devkit",
+  "version": "0.1.0",
+  "description": "Cross-platform installer and tooling bundle for aigentry-devkit",
+  "license": "MIT",
+  "bin": {
+    "aigentry-devkit": "bin/aigentry-devkit.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "bin/aigentry-devkit.js",
+    "config/**",
+    "hooks/**",
+    "hud/**",
+    "install.sh",
+    "install.ps1",
+    "mcp-servers/deliberation/index.js",
+    "mcp-servers/deliberation/package.json",
+    "mcp-servers/deliberation/session-monitor.sh",
+    "skills/clipboard-image/**",
+    "skills/deliberation/**",
+    "skills/deliberation-executor/**",
+    "skills/env-manager/**",
+    "skills/youtube-analyzer/**",
+    "LICENSE",
+    "README.md"
+  ],
+  "keywords": [
+    "ai",
+    "devkit",
+    "claude",
+    "codex",
+    "mcp",
+    "deliberation"
+  ]
+}

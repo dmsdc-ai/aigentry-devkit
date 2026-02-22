@@ -53,6 +53,20 @@ Pre-configured settings with template substitution:
 
 ### Quick Start
 
+All OS (recommended):
+
+```bash
+npx -y @dmsdc-ai/aigentry-devkit install
+```
+
+Force reinstall:
+
+```bash
+npx -y @dmsdc-ai/aigentry-devkit install --force
+```
+
+Manual install (local clone) is still available:
+
 macOS / Linux:
 
 ```bash
@@ -82,10 +96,10 @@ The installer will:
 
 ### Post-Installation
 
-After installation, restart Claude Code for changes to take effect:
+After installation, restart Claude/Codex for changes to take effect:
 
 ```bash
-# Restart Claude Code to load the new skills and MCP servers
+# Restart your CLI process to load new MCP settings
 ```
 
 To verify installation:
@@ -390,7 +404,8 @@ Language-specific requirements for skills:
 ### Installation Flow
 
 ```
-install.sh / install.ps1
+npx @dmsdc-ai/aigentry-devkit install
+  ├─ dispatches to install.sh (macOS/Linux) or install.ps1 (Windows)
   ├─ Check prerequisites (Node.js, npm, optional tools)
   ├─ Link skills to ~/.claude/skills/
   ├─ Install HUD to ~/.claude/hud/
