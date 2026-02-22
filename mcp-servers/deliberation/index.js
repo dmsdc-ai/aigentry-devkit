@@ -761,6 +761,40 @@ async function collectSpeakerCandidates({ include_cli = true, include_browser = 
         url: tab.url || "",
       });
     }
+
+    // CDP auto-detection: probe endpoints for matching tabs
+    const cdpEndpoints = resolveCdpEndpoints();
+    const cdpTabs = [];
+    for (const endpoint of cdpEndpoints) {
+      try {
+        const tabs = await fetchJson(endpoint, 2000);
+        if (Array.isArray(tabs)) {
+          for (const t of tabs) {
+            if (t.type === "page" && t.url) cdpTabs.push(t);
+          }
+        }
+      } catch { /* endpoint not reachable */ }
+    }
+
+    // Match CDP tabs with discovered browser candidates
+    for (const candidate of candidates) {
+      if (candidate.type !== "browser") continue;
+      let candidateHost = "";
+      try {
+        candidateHost = new URL(candidate.url).hostname.toLowerCase();
+      } catch { continue; }
+      if (!candidateHost) continue;
+      const matches = cdpTabs.filter(t => {
+        try {
+          return new URL(t.url).hostname.toLowerCase() === candidateHost;
+        } catch { return false; }
+      });
+      if (matches.length === 1) {
+        candidate.cdp_available = true;
+        candidate.cdp_tab_id = matches[0].id;
+        candidate.cdp_ws_url = matches[0].webSocketDebuggerUrl;
+      }
+    }
   }
 
   return { candidates, browserNote };
@@ -782,7 +816,10 @@ function formatSpeakerCandidatesReport({ candidates, browserNote }) {
   if (browser.length === 0) {
     out += "- (감지된 브라우저 LLM 탭 없음)\n";
   } else {
-    out += `${browser.map(c => `- \`${c.speaker}\` [${c.browser}] ${c.title}\n  ${c.url}`).join("\n")}\n`;
+    out += `${browser.map(c => {
+      const icon = c.cdp_available ? "⚡자동" : "📋클립보드";
+      return `- \`${c.speaker}\` [${icon}] [${c.browser}] ${c.title}\n  ${c.url}`;
+    }).join("\n")}\n`;
   }
 
   if (browserNote) {
@@ -834,9 +871,10 @@ function mapParticipantProfiles(speakers, candidates, typeOverrides) {
       continue;
     }
 
+    const effectiveType = candidate.cdp_available ? "browser_auto" : "browser";
     profiles.push({
       speaker,
-      type: "browser",
+      type: effectiveType,
       provider: candidate.provider || null,
       browser: candidate.browser || null,
       title: candidate.title || null,
@@ -2022,7 +2060,55 @@ server.tool(
     }
 
     if (transport === "browser_auto") {
-      extra = `\n\n💡 자동 브라우저 모드입니다. \`deliberation_browser_auto_turn(session_id: "${state.id}")\`으로 자동 진행할 수 있습니다.`;
+      // Auto-execute browser_auto_turn
+      try {
+        const port = getBrowserPort();
+        const sessionId = state.id;
+        const turnSpeaker = speaker;
+        const turnProvider = profile?.provider || "chatgpt";
+
+        // Build prompt
+        const turnPrompt = buildClipboardTurnPrompt(state, turnSpeaker, prompt, include_history_entries);
+
+        // Attach
+        const attachResult = await port.attach(sessionId, { provider: turnProvider, url: profile?.url });
+        if (!attachResult.ok) throw new Error(`attach failed: ${attachResult.error?.message}`);
+
+        // Send turn
+        const autoTurnId = turnId || `auto-${Date.now()}`;
+        const sendResult = await port.sendTurnWithDegradation(sessionId, autoTurnId, turnPrompt);
+        if (!sendResult.ok) throw new Error(`send failed: ${sendResult.error?.message}`);
+
+        // Wait for response
+        const waitResult = await port.waitTurnResult(sessionId, autoTurnId, 45);
+        const degradationState = port.getDegradationState(sessionId);
+        await port.detach(sessionId);
+
+        if (waitResult.ok && waitResult.data?.response) {
+          // Auto-submit the response
+          submitDeliberationTurn({
+            session_id: sessionId,
+            speaker: turnSpeaker,
+            content: waitResult.data.response,
+            turn_id: state.pending_turn_id || generateTurnId(),
+            channel_used: "browser_auto",
+            fallback_reason: null,
+          });
+          extra = `\n\n⚡ 자동 실행 완료! 브라우저 LLM 응답이 자동으로 제출되었습니다. (${waitResult.data.elapsedMs}ms)`;
+        } else {
+          throw new Error(waitResult.error?.message || "no response received");
+        }
+      } catch (autoErr) {
+        // Fallback to clipboard
+        const errMsg = autoErr instanceof Error ? autoErr.message : String(autoErr);
+        const payload = buildClipboardTurnPrompt(state, speaker, prompt, include_history_entries);
+        try {
+          writeClipboardText(payload);
+          extra = `\n\n⚠️ 자동 실행 실패 (${errMsg}). 클립보드 모드로 폴백했습니다.\n✅ 클립보드에 턴 프롬프트가 복사되었습니다.`;
+        } catch (clipErr) {
+          extra = `\n\n⚠️ 자동 실행 실패 (${errMsg}). 클립보드 복사도 실패했습니다.\n수동으로 deliberation_clipboard_prepare_turn을 호출하세요.`;
+        }
+      }
     }
 
     const profileInfo = profile
