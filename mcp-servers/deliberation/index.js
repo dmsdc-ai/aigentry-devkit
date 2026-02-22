@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * MCP Deliberation Server (Global) — v2 Multi-Session
+ * MCP Deliberation Server (Global) — v2.3 Multi-Session + Transport Routing + Locking
  *
  * 모든 프로젝트에서 사용 가능한 AI 간 deliberation 서버.
  * 동시에 여러 deliberation을 병렬 진행할 수 있다.
@@ -17,6 +17,10 @@
  *   deliberation_synthesize   합성 보고서 생성 (session_id 선택적)
  *   deliberation_list         과거 아카이브 목록
  *   deliberation_reset        세션 초기화 (session_id 선택적, 없으면 전체)
+ *   deliberation_speaker_candidates      선택 가능한 스피커 후보(로컬 CLI + 브라우저 LLM 탭) 조회
+ *   deliberation_browser_llm_tabs      브라우저 LLM 탭 목록 조회
+ *   deliberation_clipboard_prepare_turn 브라우저 LLM용 턴 프롬프트를 클립보드로 복사
+ *   deliberation_clipboard_submit_turn  클립보드 텍스트를 현재 턴 응답으로 제출
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -31,6 +35,7 @@ import os from "os";
 
 const HOME = os.homedir();
 const GLOBAL_STATE_DIR = path.join(HOME, ".local", "lib", "mcp-deliberation", "state");
+const GLOBAL_RUNTIME_LOG = path.join(HOME, ".local", "lib", "mcp-deliberation", "runtime.log");
 const OBSIDIAN_VAULT = path.join(HOME, "Documents", "Obsidian Vault");
 const OBSIDIAN_PROJECTS = path.join(OBSIDIAN_VAULT, "10-Projects");
 const DEFAULT_SPEAKERS = ["agent-a", "agent-b"];
@@ -48,6 +53,28 @@ const DEFAULT_CLI_CANDIDATES = [
   "continue",
 ];
 const MAX_AUTO_DISCOVERED_SPEAKERS = 12;
+const DEFAULT_BROWSER_APPS = ["Google Chrome", "Brave Browser", "Arc", "Microsoft Edge", "Safari"];
+const DEFAULT_LLM_DOMAINS = [
+  "chatgpt.com",
+  "openai.com",
+  "claude.ai",
+  "anthropic.com",
+  "gemini.google.com",
+  "copilot.microsoft.com",
+  "poe.com",
+  "perplexity.ai",
+  "mistral.ai",
+  "huggingface.co/chat",
+  "deepseek.com",
+  "qwen.ai",
+  "notebooklm.google.com",
+];
+
+const PRODUCT_DISCLAIMER = "ℹ️ 이 도구는 외부 웹사이트를 영구 수정하지 않습니다. 브라우저 문맥을 읽기 전용으로 참조하여 발화자를 라우팅합니다.";
+const LOCKS_SUBDIR = ".locks";
+const LOCK_RETRY_MS = 25;
+const LOCK_TIMEOUT_MS = 8000;
+const LOCK_STALE_MS = 60000;
 
 function getProjectSlug() {
   return path.basename(process.cwd());
@@ -71,6 +98,121 @@ function getArchiveDir() {
     return obsidianDir;
   }
   return path.join(getProjectStateDir(), "archive");
+}
+
+function getLocksDir() {
+  return path.join(getProjectStateDir(), LOCKS_SUBDIR);
+}
+
+function formatRuntimeError(error) {
+  if (error instanceof Error) {
+    return error.stack || error.message;
+  }
+  return String(error);
+}
+
+function appendRuntimeLog(level, message) {
+  try {
+    fs.mkdirSync(path.dirname(GLOBAL_RUNTIME_LOG), { recursive: true });
+    const line = `${new Date().toISOString()} [${level}] ${message}\n`;
+    fs.appendFileSync(GLOBAL_RUNTIME_LOG, line, "utf-8");
+  } catch {
+    // ignore logging failures
+  }
+}
+
+function safeToolHandler(toolName, handler) {
+  return async (args) => {
+    try {
+      return await handler(args);
+    } catch (error) {
+      const message = formatRuntimeError(error);
+      appendRuntimeLog("ERROR", `${toolName}: ${message}`);
+      return { content: [{ type: "text", text: `❌ ${toolName} 실패: ${message}` }] };
+    }
+  };
+}
+
+function sleepMs(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return;
+  const sab = new SharedArrayBuffer(4);
+  const arr = new Int32Array(sab);
+  Atomics.wait(arr, 0, 0, Math.floor(ms));
+}
+
+function writeTextAtomic(filePath, text) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmp, text, "utf-8");
+  fs.renameSync(tmp, filePath);
+}
+
+function acquireFileLock(lockPath, {
+  timeoutMs = LOCK_TIMEOUT_MS,
+  retryMs = LOCK_RETRY_MS,
+  staleMs = LOCK_STALE_MS,
+} = {}) {
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  const token = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+  const startedAt = Date.now();
+
+  while (true) {
+    try {
+      const fd = fs.openSync(lockPath, "wx");
+      fs.writeFileSync(fd, token, "utf-8");
+      fs.closeSync(fd);
+      return token;
+    } catch (error) {
+      const isExists = error && typeof error === "object" && "code" in error && error.code === "EEXIST";
+      if (!isExists) {
+        throw error;
+      }
+
+      try {
+        const stat = fs.statSync(lockPath);
+        if (Date.now() - stat.mtimeMs > staleMs) {
+          fs.unlinkSync(lockPath);
+          continue;
+        }
+      } catch {
+        // lock might have been removed concurrently
+      }
+
+      if (Date.now() - startedAt > timeoutMs) {
+        throw new Error(`lock timeout: ${lockPath}`);
+      }
+      sleepMs(retryMs);
+    }
+  }
+}
+
+function releaseFileLock(lockPath, token) {
+  try {
+    const current = fs.readFileSync(lockPath, "utf-8").trim();
+    if (current === token) {
+      fs.unlinkSync(lockPath);
+    }
+  } catch {
+    // already released or replaced
+  }
+}
+
+function withFileLock(lockPath, fn, options) {
+  const token = acquireFileLock(lockPath, options);
+  try {
+    return fn();
+  } finally {
+    releaseFileLock(lockPath, token);
+  }
+}
+
+function withProjectLock(fn, options) {
+  return withFileLock(path.join(getLocksDir(), "_project.lock"), fn, options);
+}
+
+function withSessionLock(sessionId, fn, options) {
+  const safeId = String(sessionId).replace(/[^a-zA-Z0-9가-힣._-]/g, "_");
+  return withFileLock(path.join(getLocksDir(), `${safeId}.lock`), fn, options);
 }
 
 function normalizeSpeaker(raw) {
@@ -140,6 +282,333 @@ function discoverLocalCliSpeakers() {
   return found;
 }
 
+function detectCallerSpeaker() {
+  const hinted = normalizeSpeaker(process.env.DELIBERATION_CALLER_SPEAKER);
+  if (hinted) return hinted;
+
+  const pathHint = process.env.PATH || "";
+  if (/\bCODEX_[A-Z0-9_]+\b/.test(Object.keys(process.env).join(" "))) {
+    return "codex";
+  }
+  if (pathHint.includes("/.codex/")) {
+    return "codex";
+  }
+
+  if (/\bCLAUDE_[A-Z0-9_]+\b/.test(Object.keys(process.env).join(" "))) {
+    return "claude";
+  }
+  if (pathHint.includes("/.claude/")) {
+    return "claude";
+  }
+
+  return null;
+}
+
+function resolveClipboardReader() {
+  if (process.platform === "darwin" && commandExistsInPath("pbpaste")) {
+    return { cmd: "pbpaste", args: [] };
+  }
+  if (commandExistsInPath("wl-paste")) {
+    return { cmd: "wl-paste", args: ["-n"] };
+  }
+  if (commandExistsInPath("xclip")) {
+    return { cmd: "xclip", args: ["-selection", "clipboard", "-o"] };
+  }
+  if (commandExistsInPath("xsel")) {
+    return { cmd: "xsel", args: ["--clipboard", "--output"] };
+  }
+  if (process.platform === "win32" && commandExistsInPath("powershell")) {
+    return { cmd: "powershell", args: ["-NoProfile", "-Command", "Get-Clipboard"] };
+  }
+  return null;
+}
+
+function resolveClipboardWriter() {
+  if (process.platform === "darwin" && commandExistsInPath("pbcopy")) {
+    return { cmd: "pbcopy", args: [] };
+  }
+  if (commandExistsInPath("wl-copy")) {
+    return { cmd: "wl-copy", args: [] };
+  }
+  if (commandExistsInPath("xclip")) {
+    return { cmd: "xclip", args: ["-selection", "clipboard"] };
+  }
+  if (commandExistsInPath("xsel")) {
+    return { cmd: "xsel", args: ["--clipboard", "--input"] };
+  }
+  if (process.platform === "win32" && commandExistsInPath("clip")) {
+    return { cmd: "clip", args: [] };
+  }
+  return null;
+}
+
+function readClipboardText() {
+  const tool = resolveClipboardReader();
+  if (!tool) {
+    throw new Error("지원되는 클립보드 읽기 명령이 없습니다 (pbpaste/wl-paste/xclip/xsel 등).");
+  }
+  return execFileSync(tool.cmd, tool.args, {
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: 5 * 1024 * 1024,
+  });
+}
+
+function writeClipboardText(text) {
+  const tool = resolveClipboardWriter();
+  if (!tool) {
+    throw new Error("지원되는 클립보드 쓰기 명령이 없습니다 (pbcopy/wl-copy/xclip/xsel 등).");
+  }
+  execFileSync(tool.cmd, tool.args, {
+    input: text,
+    encoding: "utf-8",
+    stdio: ["pipe", "ignore", "pipe"],
+    maxBuffer: 5 * 1024 * 1024,
+  });
+}
+
+function collectBrowserLlmTabs() {
+  if (process.platform !== "darwin") {
+    return { tabs: [], note: "브라우저 탭 자동 스캔은 현재 macOS에서만 지원됩니다." };
+  }
+
+  const escapedDomains = DEFAULT_LLM_DOMAINS.map(d => d.replace(/"/g, '\\"'));
+  const escapedApps = DEFAULT_BROWSER_APPS.map(a => a.replace(/"/g, '\\"'));
+  const domainList = `{${escapedDomains.map(d => `"${d}"`).join(", ")}}`;
+  const appList = `{${escapedApps.map(a => `"${a}"`).join(", ")}}`;
+
+  const script = [
+    `set llmDomains to ${domainList}`,
+    `set browserApps to ${appList}`,
+    "set outText to \"\"",
+    "repeat with appName in browserApps",
+    "try",
+    "tell application (appName as string)",
+    "if it is not running then error number -128",
+    "if (appName as string) is \"Safari\" then",
+    "repeat with w in windows",
+    "repeat with t in tabs of w",
+    "set u to URL of t as string",
+    "set matched to false",
+    "repeat with d in llmDomains",
+    "if u contains (d as string) then set matched to true",
+    "end repeat",
+    "if matched then set outText to outText & (appName as string) & tab & (name of t as string) & tab & u & linefeed",
+    "end repeat",
+    "end repeat",
+    "else",
+    "repeat with w in windows",
+    "repeat with t in tabs of w",
+    "set u to URL of t as string",
+    "set matched to false",
+    "repeat with d in llmDomains",
+    "if u contains (d as string) then set matched to true",
+    "end repeat",
+    "if matched then set outText to outText & (appName as string) & tab & (title of t as string) & tab & u & linefeed",
+    "end repeat",
+    "end repeat",
+    "end if",
+    "end tell",
+    "on error errMsg",
+    "set outText to outText & (appName as string) & tab & \"ERROR\" & tab & errMsg & linefeed",
+    "end try",
+    "end repeat",
+    "return outText",
+  ];
+
+  try {
+    const raw = execFileSync("osascript", script.flatMap(line => ["-e", line]), {
+      encoding: "utf-8",
+      timeout: 8000,
+      maxBuffer: 2 * 1024 * 1024,
+    });
+    const rows = String(raw)
+      .split("\n")
+      .map(line => line.trim())
+      .filter(Boolean)
+      .map(line => {
+        const [browser = "", title = "", url = ""] = line.split("\t");
+        return { browser, title, url };
+      });
+    const tabs = rows.filter(r => r.title !== "ERROR");
+    const errors = rows.filter(r => r.title === "ERROR");
+    return {
+      tabs,
+      note: errors.length > 0
+        ? `일부 브라우저 접근 실패: ${errors.map(e => `${e.browser} (${e.url})`).join(", ")}`
+        : null,
+    };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "unknown error";
+    return {
+      tabs: [],
+      note: `브라우저 탭 스캔 실패: ${reason}. macOS 자동화 권한(터미널 -> 브라우저 제어)을 확인하세요.`,
+    };
+  }
+}
+
+function inferLlmProvider(url = "") {
+  const value = String(url).toLowerCase();
+  if (value.includes("claude.ai") || value.includes("anthropic.com")) return "claude";
+  if (value.includes("chatgpt.com") || value.includes("openai.com")) return "chatgpt";
+  if (value.includes("gemini.google.com") || value.includes("notebooklm.google.com")) return "gemini";
+  if (value.includes("copilot.microsoft.com")) return "copilot";
+  if (value.includes("perplexity.ai")) return "perplexity";
+  if (value.includes("poe.com")) return "poe";
+  if (value.includes("mistral.ai")) return "mistral";
+  if (value.includes("huggingface.co/chat")) return "huggingface";
+  if (value.includes("deepseek.com")) return "deepseek";
+  if (value.includes("qwen.ai")) return "qwen";
+  return "web-llm";
+}
+
+function collectSpeakerCandidates({ include_cli = true, include_browser = true } = {}) {
+  const candidates = [];
+  const seen = new Set();
+
+  const add = (candidate) => {
+    const speaker = normalizeSpeaker(candidate?.speaker);
+    if (!speaker || seen.has(speaker)) return;
+    seen.add(speaker);
+    candidates.push({ ...candidate, speaker });
+  };
+
+  if (include_cli) {
+    for (const cli of discoverLocalCliSpeakers()) {
+      add({
+        speaker: cli,
+        type: "cli",
+        label: cli,
+        command: cli,
+      });
+    }
+  }
+
+  let browserNote = null;
+  if (include_browser) {
+    const { tabs, note } = collectBrowserLlmTabs();
+    browserNote = note || null;
+    const providerCounts = new Map();
+    for (const tab of tabs) {
+      const provider = inferLlmProvider(tab.url);
+      const count = (providerCounts.get(provider) || 0) + 1;
+      providerCounts.set(provider, count);
+      add({
+        speaker: `web-${provider}-${count}`,
+        type: "browser",
+        provider,
+        browser: tab.browser || "",
+        title: tab.title || "",
+        url: tab.url || "",
+      });
+    }
+  }
+
+  return { candidates, browserNote };
+}
+
+function formatSpeakerCandidatesReport({ candidates, browserNote }) {
+  const cli = candidates.filter(c => c.type === "cli");
+  const browser = candidates.filter(c => c.type === "browser");
+
+  let out = "## Selectable Speakers\n\n";
+  out += "### CLI\n";
+  if (cli.length === 0) {
+    out += "- (감지된 로컬 CLI 없음)\n\n";
+  } else {
+    out += `${cli.map(c => `- \`${c.speaker}\` (command: ${c.command})`).join("\n")}\n\n`;
+  }
+
+  out += "### Browser LLM\n";
+  if (browser.length === 0) {
+    out += "- (감지된 브라우저 LLM 탭 없음)\n";
+  } else {
+    out += `${browser.map(c => `- \`${c.speaker}\` [${c.browser}] ${c.title}\n  ${c.url}`).join("\n")}\n`;
+  }
+
+  if (browserNote) {
+    out += `\n\nℹ️ ${browserNote}`;
+  }
+  return out;
+}
+
+function mapParticipantProfiles(speakers, candidates) {
+  const bySpeaker = new Map();
+  for (const c of candidates || []) {
+    const key = normalizeSpeaker(c.speaker);
+    if (key) bySpeaker.set(key, c);
+  }
+
+  const profiles = [];
+  for (const raw of speakers || []) {
+    const speaker = normalizeSpeaker(raw);
+    if (!speaker) continue;
+    const candidate = bySpeaker.get(speaker);
+    if (!candidate) {
+      profiles.push({
+        speaker,
+        type: "manual",
+      });
+      continue;
+    }
+
+    if (candidate.type === "cli") {
+      profiles.push({
+        speaker,
+        type: "cli",
+        command: candidate.command || speaker,
+      });
+      continue;
+    }
+
+    profiles.push({
+      speaker,
+      type: "browser",
+      provider: candidate.provider || null,
+      browser: candidate.browser || null,
+      title: candidate.title || null,
+      url: candidate.url || null,
+    });
+  }
+  return profiles;
+}
+
+// ── Transport routing ─────────────────────────────────────────
+
+const TRANSPORT_TYPES = {
+  cli: "cli_respond",
+  browser: "clipboard",
+  manual: "manual",
+};
+
+function resolveTransportForSpeaker(state, speaker) {
+  const normalizedSpeaker = normalizeSpeaker(speaker);
+  if (!normalizedSpeaker || !state?.participant_profiles) {
+    return { transport: "manual", reason: "no_profile" };
+  }
+  const profile = state.participant_profiles.find(
+    p => normalizeSpeaker(p.speaker) === normalizedSpeaker
+  );
+  if (!profile) {
+    return { transport: "manual", reason: "speaker_not_in_profiles" };
+  }
+  const transport = TRANSPORT_TYPES[profile.type] || "manual";
+  return { transport, profile, reason: null };
+}
+
+function formatTransportGuidance(transport, state, speaker) {
+  const sid = state.id;
+  switch (transport) {
+    case "cli_respond":
+      return `CLI speaker입니다. \`deliberation_respond(session_id: "${sid}", speaker: "${speaker}", content: "...")\`로 직접 응답하세요.`;
+    case "clipboard":
+      return `브라우저 LLM speaker입니다. 다음 순서로 진행하세요:\n1. \`deliberation_clipboard_prepare_turn(session_id: "${sid}")\` → 클립보드에 프롬프트 복사\n2. 브라우저 LLM에 붙여넣고 응답 생성\n3. 응답을 복사한 뒤 \`deliberation_clipboard_submit_turn(session_id: "${sid}", speaker: "${speaker}")\` 호출`;
+    case "manual":
+    default:
+      return `수동 speaker입니다. 응답을 직접 작성해 \`deliberation_respond(session_id: "${sid}", speaker: "${speaker}", content: "...")\`로 제출하세요.`;
+  }
+}
+
 function buildSpeakerOrder(speakers, fallbackSpeaker = DEFAULT_SPEAKERS[0], fallbackPlacement = "front") {
   const ordered = [];
   const seen = new Set();
@@ -204,7 +673,12 @@ function generateSessionId(topic) {
     .toLowerCase()
     .slice(0, 20);
   const ts = Date.now().toString(36);
-  return `${slug}-${ts}`;
+  const rand = Math.random().toString(36).slice(2, 6);
+  return `${slug}-${ts}${rand}`;
+}
+
+function generateTurnId() {
+  return `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
 // ── Context detection ──────────────────────────────────────────
@@ -271,6 +745,7 @@ function readContextFromDirs(dirs, maxChars = 15000) {
 function ensureDirs() {
   fs.mkdirSync(getSessionsDir(), { recursive: true });
   fs.mkdirSync(getArchiveDir(), { recursive: true });
+  fs.mkdirSync(getLocksDir(), { recursive: true });
 }
 
 function loadSession(sessionId) {
@@ -282,7 +757,7 @@ function loadSession(sessionId) {
 function saveSession(state) {
   ensureDirs();
   state.updated = new Date().toISOString();
-  fs.writeFileSync(getSessionFile(state.id), JSON.stringify(state, null, 2), "utf-8");
+  writeTextAtomic(getSessionFile(state.id), JSON.stringify(state, null, 2));
   syncMarkdown(state);
 }
 
@@ -318,10 +793,10 @@ function syncMarkdown(state) {
   const filename = `deliberation-${state.id}.md`;
   const mdPath = path.join(process.cwd(), filename);
   try {
-    fs.writeFileSync(mdPath, stateToMarkdown(state), "utf-8");
+    writeTextAtomic(mdPath, stateToMarkdown(state));
   } catch {
     const fallback = path.join(getProjectStateDir(), filename);
-    fs.writeFileSync(fallback, stateToMarkdown(state), "utf-8");
+    writeTextAtomic(fallback, stateToMarkdown(state));
   }
 }
 
@@ -357,6 +832,12 @@ tags: [deliberation]
   md += `## Debate Log\n\n`;
   for (const entry of s.log) {
     md += `### ${entry.speaker} — Round ${entry.round}\n\n`;
+    if (entry.channel_used || entry.fallback_reason) {
+      const parts = [];
+      if (entry.channel_used) parts.push(`channel: ${entry.channel_used}`);
+      if (entry.fallback_reason) parts.push(`fallback: ${entry.fallback_reason}`);
+      md += `> _${parts.join(" | ")}_\n\n`;
+    }
     md += `${entry.content}\n\n---\n\n`;
   }
   return md;
@@ -371,7 +852,7 @@ function archiveState(state) {
   const ts = new Date().toISOString().slice(0, 16).replace(/:/g, "");
   const filename = `deliberation-${ts}-${slug}.md`;
   const dest = path.join(getArchiveDir(), filename);
-  fs.writeFileSync(dest, stateToMarkdown(state), "utf-8");
+  writeTextAtomic(dest, stateToMarkdown(state));
   return dest;
 }
 
@@ -667,11 +1148,155 @@ function multipleSessionsError() {
   return `여러 활성 세션이 있습니다. session_id를 지정하세요:\n\n${list}`;
 }
 
+function formatRecentLogForPrompt(state, maxEntries = 4) {
+  const entries = Array.isArray(state.log) ? state.log.slice(-Math.max(0, maxEntries)) : [];
+  if (entries.length === 0) {
+    return "(아직 이전 응답 없음)";
+  }
+  return entries.map(e => {
+    const content = String(e.content || "").trim();
+    return `- ${e.speaker} (Round ${e.round})\n${content}`;
+  }).join("\n\n");
+}
+
+function buildClipboardTurnPrompt(state, speaker, prompt, includeHistoryEntries = 4) {
+  const recent = formatRecentLogForPrompt(state, includeHistoryEntries);
+  const extraPrompt = prompt ? `\n[추가 지시]\n${prompt}\n` : "";
+  return `[deliberation_turn_request]
+session_id: ${state.id}
+project: ${state.project}
+topic: ${state.topic}
+round: ${state.current_round}/${state.max_rounds}
+target_speaker: ${speaker}
+required_turn: ${state.current_speaker}
+
+[recent_log]
+${recent}
+[/recent_log]${extraPrompt}
+
+[response_rule]
+- 위 토론 맥락을 반영해 ${speaker}의 이번 턴 응답만 작성
+- 마크다운 본문만 출력 (불필요한 머리말/꼬리말 금지)
+[/response_rule]
+[/deliberation_turn_request]
+`;
+}
+
+function submitDeliberationTurn({ session_id, speaker, content, turn_id, channel_used, fallback_reason }) {
+  const resolved = resolveSessionId(session_id);
+  if (!resolved) {
+    return { content: [{ type: "text", text: "활성 deliberation이 없습니다." }] };
+  }
+  if (resolved === "MULTIPLE") {
+    return { content: [{ type: "text", text: multipleSessionsError() }] };
+  }
+
+  return withSessionLock(resolved, () => {
+    const state = loadSession(resolved);
+    if (!state || state.status !== "active") {
+      return { content: [{ type: "text", text: `세션 "${resolved}"이 활성 상태가 아닙니다.` }] };
+    }
+
+    const normalizedSpeaker = normalizeSpeaker(speaker);
+    if (!normalizedSpeaker) {
+      return { content: [{ type: "text", text: "speaker 값이 비어 있습니다. 응답자 이름을 지정하세요." }] };
+    }
+
+    state.speakers = buildSpeakerOrder(state.speakers, state.current_speaker, "end");
+    const normalizedCurrentSpeaker = normalizeSpeaker(state.current_speaker);
+    if (!normalizedCurrentSpeaker || !state.speakers.includes(normalizedCurrentSpeaker)) {
+      state.current_speaker = state.speakers[0];
+    } else {
+      state.current_speaker = normalizedCurrentSpeaker;
+    }
+
+    if (state.current_speaker !== normalizedSpeaker) {
+      return {
+        content: [{
+          type: "text",
+          text: `[${state.id}] 지금은 **${state.current_speaker}** 차례입니다. ${normalizedSpeaker}는 대기하세요.`,
+        }],
+      };
+    }
+
+    // turn_id 검증 (선택적 — 제공 시 반드시 일치해야 함)
+    if (turn_id && state.pending_turn_id && turn_id !== state.pending_turn_id) {
+      return {
+        content: [{
+          type: "text",
+          text: `[${state.id}] turn_id 불일치. 예상: "${state.pending_turn_id}", 수신: "${turn_id}". 오래된 요청이거나 중복 제출일 수 있습니다.`,
+        }],
+      };
+    }
+
+    state.log.push({
+      round: state.current_round,
+      speaker: normalizedSpeaker,
+      content,
+      timestamp: new Date().toISOString(),
+      turn_id: state.pending_turn_id || null,
+      channel_used: channel_used || null,
+      fallback_reason: fallback_reason || null,
+    });
+
+    const idx = state.speakers.indexOf(normalizedSpeaker);
+    const nextIdx = (idx + 1) % state.speakers.length;
+    state.current_speaker = state.speakers[nextIdx];
+
+    if (nextIdx === 0) {
+      if (state.current_round >= state.max_rounds) {
+        state.status = "awaiting_synthesis";
+        state.current_speaker = "none";
+        saveSession(state);
+        return {
+          content: [{
+            type: "text",
+            text: `✅ [${state.id}] ${normalizedSpeaker} Round ${state.log[state.log.length - 1].round} 완료.\n\n🏁 **모든 라운드 종료!**\ndeliberation_synthesize(session_id: "${state.id}")로 합성 보고서를 작성하세요.`,
+          }],
+        };
+      }
+      state.current_round += 1;
+    }
+
+    if (state.status === "active") {
+      state.pending_turn_id = generateTurnId();
+    }
+
+    saveSession(state);
+    return {
+      content: [{
+        type: "text",
+        text: `✅ [${state.id}] ${normalizedSpeaker} Round ${state.log[state.log.length - 1].round} 완료.\n\n**다음:** ${state.current_speaker} (Round ${state.current_round})`,
+      }],
+    };
+  });
+}
+
 // ── MCP Server ─────────────────────────────────────────────────
+
+process.on("uncaughtException", (error) => {
+  const message = formatRuntimeError(error);
+  appendRuntimeLog("UNCAUGHT_EXCEPTION", message);
+  try {
+    process.stderr.write(`[mcp-deliberation] uncaughtException: ${message}\n`);
+  } catch {
+    // ignore stderr write failures
+  }
+});
+
+process.on("unhandledRejection", (reason) => {
+  const message = formatRuntimeError(reason);
+  appendRuntimeLog("UNHANDLED_REJECTION", message);
+  try {
+    process.stderr.write(`[mcp-deliberation] unhandledRejection: ${message}\n`);
+  } catch {
+    // ignore stderr write failures
+  }
+});
 
 const server = new McpServer({
   name: "mcp-deliberation",
-  version: "2.0.0",
+  version: "2.3.0",
 });
 
 server.tool(
@@ -680,21 +1305,38 @@ server.tool(
   {
     topic: z.string().describe("토론 주제"),
     rounds: z.number().default(3).describe("라운드 수 (기본 3)"),
-    first_speaker: z.string().trim().min(1).max(64).optional().describe("첫 발언자 CLI 이름 (미지정 시 speakers의 첫 항목)"),
-    speakers: z.array(z.string().trim().min(1).max(64)).min(1).optional().describe("참가자 CLI 이름 목록 (생략 시 로컬 CLI 자동 탐색)"),
-    auto_discover_speakers: z.boolean().default(true).describe("speakers 생략 시 PATH 기반 자동 탐색 여부"),
+    first_speaker: z.string().trim().min(1).max(64).optional().describe("첫 발언자 이름 (미지정 시 speakers의 첫 항목)"),
+    speakers: z.array(z.string().trim().min(1).max(64)).min(1).optional().describe("참가자 이름 목록 (예: codex, claude, web-chatgpt-1)"),
+    require_manual_speakers: z.boolean().default(true).describe("true면 speakers를 반드시 직접 지정해야 시작"),
+    auto_discover_speakers: z.boolean().default(false).describe("speakers 생략 시 PATH 기반 자동 탐색 여부 (require_manual_speakers=false일 때만 사용)"),
   },
-  async ({ topic, rounds, first_speaker, speakers, auto_discover_speakers }) => {
+  safeToolHandler("deliberation_start", async ({ topic, rounds, first_speaker, speakers, require_manual_speakers, auto_discover_speakers }) => {
     const sessionId = generateSessionId(topic);
     const hasManualSpeakers = Array.isArray(speakers) && speakers.length > 0;
+    const candidateSnapshot = collectSpeakerCandidates({ include_cli: true, include_browser: true });
+
+    if (!hasManualSpeakers && require_manual_speakers) {
+      const candidateText = formatSpeakerCandidatesReport(candidateSnapshot);
+      return {
+        content: [{
+          type: "text",
+          text: `스피커를 직접 선택해야 deliberation을 시작할 수 있습니다.\n\n${candidateText}\n\n예시:\n\ndeliberation_start(\n  topic: "${topic.replace(/"/g, '\\"')}",\n  rounds: ${rounds},\n  speakers: ["codex", "web-claude-1", "web-chatgpt-1"],\n  first_speaker: "codex"\n)\n\n먼저 deliberation_speaker_candidates를 호출해 현재 선택 가능한 스피커를 확인하세요.`,
+        }],
+      };
+    }
+
     const autoDiscoveredSpeakers = (!hasManualSpeakers && auto_discover_speakers)
       ? discoverLocalCliSpeakers()
       : [];
-    const selectedSpeakers = hasManualSpeakers
+    const selectedSpeakers = dedupeSpeakers(hasManualSpeakers
       ? speakers
-      : autoDiscoveredSpeakers;
+      : autoDiscoveredSpeakers);
+    const callerSpeaker = (!hasManualSpeakers && !first_speaker)
+      ? detectCallerSpeaker()
+      : null;
 
     const normalizedFirstSpeaker = normalizeSpeaker(first_speaker)
+      || normalizeSpeaker(hasManualSpeakers ? selectedSpeakers?.[0] : callerSpeaker)
       || normalizeSpeaker(selectedSpeakers?.[0])
       || DEFAULT_SPEAKERS[0];
     const speakerOrder = buildSpeakerOrder(selectedSpeakers, normalizedFirstSpeaker, "front");
@@ -711,34 +1353,68 @@ server.tool(
       current_round: 1,
       current_speaker: normalizedFirstSpeaker,
       speakers: speakerOrder,
+      participant_profiles: mapParticipantProfiles(speakerOrder, candidateSnapshot.candidates),
       log: [],
       synthesis: null,
+      pending_turn_id: generateTurnId(),
       monitor_terminal_window_ids: [],
       created: new Date().toISOString(),
       updated: new Date().toISOString(),
     };
-    saveSession(state);
+    withSessionLock(sessionId, () => {
+      saveSession(state);
+    });
 
     const active = listActiveSessions();
     const tmuxOpened = spawnMonitorTerminal(sessionId);
     const terminalWindowIds = tmuxOpened ? openPhysicalTerminal(sessionId) : [];
     const physicalOpened = terminalWindowIds.length > 0;
     if (physicalOpened) {
+      withSessionLock(sessionId, () => {
+        const latest = loadSession(sessionId);
+        if (!latest) return;
+        latest.monitor_terminal_window_ids = terminalWindowIds;
+        saveSession(latest);
+      });
       state.monitor_terminal_window_ids = terminalWindowIds;
-      saveSession(state);
     }
     const terminalMsg = !tmuxOpened
       ? `\n⚠️ tmux를 찾을 수 없어 모니터 터미널 미생성`
       : physicalOpened
         ? `\n🖥️ 모니터 터미널 강제 오픈됨 (Terminal): tmux attach -t ${TMUX_SESSION}`
         : `\n⚠️ tmux 윈도우는 생성됐지만 Terminal 자동 오픈 실패. 수동 실행: tmux attach -t ${TMUX_SESSION}`;
+    const manualNotDetected = hasManualSpeakers
+      ? speakerOrder.filter(s => !candidateSnapshot.candidates.some(c => c.speaker === s))
+      : [];
+    const detectWarning = manualNotDetected.length > 0
+      ? `\n\n⚠️ 현재 환경에서 즉시 검출되지 않은 speaker: ${manualNotDetected.join(", ")}\n(수동 지정으로는 참가 가능)`
+      : "";
+
+    const transportSummary = state.participant_profiles.map(p => {
+      const { transport } = resolveTransportForSpeaker(state, p.speaker);
+      return `  - \`${p.speaker}\`: ${transport} (${p.type})`;
+    }).join("\n");
 
     return {
       content: [{
         type: "text",
-        text: `✅ Deliberation 시작!\n\n**세션:** ${sessionId}\n**프로젝트:** ${state.project}\n**주제:** ${topic}\n**라운드:** ${rounds}\n**참가자 구성:** ${participantMode}\n**참가자:** ${speakerOrder.join(", ")}\n**첫 발언:** ${state.current_speaker}\n**동시 진행 세션:** ${active.length}개${terminalMsg}\n\n💡 이후 도구 호출 시 session_id: "${sessionId}" 를 사용하세요.`,
+        text: `✅ Deliberation 시작!\n\n**세션:** ${sessionId}\n**프로젝트:** ${state.project}\n**주제:** ${topic}\n**라운드:** ${rounds}\n**참가자 구성:** ${participantMode}\n**참가자:** ${speakerOrder.join(", ")}\n**첫 발언:** ${state.current_speaker}\n**동시 진행 세션:** ${active.length}개${terminalMsg}${detectWarning}\n\n**Transport 라우팅:**\n${transportSummary}\n\n💡 이후 도구 호출 시 session_id: "${sessionId}" 를 사용하세요.`,
       }],
     };
+  })
+);
+
+server.tool(
+  "deliberation_speaker_candidates",
+  "사용자가 선택 가능한 스피커 후보(로컬 CLI + 브라우저 LLM 탭)를 조회합니다.",
+  {
+    include_cli: z.boolean().default(true).describe("로컬 CLI 후보 포함"),
+    include_browser: z.boolean().default(true).describe("브라우저 LLM 탭 후보 포함"),
+  },
+  async ({ include_cli, include_browser }) => {
+    const snapshot = collectSpeakerCandidates({ include_cli, include_browser });
+    const text = formatSpeakerCandidatesReport(snapshot);
+    return { content: [{ type: "text", text: `${text}\n\n${PRODUCT_DISCLAIMER}` }] };
   }
 );
 
@@ -806,14 +1482,32 @@ server.tool(
 );
 
 server.tool(
-  "deliberation_respond",
-  "현재 턴의 응답을 제출합니다.",
+  "deliberation_browser_llm_tabs",
+  "현재 브라우저에서 열려 있는 LLM 탭(chatgpt/claude/gemini 등)을 조회합니다.",
+  {},
+  async () => {
+    const { tabs, note } = collectBrowserLlmTabs();
+    if (tabs.length === 0) {
+      const suffix = note ? `\n\n${note}` : "";
+      return { content: [{ type: "text", text: `감지된 LLM 탭이 없습니다.${suffix}` }] };
+    }
+
+    const lines = tabs.map((t, i) => `${i + 1}. [${t.browser}] ${t.title}\n   ${t.url}`).join("\n");
+    const noteLine = note ? `\n\nℹ️ ${note}` : "";
+    return { content: [{ type: "text", text: `## Browser LLM Tabs\n\n${lines}${noteLine}\n\n${PRODUCT_DISCLAIMER}` }] };
+  }
+);
+
+server.tool(
+  "deliberation_clipboard_prepare_turn",
+  "현재 턴 요청 프롬프트를 생성해 클립보드에 복사합니다. 브라우저 LLM에 붙여넣어 사용하세요.",
   {
     session_id: z.string().optional().describe("세션 ID (여러 세션 진행 중이면 필수)"),
-    speaker: z.string().trim().min(1).max(64).describe("응답자 CLI 이름"),
-    content: z.string().describe("응답 내용 (마크다운)"),
+    speaker: z.string().trim().min(1).max(64).optional().describe("대상 speaker (미지정 시 현재 차례)"),
+    prompt: z.string().optional().describe("브라우저 LLM에 추가로 전달할 지시"),
+    include_history_entries: z.number().int().min(0).max(12).default(4).describe("프롬프트에 포함할 최근 로그 개수"),
   },
-  async ({ session_id, speaker, content }) => {
+  async ({ session_id, speaker, prompt, include_history_entries }) => {
     const resolved = resolveSessionId(session_id);
     if (!resolved) {
       return { content: [{ type: "text", text: "활성 deliberation이 없습니다." }] };
@@ -827,62 +1521,132 @@ server.tool(
       return { content: [{ type: "text", text: `세션 "${resolved}"이 활성 상태가 아닙니다.` }] };
     }
 
-    const normalizedSpeaker = normalizeSpeaker(speaker);
-    if (!normalizedSpeaker) {
-      return { content: [{ type: "text", text: "speaker 값이 비어 있습니다. CLI 이름을 지정하세요." }] };
-    }
-
-    state.speakers = buildSpeakerOrder(state.speakers, state.current_speaker, "end");
-    const normalizedCurrentSpeaker = normalizeSpeaker(state.current_speaker);
-    if (!normalizedCurrentSpeaker || !state.speakers.includes(normalizedCurrentSpeaker)) {
-      state.current_speaker = state.speakers[0];
-    } else {
-      state.current_speaker = normalizedCurrentSpeaker;
-    }
-
-    if (state.current_speaker !== normalizedSpeaker) {
+    const targetSpeaker = normalizeSpeaker(speaker) || normalizeSpeaker(state.current_speaker) || state.speakers[0];
+    if (targetSpeaker !== state.current_speaker) {
       return {
         content: [{
           type: "text",
-          text: `[${state.id}] 지금은 **${state.current_speaker}** 차례입니다. ${normalizedSpeaker}는 대기하세요.`,
+          text: `[${state.id}] 지금은 **${state.current_speaker}** 차례입니다. prepare 대상 speaker는 현재 차례와 같아야 합니다.`,
         }],
       };
     }
 
-    state.log.push({
-      round: state.current_round,
-      speaker: normalizedSpeaker,
-      content,
-      timestamp: new Date().toISOString(),
-    });
-
-    const idx = state.speakers.indexOf(normalizedSpeaker);
-    const nextIdx = (idx + 1) % state.speakers.length;
-    state.current_speaker = state.speakers[nextIdx];
-
-    if (nextIdx === 0) {
-      if (state.current_round >= state.max_rounds) {
-        state.status = "awaiting_synthesis";
-        state.current_speaker = "none";
-        saveSession(state);
-        return {
-          content: [{
-            type: "text",
-            text: `✅ [${state.id}] ${normalizedSpeaker} Round ${state.log[state.log.length - 1].round} 완료.\n\n🏁 **모든 라운드 종료!**\ndeliberation_synthesize(session_id: "${state.id}")로 합성 보고서를 작성하세요.`,
-          }],
-        };
-      }
-      state.current_round += 1;
+    const payload = buildClipboardTurnPrompt(state, targetSpeaker, prompt, include_history_entries);
+    try {
+      writeClipboardText(payload);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "unknown error";
+      return { content: [{ type: "text", text: `클립보드 복사 실패: ${message}` }] };
     }
 
-    saveSession(state);
     return {
       content: [{
         type: "text",
-        text: `✅ [${state.id}] ${normalizedSpeaker} Round ${state.log[state.log.length - 1].round} 완료.\n\n**다음:** ${state.current_speaker} (Round ${state.current_round})`,
+        text: `✅ [${state.id}] 턴 프롬프트를 클립보드에 복사했습니다.\n\n**대상 speaker:** ${targetSpeaker}\n**라운드:** ${state.current_round}/${state.max_rounds}\n\n다음 단계:\n1. 브라우저 LLM에 붙여넣고 응답 생성\n2. 응답 본문을 복사\n3. deliberation_clipboard_submit_turn(session_id: "${state.id}", speaker: "${targetSpeaker}") 호출\n\n${PRODUCT_DISCLAIMER}`,
       }],
     };
   }
+);
+
+server.tool(
+  "deliberation_clipboard_submit_turn",
+  "클립보드 텍스트(또는 content)를 현재 턴 응답으로 제출합니다.",
+  {
+    session_id: z.string().optional().describe("세션 ID (여러 세션 진행 중이면 필수)"),
+    speaker: z.string().trim().min(1).max(64).describe("응답자 이름"),
+    content: z.string().optional().describe("응답 내용 (미지정 시 클립보드 텍스트 사용)"),
+    trim_content: z.boolean().default(false).describe("응답 앞뒤 공백 제거 여부"),
+    turn_id: z.string().optional().describe("턴 검증 ID"),
+  },
+  safeToolHandler("deliberation_clipboard_submit_turn", async ({ session_id, speaker, content, trim_content, turn_id }) => {
+    let body = content;
+    if (typeof body !== "string") {
+      try {
+        body = readClipboardText();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "unknown error";
+        return { content: [{ type: "text", text: `클립보드 읽기 실패: ${message}` }] };
+      }
+    }
+
+    if (trim_content) {
+      body = body.trim();
+    }
+    if (!body || body.trim().length === 0) {
+      return { content: [{ type: "text", text: "제출할 응답이 비어 있습니다. 클립보드 또는 content를 확인하세요." }] };
+    }
+
+    return submitDeliberationTurn({ session_id, speaker, content: body, turn_id, channel_used: "clipboard" });
+  })
+);
+
+server.tool(
+  "deliberation_route_turn",
+  "현재 턴의 speaker에 맞는 transport를 자동 결정하고 안내합니다. CLI speaker는 자동 응답 경로, 브라우저 speaker는 클립보드 경로로 라우팅합니다.",
+  {
+    session_id: z.string().optional().describe("세션 ID (여러 세션 진행 중이면 필수)"),
+    auto_prepare_clipboard: z.boolean().default(true).describe("브라우저 speaker일 때 자동으로 클립보드 prepare 실행"),
+    prompt: z.string().optional().describe("브라우저 LLM에 추가로 전달할 지시"),
+    include_history_entries: z.number().int().min(0).max(12).default(4).describe("프롬프트에 포함할 최근 로그 개수"),
+  },
+  safeToolHandler("deliberation_route_turn", async ({ session_id, auto_prepare_clipboard, prompt, include_history_entries }) => {
+    const resolved = resolveSessionId(session_id);
+    if (!resolved) {
+      return { content: [{ type: "text", text: "활성 deliberation이 없습니다." }] };
+    }
+    if (resolved === "MULTIPLE") {
+      return { content: [{ type: "text", text: multipleSessionsError() }] };
+    }
+
+    const state = loadSession(resolved);
+    if (!state || state.status !== "active") {
+      return { content: [{ type: "text", text: `세션 "${resolved}"이 활성 상태가 아닙니다.` }] };
+    }
+
+    const speaker = state.current_speaker;
+    const { transport, profile, reason } = resolveTransportForSpeaker(state, speaker);
+    const guidance = formatTransportGuidance(transport, state, speaker);
+    const turnId = state.pending_turn_id || null;
+
+    let extra = "";
+
+    if (transport === "clipboard" && auto_prepare_clipboard) {
+      // 자동으로 클립보드 prepare 실행
+      const payload = buildClipboardTurnPrompt(state, speaker, prompt, include_history_entries);
+      try {
+        writeClipboardText(payload);
+        extra = `\n\n✅ 클립보드에 턴 프롬프트가 자동 복사되었습니다.`;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "unknown error";
+        extra = `\n\n⚠️ 클립보드 자동 복사 실패: ${message}\n수동으로 deliberation_clipboard_prepare_turn을 호출하세요.`;
+      }
+    }
+
+    const profileInfo = profile
+      ? `\n**프로필:** ${profile.type}${profile.url ? ` | ${profile.url}` : ""}${profile.command ? ` | command: ${profile.command}` : ""}`
+      : "";
+
+    return {
+      content: [{
+        type: "text",
+        text: `## 턴 라우팅 — ${state.id}\n\n**현재 speaker:** ${speaker}\n**Transport:** ${transport}${reason ? ` (fallback: ${reason})` : ""}${profileInfo}\n**Turn ID:** ${turnId || "(없음)"}\n**라운드:** ${state.current_round}/${state.max_rounds}\n\n${guidance}${extra}\n\n${PRODUCT_DISCLAIMER}`,
+      }],
+    };
+  })
+);
+
+server.tool(
+  "deliberation_respond",
+  "현재 턴의 응답을 제출합니다.",
+  {
+    session_id: z.string().optional().describe("세션 ID (여러 세션 진행 중이면 필수)"),
+    speaker: z.string().trim().min(1).max(64).describe("응답자 이름"),
+    content: z.string().describe("응답 내용 (마크다운)"),
+    turn_id: z.string().optional().describe("턴 검증 ID (deliberation_route_turn에서 받은 값)"),
+  },
+  safeToolHandler("deliberation_respond", async ({ session_id, speaker, content, turn_id }) => {
+    return submitDeliberationTurn({ session_id, speaker, content, turn_id, channel_used: "cli_respond" });
+  })
 );
 
 server.tool(
@@ -929,7 +1693,7 @@ server.tool(
     session_id: z.string().optional().describe("세션 ID (여러 세션 진행 중이면 필수)"),
     synthesis: z.string().describe("합성 보고서 (마크다운)"),
   },
-  async ({ session_id, synthesis }) => {
+  safeToolHandler("deliberation_synthesize", async ({ session_id, synthesis }) => {
     const resolved = resolveSessionId(session_id);
     if (!resolved) {
       return { content: [{ type: "text", text: "활성 deliberation이 없습니다." }] };
@@ -938,17 +1702,25 @@ server.tool(
       return { content: [{ type: "text", text: multipleSessionsError() }] };
     }
 
-    const state = loadSession(resolved);
-    if (!state) {
-      return { content: [{ type: "text", text: `세션 "${resolved}"을 찾을 수 없습니다.` }] };
+    let state = null;
+    let archivePath = null;
+    const lockedResult = withSessionLock(resolved, () => {
+      const loaded = loadSession(resolved);
+      if (!loaded) {
+        return { content: [{ type: "text", text: `세션 "${resolved}"을 찾을 수 없습니다.` }] };
+      }
+
+      loaded.synthesis = synthesis;
+      loaded.status = "completed";
+      loaded.current_speaker = "none";
+      saveSession(loaded);
+      archivePath = archiveState(loaded);
+      state = loaded;
+      return null;
+    });
+    if (lockedResult) {
+      return lockedResult;
     }
-
-    state.synthesis = synthesis;
-    state.status = "completed";
-    state.current_speaker = "none";
-    saveSession(state);
-
-    const archivePath = archiveState(state);
 
     // 토론 종료 즉시 모니터 터미널(물리 Terminal 포함) 강제 종료
     closeMonitorTerminal(state.id, getSessionWindowIds(state));
@@ -959,7 +1731,7 @@ server.tool(
         text: `✅ [${state.id}] Deliberation 완료!\n\n**프로젝트:** ${state.project}\n**주제:** ${state.topic}\n**라운드:** ${state.max_rounds}\n**응답:** ${state.log.length}건\n\n📁 ${archivePath}\n🖥️ 모니터 터미널이 즉시 강제 종료되었습니다.`,
       }],
     };
-  }
+  })
 );
 
 server.tool(
@@ -992,63 +1764,82 @@ server.tool(
   {
     session_id: z.string().optional().describe("초기화할 세션 ID (미지정 시 전체 초기화)"),
   },
-  async ({ session_id }) => {
+  safeToolHandler("deliberation_reset", async ({ session_id }) => {
     ensureDirs();
     const sessionsDir = getSessionsDir();
 
     if (session_id) {
       // 특정 세션만 초기화
-      const file = getSessionFile(session_id);
-      if (fs.existsSync(file)) {
+      let toCloseIds = [];
+      const result = withSessionLock(session_id, () => {
+        const file = getSessionFile(session_id);
+        if (!fs.existsSync(file)) {
+          return { content: [{ type: "text", text: `세션 "${session_id}"을 찾을 수 없습니다.` }] };
+        }
         const state = loadSession(session_id);
         if (state && state.log.length > 0) {
           archiveState(state);
         }
+        toCloseIds = getSessionWindowIds(state);
         fs.unlinkSync(file);
-        closeMonitorTerminal(session_id, getSessionWindowIds(state));
         return { content: [{ type: "text", text: `✅ 세션 "${session_id}" 초기화 완료. 🖥️ 모니터 터미널 닫힘.` }] };
+      });
+      if (toCloseIds.length > 0) {
+        closeMonitorTerminal(session_id, toCloseIds);
       }
-      return { content: [{ type: "text", text: `세션 "${session_id}"을 찾을 수 없습니다.` }] };
+      return result;
     }
 
     // 전체 초기화
-    if (!fs.existsSync(sessionsDir)) {
+    const resetResult = withProjectLock(() => {
+      if (!fs.existsSync(sessionsDir)) {
+        return { files: [], archived: 0, terminalWindowIds: [], noSessions: true };
+      }
+
+      const files = fs.readdirSync(sessionsDir).filter(f => f.endsWith(".json"));
+      let archived = 0;
+      const terminalWindowIds = [];
+
+      for (const f of files) {
+        const filePath = path.join(sessionsDir, f);
+        try {
+          const state = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+          for (const id of getSessionWindowIds(state)) {
+            terminalWindowIds.push(id);
+          }
+          if (state.log && state.log.length > 0) {
+            archiveState(state);
+            archived++;
+          }
+          fs.unlinkSync(filePath);
+        } catch {
+          try {
+            fs.unlinkSync(filePath);
+          } catch {
+            // ignore deletion race
+          }
+        }
+      }
+
+      return { files, archived, terminalWindowIds, noSessions: false };
+    });
+
+    if (resetResult.noSessions) {
       return { content: [{ type: "text", text: "초기화할 세션이 없습니다." }] };
     }
 
-    const files = fs.readdirSync(sessionsDir).filter(f => f.endsWith(".json"));
-    let archived = 0;
-    const terminalWindowIds = [];
-    for (const f of files) {
-      const filePath = path.join(sessionsDir, f);
-      try {
-        const state = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-        for (const id of getSessionWindowIds(state)) {
-          terminalWindowIds.push(id);
-        }
-        if (state.log && state.log.length > 0) {
-          archiveState(state);
-          archived++;
-        }
-        fs.unlinkSync(filePath);
-      } catch {
-        fs.unlinkSync(filePath);
-      }
-    }
-
-    for (const windowId of terminalWindowIds) {
+    for (const windowId of resetResult.terminalWindowIds) {
       closePhysicalTerminal(windowId);
     }
-
     closeAllMonitorTerminals();
 
     return {
       content: [{
         type: "text",
-        text: `✅ 전체 초기화 완료. ${files.length}개 세션 삭제, ${archived}개 아카이브됨. 🖥️ 모든 모니터 터미널 닫힘.`,
+        text: `✅ 전체 초기화 완료. ${resetResult.files.length}개 세션 삭제, ${resetResult.archived}개 아카이브됨. 🖥️ 모든 모니터 터미널 닫힘.`,
       }],
     };
-  }
+  })
 );
 
 // ── Start ──────────────────────────────────────────────────────

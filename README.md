@@ -136,8 +136,12 @@ The deliberation server provides these tools:
 
 | Tool | Purpose |
 |------|---------|
-| `deliberation_start` | Start new debate session, returns session_id |
+| `deliberation_speaker_candidates` | List selectable speakers from local CLIs and open browser LLM tabs |
+| `deliberation_start` | Start new debate session with user-selected speakers, returns session_id |
 | `deliberation_respond` | Submit turn response |
+| `deliberation_browser_llm_tabs` | Inspect open browser LLM tabs |
+| `deliberation_clipboard_prepare_turn` | Copy current-turn prompt for browser LLM |
+| `deliberation_clipboard_submit_turn` | Submit clipboard/browser response as a turn |
 | `deliberation_context` | Load project context |
 | `deliberation_list_active` | List active sessions |
 | `deliberation_status` | Check session status |
@@ -154,11 +158,16 @@ Example workflow:
 
 # In CLI A:
 # > "deliberation: API design - REST vs GraphQL?"
-# MCP Server: deliberation_start(topic="...", speakers=["claude","codex","gemini"]) returns session_id
+# 1) Find selectable participants (CLI + browser LLM tabs)
+# deliberation_speaker_candidates()
+# 2) Start with manually selected speakers
+# deliberation_start(topic="...", speakers=["codex","web-claude-1","web-chatgpt-1"], first_speaker="codex")
 # Submit turns with deliberate speakers:
-# deliberation_respond session_id=sess_12345 speaker=claude
-# deliberation_respond session_id=sess_12345 speaker=gemini
 # deliberation_respond session_id=sess_12345 speaker=codex
+# Browser turn flow:
+# deliberation_clipboard_prepare_turn session_id=sess_12345 speaker=web-claude-1
+# (paste into browser LLM, copy response)
+# deliberation_clipboard_submit_turn session_id=sess_12345 speaker=web-claude-1
 # After rounds complete:
 # deliberation_synthesize session_id=sess_12345
 ```
@@ -262,6 +271,19 @@ direnv allow
 2. Check installation: `ls ~/.local/lib/mcp-deliberation/`
 3. Restart Claude Code
 4. Review MCP server logs in Claude Code console
+
+### MCP `Transport closed` in multi-session use
+
+1. Restart the current CLI session first (stdio transport is session-bound).
+2. Avoid killing deliberation with `pkill -f mcp-deliberation`; this can terminate other active sessions.
+3. Keep one active CLI tab per long-running deliberation workflow when possible.
+4. Check runtime log: `tail -n 120 ~/.local/lib/mcp-deliberation/runtime.log`
+5. Confirm lock directory exists: `ls ~/.local/lib/mcp-deliberation/state/<project>/.locks`
+
+Multi-session stability in v2.3 uses:
+- Session/project lock files (`.locks/`) to serialize writes
+- Atomic file writes for session/markdown persistence
+- Safe tool handlers + uncaught error logging to keep server process alive
 
 ### Environment variables not loading
 
