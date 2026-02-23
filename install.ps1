@@ -46,30 +46,8 @@ if (-not $npmCmd) {
 if (Get-Command tmux -ErrorAction SilentlyContinue) {
   Write-Info "tmux found (deliberation monitor can run in tmux)"
 } else {
-  Write-Info "tmux not found. Attempting to install..."
-  $tmuxInstalled = $false
-  if (Get-Command choco -ErrorAction SilentlyContinue) {
-    try {
-      choco install tmux -y | Out-Null
-      $tmuxInstalled = $true
-    } catch {}
-  } elseif (Get-Command scoop -ErrorAction SilentlyContinue) {
-    try {
-      scoop install tmux | Out-Null
-      $tmuxInstalled = $true
-    } catch {}
-  } elseif (Get-Command winget -ErrorAction SilentlyContinue) {
-    try {
-      winget install tmux --accept-source-agreements --accept-package-agreements | Out-Null
-      $tmuxInstalled = $true
-    } catch {}
-  }
-  if ($tmuxInstalled) {
-    Write-Info "tmux installed successfully"
-  } else {
-    Write-Warn "tmux not installed. Install manually via choco/scoop/winget, or use WSL."
-    Write-Warn "Deliberation monitor auto-window is disabled."
-  }
+  Write-Warn "tmux is not natively available on Windows. Deliberation monitor auto-window is disabled."
+  Write-Warn "This does not affect deliberation functionality. tmux is optional (macOS/Linux only)."
 }
 
 if (Get-Command claude -ErrorAction SilentlyContinue) {
