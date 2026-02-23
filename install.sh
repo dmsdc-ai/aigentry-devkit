@@ -220,9 +220,26 @@ else
   warn "direnv not found. Skipping .envrc setup."
 fi
 
-# ── Codex MCP 등록 (가능하면) ──
-header "7. Codex Integration (optional)"
+# ── 참가자 CLI MCP 등록 ──
+header "7. Participant CLI Integration"
 
+# 지원하는 CLI 목록 (MCP 등록 가능한 것들)
+MCP_CAPABLE_CLIS="codex"
+DETECTED_CLIS=""
+
+for cli in claude codex gemini qwen chatgpt aider llm opencode cursor; do
+  if command -v "$cli" >/dev/null 2>&1; then
+    DETECTED_CLIS="$DETECTED_CLIS $cli"
+  fi
+done
+
+if [ -n "$DETECTED_CLIS" ]; then
+  info "Detected participant CLIs:$DETECTED_CLIS"
+else
+  warn "No participant CLIs detected. Install claude, codex, gemini, or other AI CLIs."
+fi
+
+# Codex MCP 등록 (codex만 자체 MCP 등록 지원)
 if command -v codex >/dev/null 2>&1; then
   codex mcp add deliberation -- node "$MCP_DEST/index.js" 2>/dev/null && \
     info "Registered deliberation MCP in Codex" || \
@@ -233,14 +250,13 @@ if command -v codex >/dev/null 2>&1; then
   else
     warn "Codex MCP verification failed. Run manually: codex mcp add deliberation -- node $MCP_DEST/index.js"
   fi
-else
-  warn "Codex CLI not found. Skipping Codex integration."
 fi
 
 header "8. Cross-platform Notes"
-info "Codex is a deliberation participant CLI, not a separate MCP server."
+info "Supported participant CLIs: claude, codex, gemini, qwen, chatgpt, aider, llm, opencode, cursor"
+info "CLIs are auto-detected at deliberation start. No manual config needed."
 info "Browser LLM tab detection: macOS automation + CDP scan (Linux/Windows need browser remote-debugging port)."
-info "If browser tab auto-scan is unavailable, use clipboard workflow: prepare_turn -> paste in browser -> submit_turn."
+info "CDP auto-detect upgrades browser speakers to browser_auto for hands-free operation."
 
 # ── 완료 ──
 header "Installation Complete!"
@@ -252,7 +268,7 @@ echo -e "    MCP Server: $MCP_DEST"
 echo -e "    Config:     $CLAUDE_DIR"
 echo ""
 echo -e "  ${BOLD}Next steps:${NC}"
-echo -e "    1. Restart Claude/Codex processes for MCP changes to take effect"
+echo -e "    1. Restart CLI processes for MCP changes to take effect"
 echo -e "    2. Add other MCP servers to $MCP_CONFIG as needed"
 echo -e "    3. Configure your HUD in settings.json if not already done"
 echo -e "    4. For Linux/Windows browser scan, launch browser with --remote-debugging-port=9222"
