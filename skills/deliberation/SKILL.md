@@ -29,9 +29,7 @@ Claude/Codex를 포함해 MCP를 지원하는 임의 CLI들이 구조화된 토�
 | `deliberation_status` | 토론 상태 조회 | 선택적* |
 | `deliberation_context` | 프로젝트 컨텍스트 로드 | 불필요 |
 | `deliberation_browser_llm_tabs` | 브라우저 LLM 탭 목록 (웹 기반 LLM 참여용) | 불필요 |
-| `deliberation_clipboard_prepare_turn` | 클립보드 기반 턴 준비 (프롬프트 생성) | 선택적* |
-| `deliberation_clipboard_submit_turn` | 클립보드 기반 턴 제출 (응답 붙여넣기) | 선택적* |
-| `deliberation_route_turn` | 현재 차례 speaker의 transport(CLI/clipboard/manual)를 자동 라우팅 | 선택적* |
+| `deliberation_route_turn` | 현재 차례 speaker의 transport(CLI/browser_auto/manual)를 자동 라우팅 | 선택적* |
 | `deliberation_respond` | 현재 차례의 응답 제출 | 선택적* |
 | `deliberation_history` | 전체 토론 기록 조회 | 선택적* |
 | `deliberation_synthesize` | 합성 보고서 생성 및 토론 완료 | 선택적* |
@@ -52,7 +50,8 @@ Claude/Codex를 포함해 MCP를 지원하는 임의 CLI들이 구조화된 토�
 - "deliberation", "deliberate", "토론", "debate"
 - "deliberation 시작", "토론 시작", "토론해", "토론하자"
 - "deliberation_start", "deliberation_respond", "deliberation_route_turn"
-- "speaker candidates", "브라우저 LLM", "clipboard submit"
+- "speaker candidates", "브라우저 LLM"
+- "크롬", "브라우저", "웹 LLM", "chrome", "browser LLM"
 - "{주제} 토론", "{주제} deliberation"
 
 ## 워크플로우
@@ -70,7 +69,9 @@ Claude/Codex를 포함해 MCP를 지원하는 임의 CLI들이 구조화된 토�
          { label: "claude", description: "CLI (자동 응답)" },
          { label: "codex", description: "CLI (자동 응답)" },
          { label: "gemini", description: "CLI (자동 응답)" },
-         { label: "web-chatgpt-1", description: "⚡자동 또는 📋클립보드" }
+         { label: "web-chatgpt-1", description: "⚡자동 (CDP 자동 연결)" },
+         { label: "web-claude-1", description: "⚡자동 (CDP 자동 연결)" },
+         { label: "web-gemini-1", description: "⚡자동 (CDP 자동 연결)" }
        ]
      }]
    })
@@ -78,8 +79,7 @@ Claude/Codex를 포함해 MCP를 지원하는 임의 CLI들이 구조화된 토�
 3. `deliberation_start` (선택된 speakers 전달) → session_id 획득
 4. `deliberation_route_turn` → 현재 차례 speaker transport 자동 결정
    - CLI speaker → 자동 응답
-   - browser_auto → CDP로 자동 전송/수집 (실패 시 클립보드 폴백)
-   - browser → 클립보드 워크플로우
+   - browser_auto → CDP로 자동 전송/수집
 5. 반복 후 `deliberation_synthesize(session_id)` → 합성 완료
 6. 구현이 필요하면 `deliberation-executor` 스킬로 handoff
    예: "session_id {id} 합의안 구현해줘"
@@ -114,6 +114,13 @@ bash deliberation-monitor.sh <session_id>
 # tmux에서
 bash deliberation-monitor.sh --tmux
 ```
+
+### E. 브라우저 LLM 자동 연결 (CDP Auto-Activation)
+- 브라우저 LLM speaker가 선택되면 CDP(Chrome DevTools Protocol)가 자동으로 활성화됩니다.
+- macOS에서는 Chrome이 실행되지 않은 경우 `--remote-debugging-port=9222`로 자동 실행을 시도합니다.
+- **Chrome이 이미 CDP 없이 실행 중인 경우**: Chrome을 완전히 종료한 후 다시 시도해야 합니다. (최초 1회만 필요)
+- CDP 연결 성공 시 모든 브라우저 speaker는 ⚡자동 모드로 동작합니다.
+- Windows/Linux에서는 사용자가 직접 Chrome을 `--remote-debugging-port=9222`로 실행해야 합니다.
 
 ## 역할 규칙
 

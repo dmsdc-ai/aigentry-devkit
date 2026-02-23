@@ -19,8 +19,6 @@
  *   deliberation_reset        세션 초기화 (session_id 선택적, 없으면 전체)
  *   deliberation_speaker_candidates      선택 가능한 스피커 후보(로컬 CLI + 브라우저 LLM 탭) 조회
  *   deliberation_browser_llm_tabs      브라우저 LLM 탭 목록 조회
- *   deliberation_clipboard_prepare_turn 브라우저 LLM용 턴 프롬프트를 클립보드로 복사
- *   deliberation_clipboard_submit_turn  클립보드 텍스트를 현재 턴 응답으로 제출
  *   deliberation_browser_auto_turn      브라우저 LLM에 자동으로 턴을 전송하고 응답을 수집 (CDP 기반)
  *   deliberation_request_review         코드 리뷰 요청 (CLI 리뷰어 자동 호출, sync/async 모드)
  */
@@ -602,6 +600,59 @@ async function collectBrowserLlmTabsViaCdp() {
   };
 }
 
+async function ensureCdpAvailable() {
+  const endpoints = resolveCdpEndpoints();
+
+  // First attempt: try existing CDP endpoints
+  for (const endpoint of endpoints) {
+    try {
+      const payload = await fetchJson(endpoint, 1500);
+      if (Array.isArray(payload)) {
+        return { available: true, endpoint };
+      }
+    } catch { /* not reachable */ }
+  }
+
+  // If none respond and platform is macOS, try auto-launching Chrome with CDP
+  if (process.platform === "darwin") {
+    try {
+      execFileSync("open", ["-a", "Google Chrome", "--args", "--remote-debugging-port=9222"], {
+        timeout: 5000,
+        stdio: "ignore",
+      });
+    } catch {
+      return {
+        available: false,
+        reason: "Chrome 자동 실행에 실패했습니다. Chrome을 수동으로 --remote-debugging-port=9222 옵션과 함께 실행해주세요.",
+      };
+    }
+
+    // Wait for Chrome to initialize CDP
+    sleepMs(2000);
+
+    // Retry CDP connection after launch
+    for (const endpoint of endpoints) {
+      try {
+        const payload = await fetchJson(endpoint, 2000);
+        if (Array.isArray(payload)) {
+          return { available: true, endpoint, launched: true };
+        }
+      } catch { /* still not reachable */ }
+    }
+
+    return {
+      available: false,
+      reason: "Chrome을 실행했지만 CDP에 연결할 수 없습니다. Chrome을 완전히 종료한 후 다시 시도해주세요. (이미 실행 중인 Chrome이 CDP 없이 시작된 경우 재시작 필요)",
+    };
+  }
+
+  // Non-macOS: cannot auto-launch
+  return {
+    available: false,
+    reason: "Chrome CDP를 활성화할 수 없습니다. Chrome을 --remote-debugging-port=9222 옵션과 함께 실행해주세요.",
+  };
+}
+
 function collectBrowserLlmTabsViaAppleScript() {
   if (process.platform !== "darwin") {
     return { tabs: [], note: "AppleScript 탭 스캔은 macOS에서만 지원됩니다." };
@@ -780,8 +831,14 @@ async function collectSpeakerCandidates({ include_cli = true, include_browser = 
 
   let browserNote = null;
   if (include_browser) {
+    // Ensure CDP is available before probing browser tabs
+    const cdpStatus = await ensureCdpAvailable();
+    if (cdpStatus.launched) {
+      browserNote = "Chrome CDP 자동 실행됨 (--remote-debugging-port=9222)";
+    }
+
     const { tabs, note } = await collectBrowserLlmTabs();
-    browserNote = note || null;
+    browserNote = browserNote ? `${browserNote} | ${note || ""}`.replace(/ \| $/, "") : (note || null);
     const providerCounts = new Map();
     for (const tab of tabs) {
       const provider = inferLlmProvider(tab.url);
@@ -959,7 +1016,7 @@ function formatTransportGuidance(transport, state, speaker) {
     case "cli_respond":
       return `CLI speaker입니다. \`deliberation_respond(session_id: "${sid}", speaker: "${speaker}", content: "...")\`로 직접 응답하세요.`;
     case "clipboard":
-      return `브라우저 LLM speaker입니다. 다음 순서로 진행하세요:\n1. \`deliberation_clipboard_prepare_turn(session_id: "${sid}")\` → 클립보드에 프롬프트 복사\n2. 브라우저 LLM에 붙여넣고 응답 생성\n3. 응답을 복사한 뒤 \`deliberation_clipboard_submit_turn(session_id: "${sid}", speaker: "${speaker}")\` 호출`;
+      return `브라우저 LLM speaker입니다. CDP 자동 연결 시도 중... Chrome이 이미 CDP 없이 실행 중이면 재시작이 필요할 수 있습니다.`;
     case "browser_auto":
       return `자동 브라우저 speaker입니다. \`deliberation_browser_auto_turn(session_id: "${sid}")\`으로 자동 진행됩니다. CDP를 통해 브라우저 LLM에 직접 입력하고 응답을 읽습니다.`;
     case "manual":
@@ -1838,6 +1895,23 @@ server.tool(
       created: new Date().toISOString(),
       updated: new Date().toISOString(),
     };
+
+    // Ensure CDP is ready if any speaker requires browser transport
+    const hasBrowserSpeaker = state.participant_profiles.some(
+      p => p.type === "browser" || p.type === "browser_auto"
+    );
+    if (hasBrowserSpeaker) {
+      const cdpReady = await ensureCdpAvailable();
+      if (!cdpReady.available) {
+        return {
+          content: [{
+            type: "text",
+            text: `❌ 브라우저 LLM speaker가 포함되어 있지만 CDP에 연결할 수 없습니다.\n\n${cdpReady.reason}\n\nCDP 연결 후 다시 deliberation_start를 호출하세요.`,
+          }],
+        };
+      }
+    }
+
     withSessionLock(sessionId, () => {
       saveSession(state);
     });
@@ -1981,88 +2055,6 @@ server.tool(
 );
 
 server.tool(
-  "deliberation_clipboard_prepare_turn",
-  "현재 턴 요청 프롬프트를 생성해 클립보드에 복사합니다. 브라우저 LLM에 붙여넣어 사용하세요.",
-  {
-    session_id: z.string().optional().describe("세션 ID (여러 세션 진행 중이면 필수)"),
-    speaker: z.string().trim().min(1).max(64).optional().describe("대상 speaker (미지정 시 현재 차례)"),
-    prompt: z.string().optional().describe("브라우저 LLM에 추가로 전달할 지시"),
-    include_history_entries: z.number().int().min(0).max(12).default(4).describe("프롬프트에 포함할 최근 로그 개수"),
-  },
-  async ({ session_id, speaker, prompt, include_history_entries }) => {
-    const resolved = resolveSessionId(session_id);
-    if (!resolved) {
-      return { content: [{ type: "text", text: "활성 deliberation이 없습니다." }] };
-    }
-    if (resolved === "MULTIPLE") {
-      return { content: [{ type: "text", text: multipleSessionsError() }] };
-    }
-
-    const state = loadSession(resolved);
-    if (!state || state.status !== "active") {
-      return { content: [{ type: "text", text: `세션 "${resolved}"이 활성 상태가 아닙니다.` }] };
-    }
-
-    const targetSpeaker = normalizeSpeaker(speaker) || normalizeSpeaker(state.current_speaker) || state.speakers[0];
-    if (targetSpeaker !== state.current_speaker) {
-      return {
-        content: [{
-          type: "text",
-          text: `[${state.id}] 지금은 **${state.current_speaker}** 차례입니다. prepare 대상 speaker는 현재 차례와 같아야 합니다.`,
-        }],
-      };
-    }
-
-    const payload = buildClipboardTurnPrompt(state, targetSpeaker, prompt, include_history_entries);
-    try {
-      writeClipboardText(payload);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "unknown error";
-      return { content: [{ type: "text", text: `클립보드 복사 실패: ${message}` }] };
-    }
-
-    return {
-      content: [{
-        type: "text",
-        text: `✅ [${state.id}] 턴 프롬프트를 클립보드에 복사했습니다.\n\n**대상 speaker:** ${targetSpeaker}\n**라운드:** ${state.current_round}/${state.max_rounds}\n\n다음 단계:\n1. 브라우저 LLM에 붙여넣고 응답 생성\n2. 응답 본문을 복사\n3. deliberation_clipboard_submit_turn(session_id: "${state.id}", speaker: "${targetSpeaker}") 호출\n\n${PRODUCT_DISCLAIMER}`,
-      }],
-    };
-  }
-);
-
-server.tool(
-  "deliberation_clipboard_submit_turn",
-  "클립보드 텍스트(또는 content)를 현재 턴 응답으로 제출합니다.",
-  {
-    session_id: z.string().optional().describe("세션 ID (여러 세션 진행 중이면 필수)"),
-    speaker: z.string().trim().min(1).max(64).describe("응답자 이름"),
-    content: z.string().optional().describe("응답 내용 (미지정 시 클립보드 텍스트 사용)"),
-    trim_content: z.boolean().default(false).describe("응답 앞뒤 공백 제거 여부"),
-    turn_id: z.string().optional().describe("턴 검증 ID"),
-  },
-  safeToolHandler("deliberation_clipboard_submit_turn", async ({ session_id, speaker, content, trim_content, turn_id }) => {
-    let body = content;
-    if (typeof body !== "string") {
-      try {
-        body = readClipboardText();
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "unknown error";
-        return { content: [{ type: "text", text: `클립보드 읽기 실패: ${message}` }] };
-      }
-    }
-
-    if (trim_content) {
-      body = body.trim();
-    }
-    if (!body || body.trim().length === 0) {
-      return { content: [{ type: "text", text: "제출할 응답이 비어 있습니다. 클립보드 또는 content를 확인하세요." }] };
-    }
-
-    return submitDeliberationTurn({ session_id, speaker, content: body, turn_id, channel_used: "clipboard" });
-  })
-);
-
-server.tool(
   "deliberation_route_turn",
   "현재 턴의 speaker에 맞는 transport를 자동 결정하고 안내합니다. CLI speaker는 자동 응답 경로, 브라우저 speaker는 클립보드 경로로 라우팅합니다.",
   {
@@ -2091,18 +2083,6 @@ server.tool(
     const turnId = state.pending_turn_id || null;
 
     let extra = "";
-
-    if (transport === "clipboard" && auto_prepare_clipboard) {
-      // 자동으로 클립보드 prepare 실행
-      const payload = buildClipboardTurnPrompt(state, speaker, prompt, include_history_entries);
-      try {
-        writeClipboardText(payload);
-        extra = `\n\n✅ 클립보드에 턴 프롬프트가 자동 복사되었습니다.`;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "unknown error";
-        extra = `\n\n⚠️ 클립보드 자동 복사 실패: ${message}\n수동으로 deliberation_clipboard_prepare_turn을 호출하세요.`;
-      }
-    }
 
     if (transport === "browser_auto") {
       // Auto-execute browser_auto_turn
@@ -2144,15 +2124,8 @@ server.tool(
           throw new Error(waitResult.error?.message || "no response received");
         }
       } catch (autoErr) {
-        // Fallback to clipboard
         const errMsg = autoErr instanceof Error ? autoErr.message : String(autoErr);
-        const payload = buildClipboardTurnPrompt(state, speaker, prompt, include_history_entries);
-        try {
-          writeClipboardText(payload);
-          extra = `\n\n⚠️ 자동 실행 실패 (${errMsg}). 클립보드 모드로 폴백했습니다.\n✅ 클립보드에 턴 프롬프트가 복사되었습니다.`;
-        } catch (clipErr) {
-          extra = `\n\n⚠️ 자동 실행 실패 (${errMsg}). 클립보드 복사도 실패했습니다.\n수동으로 deliberation_clipboard_prepare_turn을 호출하세요.`;
-        }
+        extra = `\n\n⚠️ 자동 실행 실패 (${errMsg}). Chrome을 --remote-debugging-port=9222로 재시작하세요.`;
       }
     }
 
@@ -2230,7 +2203,7 @@ server.tool(
     // Step 4: Wait for response
     const waitResult = await port.waitTurnResult(resolved, turnId, timeout_sec);
     if (!waitResult.ok) {
-      return { content: [{ type: "text", text: `⏱️ 브라우저 LLM 응답 대기 타임아웃 (${timeout_sec}초)\n\n**에러:** ${waitResult.error.message}\n\nclipboard fallback으로 수동 진행하세요:\n1. \`deliberation_clipboard_prepare_turn(session_id: "${resolved}")\`\n2. 브라우저에 붙여넣기\n3. \`deliberation_clipboard_submit_turn(session_id: "${resolved}")\`\n\n${PRODUCT_DISCLAIMER}` }] };
+      return { content: [{ type: "text", text: `⏱️ 브라우저 LLM 응답 대기 타임아웃 (${timeout_sec}초)\n\n**에러:** ${waitResult.error.message}\n\n자동 실행이 타임아웃되었습니다. Chrome이 --remote-debugging-port=9222로 실행 중인지 확인하세요.\n\n${PRODUCT_DISCLAIMER}` }] };
     }
 
     // Step 5: Submit the response
