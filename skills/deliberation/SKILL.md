@@ -59,14 +59,29 @@ Claude/Codex를 포함해 MCP를 지원하는 임의 CLI들이 구조화된 토�
 
 ### A. 사용자 선택형 진행 (권장)
 1. `deliberation_speaker_candidates` → 참가 가능한 CLI/브라우저 speaker 확인
-2. (선택) `deliberation_browser_llm_tabs` → 웹 LLM 탭 점검
-3. `deliberation_start` (speakers 명시) → session_id 획득
-4. `deliberation_route_turn` → 현재 차례 speaker transport 확인 + turn_id 확보
-5. 라우팅 결과에 따라 제출:
-- CLI speaker: `deliberation_respond(session_id, speaker, content, turn_id)`
-- Browser speaker: `deliberation_clipboard_prepare_turn` → 응답 복사 → `deliberation_clipboard_submit_turn(session_id, speaker, turn_id)`
-6. 반복 후 `deliberation_synthesize(session_id)` → 합성 완료
-7. 구현이 필요하면 `deliberation-executor` 스킬로 handoff
+2. **AskUserQuestion으로 참가자 선택** — 감지된 CLI/브라우저 speaker 목록을 `multiSelect: true`로 제시하여 사용자가 원하는 참가자만 체크. 예:
+   ```
+   AskUserQuestion({
+     questions: [{
+       question: "토론에 참여할 speaker를 선택하세요",
+       header: "참가자",
+       multiSelect: true,
+       options: [
+         { label: "claude", description: "CLI (자동 응답)" },
+         { label: "codex", description: "CLI (자동 응답)" },
+         { label: "gemini", description: "CLI (자동 응답)" },
+         { label: "web-chatgpt-1", description: "⚡자동 또는 📋클립보드" }
+       ]
+     }]
+   })
+   ```
+3. `deliberation_start` (선택된 speakers 전달) → session_id 획득
+4. `deliberation_route_turn` → 현재 차례 speaker transport 자동 결정
+   - CLI speaker → 자동 응답
+   - browser_auto → CDP로 자동 전송/수집 (실패 시 클립보드 폴백)
+   - browser → 클립보드 워크플로우
+5. 반복 후 `deliberation_synthesize(session_id)` → 합성 완료
+6. 구현이 필요하면 `deliberation-executor` 스킬로 handoff
    예: "session_id {id} 합의안 구현해줘"
 
 ### B. 병렬 세션 운영
@@ -130,6 +145,6 @@ bash deliberation-monitor.sh --tmux
 1. 여러 deliberation을 동시에 병렬 진행 가능
 2. session_id는 `deliberation_start` 응답에서 확인
 3. 토론 결과는 Obsidian vault에 자동 아카이브 (프로젝트 폴더 존재 시)
-4. `deliberation-{session_id}.md`가 프로젝트 루트에 실시간 동기화됨
+4. 실시간 sync 파일은 state 디렉토리에 저장되며 완료 시 자동 삭제됨 (프로젝트 루트 오염 없음)
 5. `Transport closed` 발생 시 현재 CLI 세션 재시작 후 재시도 (stdio 연결은 세션 바인딩)
 6. 멀티 세션 운영 중 `pkill -f mcp-deliberation` 사용 금지 (다른 세션 연결까지 끊길 수 있음)
