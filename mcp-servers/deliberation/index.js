@@ -55,6 +55,22 @@ const DEFAULT_CLI_CANDIDATES = [
   "continue",
 ];
 const MAX_AUTO_DISCOVERED_SPEAKERS = 12;
+
+function loadDeliberationConfig() {
+  const configPath = path.join(HOME, ".local", "lib", "mcp-deliberation", "config.json");
+  try {
+    return JSON.parse(fs.readFileSync(configPath, "utf-8"));
+  } catch {
+    return {};
+  }
+}
+
+function saveDeliberationConfig(config) {
+  const configPath = path.join(HOME, ".local", "lib", "mcp-deliberation", "config.json");
+  config.updated = new Date().toISOString();
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+}
+
 const DEFAULT_BROWSER_APPS = ["Google Chrome", "Brave Browser", "Arc", "Microsoft Edge", "Safari"];
 const DEFAULT_LLM_DOMAINS = [
   "chatgpt.com",
@@ -241,6 +257,13 @@ function resolveCliCandidates() {
     .split(/[,\s]+/)
     .map(v => v.trim())
     .filter(Boolean);
+
+  // If config has enabled_clis, use that as the primary filter
+  const config = loadDeliberationConfig();
+  if (Array.isArray(config.enabled_clis) && config.enabled_clis.length > 0) {
+    return dedupeSpeakers([...fromEnv, ...config.enabled_clis]);
+  }
+
   return dedupeSpeakers([...fromEnv, ...DEFAULT_CLI_CANDIDATES]);
 }
 
@@ -2433,6 +2456,70 @@ server.tool(
         text: `✅ 전체 초기화 완료. ${resetResult.files.length}개 세션 삭제, ${resetResult.archived}개 아카이브됨. 🖥️ 모든 모니터 터미널 닫힘.`,
       }],
     };
+  })
+);
+
+server.tool(
+  "deliberation_cli_config",
+  "딜리버레이션 참가자 CLI 설정을 조회하거나 변경합니다. enabled_clis를 지정하면 저장합니다.",
+  {
+    enabled_clis: z.array(z.string()).optional().describe("활성화할 CLI 목록 (예: [\"claude\", \"codex\", \"gemini\"]). 미지정 시 현재 설정 조회"),
+  },
+  safeToolHandler("deliberation_cli_config", async ({ enabled_clis }) => {
+    const config = loadDeliberationConfig();
+
+    if (!enabled_clis) {
+      // Read mode: show current config + detected CLIs
+      const detected = discoverLocalCliSpeakers();
+      const configured = Array.isArray(config.enabled_clis) ? config.enabled_clis : [];
+      const mode = configured.length > 0 ? "config" : "auto-detect";
+
+      return {
+        content: [{
+          type: "text",
+          text: `## Deliberation CLI 설정\n\n**모드:** ${mode}\n**설정된 CLI:** ${configured.length > 0 ? configured.join(", ") : "(없음 — 전체 자동 감지)"}\n**현재 감지된 CLI:** ${detected.join(", ") || "(없음)"}\n**지원 CLI 전체:** ${DEFAULT_CLI_CANDIDATES.join(", ")}\n\n변경하려면:\n\`deliberation_cli_config(enabled_clis: ["claude", "codex"])\`\n\n전체 자동 감지로 되돌리려면:\n\`deliberation_cli_config(enabled_clis: [])\``,
+        }],
+      };
+    }
+
+    // Write mode: save new config
+    if (enabled_clis.length === 0) {
+      // Empty array = reset to auto-detect all
+      delete config.enabled_clis;
+      saveDeliberationConfig(config);
+      return {
+        content: [{
+          type: "text",
+          text: `✅ CLI 설정 초기화 완료. 전체 자동 감지 모드로 전환되었습니다.\n감지 대상: ${DEFAULT_CLI_CANDIDATES.join(", ")}`,
+        }],
+      };
+    }
+
+    // Validate CLIs
+    const valid = [];
+    const invalid = [];
+    for (const cli of enabled_clis) {
+      const normalized = cli.trim().toLowerCase();
+      if (normalized) valid.push(normalized);
+    }
+
+    config.enabled_clis = valid;
+    saveDeliberationConfig(config);
+
+    // Check which are actually installed
+    const installed = valid.filter(cli => {
+      try {
+        execFileSync(process.platform === "win32" ? "where" : "which", [cli], { stdio: "ignore" });
+        return true;
+      } catch { return false; }
+    });
+    const notInstalled = valid.filter(cli => !installed.includes(cli));
+
+    let result = `✅ CLI 설정 저장 완료!\n\n**활성화된 CLI:** ${valid.join(", ")}`;
+    if (installed.length > 0) result += `\n**설치 확인됨:** ${installed.join(", ")}`;
+    if (notInstalled.length > 0) result += `\n**⚠️ 미설치:** ${notInstalled.join(", ")} (PATH에서 찾을 수 없음)`;
+
+    return { content: [{ type: "text", text: result }] };
   })
 );
 

@@ -220,26 +220,65 @@ else
   warn "direnv not found. Skipping .envrc setup."
 fi
 
-# ── 참가자 CLI MCP 등록 ──
-header "7. Participant CLI Integration"
+# ── 참가자 CLI 선택 ──
+header "7. Participant CLI Selection"
 
-# 지원하는 CLI 목록 (MCP 등록 가능한 것들)
-MCP_CAPABLE_CLIS="codex"
-DETECTED_CLIS=""
-
+# Detect available CLIs
+AVAILABLE_CLIS=""
 for cli in claude codex gemini qwen chatgpt aider llm opencode cursor; do
   if command -v "$cli" >/dev/null 2>&1; then
-    DETECTED_CLIS="$DETECTED_CLIS $cli"
+    AVAILABLE_CLIS="$AVAILABLE_CLIS $cli"
   fi
 done
+AVAILABLE_CLIS=$(echo "$AVAILABLE_CLIS" | xargs)  # trim
 
-if [ -n "$DETECTED_CLIS" ]; then
-  info "Detected participant CLIs:$DETECTED_CLIS"
-else
+if [ -z "$AVAILABLE_CLIS" ]; then
   warn "No participant CLIs detected. Install claude, codex, gemini, or other AI CLIs."
+else
+  info "Detected CLIs: $AVAILABLE_CLIS"
+  echo ""
+
+  # Interactive selection (skip if --force flag or non-interactive)
+  DELIBERATION_CONFIG="$MCP_DEST/config.json"
+  if [ -t 0 ] && [ "${FORCE_INSTALL:-}" != "true" ]; then
+    echo -e "  ${BOLD}Select CLIs to enable for deliberation:${NC}"
+    echo ""
+
+    SELECTED_CLIS=""
+    for cli in $AVAILABLE_CLIS; do
+      printf "  Enable ${CYAN}%-12s${NC} for deliberation? [Y/n] " "$cli"
+      read -r answer </dev/tty
+      case "$answer" in
+        [nN]*) ;;
+        *) SELECTED_CLIS="$SELECTED_CLIS $cli" ;;
+      esac
+    done
+    SELECTED_CLIS=$(echo "$SELECTED_CLIS" | xargs)
+
+    if [ -z "$SELECTED_CLIS" ]; then
+      warn "No CLIs selected. All detected CLIs will be available by default."
+      SELECTED_CLIS="$AVAILABLE_CLIS"
+    fi
+  else
+    # Non-interactive: enable all detected
+    SELECTED_CLIS="$AVAILABLE_CLIS"
+  fi
+
+  info "Enabled CLIs: $SELECTED_CLIS"
+
+  # Save config
+  node -e "
+    const fs = require('fs');
+    const configPath = '$DELIBERATION_CONFIG';
+    let config = {};
+    try { config = JSON.parse(fs.readFileSync(configPath, 'utf-8')); } catch {}
+    config.enabled_clis = '${SELECTED_CLIS}'.split(/\s+/).filter(Boolean);
+    config.updated = new Date().toISOString();
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+  " && info "Saved CLI config to $DELIBERATION_CONFIG" || warn "Failed to save CLI config"
 fi
 
-# Codex MCP 등록 (codex만 자체 MCP 등록 지원)
+# Codex MCP registration (only CLI with native MCP support)
 if command -v codex >/dev/null 2>&1; then
   codex mcp add deliberation -- node "$MCP_DEST/index.js" 2>/dev/null && \
     info "Registered deliberation MCP in Codex" || \
@@ -254,7 +293,7 @@ fi
 
 header "8. Cross-platform Notes"
 info "Supported participant CLIs: claude, codex, gemini, qwen, chatgpt, aider, llm, opencode, cursor"
-info "CLIs are auto-detected at deliberation start. No manual config needed."
+info "Manage enabled CLIs anytime: deliberation_cli_config MCP tool"
 info "Browser LLM tab detection: macOS automation + CDP scan (Linux/Windows need browser remote-debugging port)."
 info "CDP auto-detect upgrades browser speakers to browser_auto for hands-free operation."
 
@@ -269,8 +308,9 @@ echo -e "    Config:     $CLAUDE_DIR"
 echo ""
 echo -e "  ${BOLD}Next steps:${NC}"
 echo -e "    1. Restart CLI processes for MCP changes to take effect"
-echo -e "    2. Add other MCP servers to $MCP_CONFIG as needed"
-echo -e "    3. Configure your HUD in settings.json if not already done"
-echo -e "    4. For Linux/Windows browser scan, launch browser with --remote-debugging-port=9222"
+echo -e "    2. Modify enabled CLIs anytime via deliberation_cli_config MCP tool"
+echo -e "    3. Add other MCP servers to $MCP_CONFIG as needed"
+echo -e "    4. Configure your HUD in settings.json if not already done"
+echo -e "    5. For Linux/Windows browser scan, launch browser with --remote-debugging-port=9222"
 echo ""
 echo -e "  ${CYAN}Enjoy your AI development environment!${NC}"
