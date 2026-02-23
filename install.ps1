@@ -152,14 +152,23 @@ if (-not $cfg) {
   $cfg = [pscustomobject]@{}
 }
 
-if (-not ($cfg.PSObject.Properties.Match("mcpServers"))) {
-  $cfg | Add-Member -MemberType NoteProperty -Name mcpServers -Value ([pscustomobject]@{})
+if (-not ($cfg.PSObject.Properties.Match("mcpServers")) -or $null -eq $cfg.mcpServers) {
+  if ($cfg.PSObject.Properties.Match("mcpServers")) {
+    $cfg.mcpServers = [pscustomobject]@{}
+  } else {
+    $cfg | Add-Member -MemberType NoteProperty -Name mcpServers -Value ([pscustomobject]@{})
+  }
 }
 
-$cfg.mcpServers | Add-Member -MemberType NoteProperty -Name deliberation -Value ([pscustomobject]@{
+$deliberationEntry = [pscustomobject]@{
   command = "node"
   args = @((Join-Path $McpDest "index.js"))
-}) -Force
+}
+if ($cfg.mcpServers.PSObject.Properties.Match("deliberation")) {
+  $cfg.mcpServers.deliberation = $deliberationEntry
+} else {
+  $cfg.mcpServers | Add-Member -MemberType NoteProperty -Name deliberation -Value $deliberationEntry
+}
 
 $cfg | ConvertTo-Json -Depth 8 | Set-Content -Path $mcpConfig -Encoding utf8
 Write-Info "Registered deliberation MCP in $mcpConfig"
