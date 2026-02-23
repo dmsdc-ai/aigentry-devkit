@@ -88,13 +88,15 @@ const DEFAULT_LLM_DOMAINS = [
 ];
 
 let _extensionProviderRegistry = null;
+const __dirnameEsm = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, "$1"));
 function loadExtensionProviderRegistry() {
   if (_extensionProviderRegistry) return _extensionProviderRegistry;
   try {
-    const registryPath = require("path").join(__dirname, "selectors", "extension-providers.json");
-    _extensionProviderRegistry = JSON.parse(require("fs").readFileSync(registryPath, "utf-8"));
+    const registryPath = path.join(__dirnameEsm, "selectors", "extension-providers.json");
+    _extensionProviderRegistry = JSON.parse(fs.readFileSync(registryPath, "utf-8"));
     return _extensionProviderRegistry;
-  } catch {
+  } catch (err) {
+    console.error("Failed to load extension-providers.json:", err.message);
     _extensionProviderRegistry = { providers: [] };
     return _extensionProviderRegistry;
   }
