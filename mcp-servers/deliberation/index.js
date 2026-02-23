@@ -1337,6 +1337,7 @@ function archiveState(state) {
 
 const TMUX_SESSION = "deliberation";
 const MONITOR_SCRIPT = path.join(HOME, ".local", "lib", "mcp-deliberation", "session-monitor.sh");
+const MONITOR_SCRIPT_WIN = path.join(HOME, ".local", "lib", "mcp-deliberation", "session-monitor-win.js");
 
 function tmuxWindowName(sessionId) {
   // tmux 윈도우 이름은 짧게 (마지막 부분 제거하고 20자)
@@ -1366,6 +1367,10 @@ function buildMonitorCommand(sessionId, project) {
   const shell = resolveMonitorShell();
   if (!shell) return null;
   return `${shell} ${shellQuote(MONITOR_SCRIPT)} ${shellQuote(sessionId)} ${shellQuote(project)}`;
+}
+
+function buildMonitorCommandWindows(sessionId, project) {
+  return `node "${MONITOR_SCRIPT_WIN}" "${sessionId}" "${project}"`;
 }
 
 function hasTmuxSession(name) {
@@ -1499,28 +1504,40 @@ function openPhysicalTerminal(sessionId) {
   }
 
   if (process.platform === "win32") {
-    const attachForWindows = `tmux attach -t "${TMUX_SESSION}"`;
-    if ((commandExistsInPath("wt.exe") || commandExistsInPath("wt"))
-      && tryExecFile("wt", ["new-tab", "powershell", "-NoExit", "-Command", attachForWindows])) {
-      return { opened: true, windowIds: [] };
-    }
-
-    const shell = ["powershell.exe", "powershell", "pwsh.exe", "pwsh"]
-      .find(cmd => commandExistsInPath(cmd));
-    if (shell) {
-      const targetShell = shell.toLowerCase().startsWith("pwsh") ? "pwsh" : "powershell";
-      const escaped = attachForWindows.replace(/'/g, "''");
-      const script = `Start-Process ${targetShell} -ArgumentList '-NoExit','-Command','${escaped}'`;
-      if (tryExecFile(shell, ["-NoProfile", "-Command", script])) {
-        return { opened: true, windowIds: [] };
-      }
-    }
+    // Windows: monitor is launched directly by spawnMonitorTerminal (no tmux)
+    // Physical terminal opening is handled there, so just return success
+    return { opened: true, windowIds: [] };
   }
 
   return { opened: false, windowIds: [] };
 }
 
 function spawnMonitorTerminal(sessionId) {
+  // Windows: use Windows Terminal or PowerShell directly (no tmux needed)
+  if (process.platform === "win32") {
+    const project = getProjectSlug();
+    const monitorCmd = buildMonitorCommandWindows(sessionId, project);
+
+    // Try Windows Terminal (wt.exe)
+    if (commandExistsInPath("wt") || commandExistsInPath("wt.exe")) {
+      if (tryExecFile("wt", ["new-tab", "--title", "Deliberation Monitor", "cmd", "/c", monitorCmd])) {
+        return true;
+      }
+    }
+
+    // Fallback: new PowerShell window
+    const shell = ["pwsh.exe", "pwsh", "powershell.exe", "powershell"].find(c => commandExistsInPath(c));
+    if (shell) {
+      const escaped = monitorCmd.replace(/'/g, "''");
+      if (tryExecFile(shell, ["-NoProfile", "-Command", `Start-Process cmd -ArgumentList '/c','${escaped}'`])) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  // macOS/Linux: use tmux (existing logic)
   if (!commandExistsInPath("tmux")) {
     return false;
   }
@@ -1682,22 +1699,24 @@ function closePhysicalTerminal(windowId) {
 }
 
 function closeMonitorTerminal(sessionId, terminalWindowIds = []) {
-  const winName = tmuxWindowName(sessionId);
-  try {
-    execFileSync("tmux", ["kill-window", "-t", `${TMUX_SESSION}:${winName}`], {
-      stdio: "ignore",
-      windowsHide: true,
-    });
-  } catch { /* ignore */ }
-
-  try {
-    if (tmuxWindowCount(TMUX_SESSION) === 0) {
-      execFileSync("tmux", ["kill-session", "-t", TMUX_SESSION], {
+  if (process.platform !== "win32") {
+    const winName = tmuxWindowName(sessionId);
+    try {
+      execFileSync("tmux", ["kill-window", "-t", `${TMUX_SESSION}:${winName}`], {
         stdio: "ignore",
         windowsHide: true,
       });
-    }
-  } catch { /* ignore */ }
+    } catch { /* ignore */ }
+
+    try {
+      if (tmuxWindowCount(TMUX_SESSION) === 0) {
+        execFileSync("tmux", ["kill-session", "-t", TMUX_SESSION], {
+          stdio: "ignore",
+          windowsHide: true,
+        });
+      }
+    } catch { /* ignore */ }
+  }
 
   for (const windowId of terminalWindowIds) {
     closePhysicalTerminal(windowId);
@@ -1987,11 +2006,18 @@ server.tool(
       });
       state.monitor_terminal_window_ids = terminalWindowIds;
     }
+    const isWin = process.platform === "win32";
     const terminalMsg = !tmuxOpened
-      ? `\n⚠️ tmux를 찾을 수 없어 모니터 터미널 미생성`
+      ? isWin
+        ? `\n⚠️ Windows Terminal을 찾을 수 없어 모니터 터미널 미생성`
+        : `\n⚠️ tmux를 찾을 수 없어 모니터 터미널 미생성`
       : physicalOpened
-        ? `\n🖥️ 모니터 터미널 오픈됨: tmux attach -t ${TMUX_SESSION}`
-        : `\n⚠️ tmux 윈도우는 생성됐지만 외부 터미널 자동 오픈 실패. 수동 실행: tmux attach -t ${TMUX_SESSION}`;
+        ? isWin
+          ? `\n🖥️ 모니터 터미널 오픈됨 (Windows Terminal)`
+          : `\n🖥️ 모니터 터미널 오픈됨: tmux attach -t ${TMUX_SESSION}`
+        : isWin
+          ? `\n⚠️ 모니터 터미널 자동 오픈 실패`
+          : `\n⚠️ tmux 윈도우는 생성됐지만 외부 터미널 자동 오픈 실패. 수동 실행: tmux attach -t ${TMUX_SESSION}`;
     const manualNotDetected = hasManualSpeakers
       ? speakerOrder.filter(s => !candidateSnapshot.candidates.some(c => c.speaker === s))
       : [];
