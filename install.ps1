@@ -116,17 +116,20 @@ Write-Header "5. MCP Registration"
 $mcpConfig = Join-Path $ClaudeDir ".mcp.json"
 New-Item -ItemType Directory -Path $ClaudeDir -Force | Out-Null
 
+$cfg = $null
 if (Test-Path $mcpConfig) {
   try {
-    $cfg = Get-Content $mcpConfig -Raw | ConvertFrom-Json
-  } catch {
-    $cfg = [pscustomobject]@{}
-  }
-} else {
+    $raw = Get-Content $mcpConfig -Raw
+    if ($raw) {
+      $cfg = $raw | ConvertFrom-Json
+    }
+  } catch {}
+}
+if (-not $cfg) {
   $cfg = [pscustomobject]@{}
 }
 
-if (-not $cfg.PSObject.Properties.Name.Contains("mcpServers")) {
+if (-not ($cfg.PSObject.Properties.Match("mcpServers"))) {
   $cfg | Add-Member -MemberType NoteProperty -Name mcpServers -Value ([pscustomobject]@{})
 }
 
