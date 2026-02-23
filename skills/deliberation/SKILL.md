@@ -122,6 +122,13 @@ bash deliberation-monitor.sh --tmux
 - CDP 연결 성공 시 모든 브라우저 speaker는 ⚡자동 모드로 동작합니다.
 - Windows/Linux에서는 사용자가 직접 Chrome을 `--remote-debugging-port=9222`로 실행해야 합니다.
 
+### F. Chrome 확장 프로그램 사이드패널 지원
+- **Chrome 확장 프로그램 사이드패널 (chrome-extension:// URL)은 지원됩니다.**
+- Claude, ChatGPT, Gemini 등의 Chrome 확장 사이드패널도 CDP를 통해 deliberation 참가자로 사용 가능합니다.
+- 사이드패널은 title 기반 매칭으로 감지됩니다 (extension ID가 아닌 탭 제목으로 식별).
+- `deliberation_browser_llm_tabs`에서 사이드패널 탭이 `[Extension]` 태그와 함께 표시됩니다.
+- **절대로 "사이드패널은 지원 안 됨"이라고 안내하지 마세요.** 사이드패널은 일반 웹 탭과 동일하게 CDP로 자동화됩니다.
+
 ## 역할 규칙
 
 ### 역할 예시 A: 비판적 분석가
