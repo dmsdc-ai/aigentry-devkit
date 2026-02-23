@@ -1115,13 +1115,21 @@ function resolveSessionId(sessionId) {
 
 function syncMarkdown(state) {
   const filename = `deliberation-${state.id}.md`;
-  const mdPath = path.join(process.cwd(), filename);
+  // Write to state dir instead of CWD to avoid polluting project root
+  const mdPath = path.join(getProjectStateDir(), filename);
   try {
     writeTextAtomic(mdPath, stateToMarkdown(state));
-  } catch {
-    const fallback = path.join(getProjectStateDir(), filename);
-    writeTextAtomic(fallback, stateToMarkdown(state));
-  }
+  } catch { /* ignore sync failures */ }
+}
+
+function cleanupSyncMarkdown(state) {
+  const filename = `deliberation-${state.id}.md`;
+  // Remove from state dir
+  const statePath = path.join(getProjectStateDir(), filename);
+  try { fs.unlinkSync(statePath); } catch { /* ignore */ }
+  // Also clean up legacy files in CWD (from older versions)
+  const cwdPath = path.join(process.cwd(), filename);
+  try { fs.unlinkSync(cwdPath); } catch { /* ignore */ }
 }
 
 function stateToMarkdown(s) {
@@ -2298,6 +2306,7 @@ server.tool(
       loaded.current_speaker = "none";
       saveSession(loaded);
       archivePath = archiveState(loaded);
+      cleanupSyncMarkdown(loaded);
       state = loaded;
       return null;
     });
@@ -2363,6 +2372,7 @@ server.tool(
         if (state && state.log.length > 0) {
           archiveState(state);
         }
+        if (state) cleanupSyncMarkdown(state);
         toCloseIds = getSessionWindowIds(state);
         fs.unlinkSync(file);
         return { content: [{ type: "text", text: `✅ 세션 "${session_id}" 초기화 완료. 🖥️ 모니터 터미널 닫힘.` }] };
@@ -2394,6 +2404,7 @@ server.tool(
             archiveState(state);
             archived++;
           }
+          cleanupSyncMarkdown(state);
           fs.unlinkSync(filePath);
         } catch {
           try {
