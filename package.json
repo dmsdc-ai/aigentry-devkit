@@ -1,6 +1,6 @@
 {
   "name": "@dmsdc-ai/aigentry-devkit",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Cross-platform installer and tooling bundle for aigentry-devkit",
   "license": "MIT",
   "repository": {

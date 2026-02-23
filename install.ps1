@@ -139,38 +139,10 @@ Write-Header "5. MCP Registration"
 $mcpConfig = Join-Path $ClaudeDir ".mcp.json"
 New-Item -ItemType Directory -Path $ClaudeDir -Force | Out-Null
 
-$cfg = $null
-if (Test-Path $mcpConfig) {
-  try {
-    $raw = Get-Content $mcpConfig -Raw
-    if ($raw) {
-      $cfg = $raw | ConvertFrom-Json
-    }
-  } catch {}
-}
-if (-not $cfg) {
-  $cfg = [pscustomobject]@{}
-}
+$mcpConfigJs = $mcpConfig -replace '\\', '/'
+$mcpIndexJs = (Join-Path $McpDest "index.js") -replace '\\', '/'
 
-if (-not ($cfg.PSObject.Properties.Match("mcpServers")) -or $null -eq $cfg.mcpServers) {
-  if ($cfg.PSObject.Properties.Match("mcpServers")) {
-    $cfg.mcpServers = [pscustomobject]@{}
-  } else {
-    $cfg | Add-Member -MemberType NoteProperty -Name mcpServers -Value ([pscustomobject]@{})
-  }
-}
-
-$deliberationEntry = [pscustomobject]@{
-  command = "node"
-  args = @((Join-Path $McpDest "index.js"))
-}
-if ($cfg.mcpServers.PSObject.Properties.Match("deliberation")) {
-  $cfg.mcpServers.deliberation = $deliberationEntry
-} else {
-  $cfg.mcpServers | Add-Member -MemberType NoteProperty -Name deliberation -Value $deliberationEntry
-}
-
-$cfg | ConvertTo-Json -Depth 8 | Set-Content -Path $mcpConfig -Encoding utf8
+node -e "const fs=require('fs');const p='$mcpConfigJs';let c={};try{c=JSON.parse(fs.readFileSync(p,'utf-8'))}catch{}if(!c||typeof c!=='object')c={};if(!c.mcpServers)c.mcpServers={};c.mcpServers.deliberation={command:'node',args:['$mcpIndexJs']};fs.writeFileSync(p,JSON.stringify(c,null,2))"
 Write-Info "Registered deliberation MCP in $mcpConfig"
 
 if (Get-Command claude -ErrorAction SilentlyContinue) {
