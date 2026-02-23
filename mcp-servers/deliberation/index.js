@@ -87,6 +87,29 @@ const DEFAULT_LLM_DOMAINS = [
   "notebooklm.google.com",
 ];
 
+let _extensionProviderRegistry = null;
+function loadExtensionProviderRegistry() {
+  if (_extensionProviderRegistry) return _extensionProviderRegistry;
+  try {
+    const registryPath = require("path").join(__dirname, "selectors", "extension-providers.json");
+    _extensionProviderRegistry = JSON.parse(require("fs").readFileSync(registryPath, "utf-8"));
+    return _extensionProviderRegistry;
+  } catch {
+    _extensionProviderRegistry = { providers: [] };
+    return _extensionProviderRegistry;
+  }
+}
+
+function isExtensionLlmTab(url = "", title = "") {
+  if (!String(url).startsWith("chrome-extension://")) return false;
+  const registry = loadExtensionProviderRegistry();
+  const lowerTitle = String(title || "").toLowerCase();
+  if (!lowerTitle) return false;
+  return registry.providers.some(p =>
+    p.titlePatterns.some(pattern => lowerTitle.includes(pattern.toLowerCase()))
+  );
+}
+
 const PRODUCT_DISCLAIMER = "ℹ️ 이 도구는 외부 웹사이트를 영구 수정하지 않습니다. 브라우저 문맥을 읽기 전용으로 참조하여 발화자를 라우팅합니다.";
 const LOCKS_SUBDIR = ".locks";
 const LOCK_RETRY_MS = 25;
@@ -435,7 +458,7 @@ function dedupeBrowserTabs(tabs = []) {
     const browser = String(tab?.browser || "").trim();
     const title = String(tab?.title || "").trim();
     const url = String(tab?.url || "").trim();
-    if (!url || !isLlmUrl(url)) continue;
+    if (!url || (!isLlmUrl(url) && !isExtensionLlmTab(url, title))) continue;
     const key = `${browser}\t${title}\t${url}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -571,10 +594,11 @@ async function collectBrowserLlmTabsViaCdp() {
       for (const item of payload) {
         if (!item || String(item.type) !== "page") continue;
         const url = String(item.url || "").trim();
-        if (!isLlmUrl(url)) continue;
+        const title = String(item.title || "").trim();
+        if (!isLlmUrl(url) && !isExtensionLlmTab(url, title)) continue;
         tabs.push({
           browser,
-          title: String(item.title || "").trim() || "(untitled)",
+          title: title || "(untitled)",
           url,
         });
       }
@@ -792,8 +816,19 @@ async function collectBrowserLlmTabs() {
   };
 }
 
-function inferLlmProvider(url = "") {
+function inferLlmProvider(url = "", title = "") {
   const value = String(url).toLowerCase();
+  // Extension side panel: infer from title via registry
+  if (value.startsWith("chrome-extension://") && title) {
+    const registry = loadExtensionProviderRegistry();
+    const lowerTitle = String(title).toLowerCase();
+    for (const entry of registry.providers) {
+      if (entry.titlePatterns.some(p => lowerTitle.includes(p.toLowerCase()))) {
+        return entry.provider;
+      }
+    }
+    return "extension-llm";
+  }
   if (value.includes("claude.ai") || value.includes("anthropic.com")) return "claude";
   if (value.includes("chatgpt.com") || value.includes("openai.com")) return "chatgpt";
   if (value.includes("gemini.google.com") || value.includes("notebooklm.google.com")) return "gemini";
@@ -841,7 +876,7 @@ async function collectSpeakerCandidates({ include_cli = true, include_browser = 
     browserNote = browserNote ? `${browserNote} | ${note || ""}`.replace(/ \| $/, "") : (note || null);
     const providerCounts = new Map();
     for (const tab of tabs) {
-      const provider = inferLlmProvider(tab.url);
+      const provider = inferLlmProvider(tab.url, tab.title);
       const count = (providerCounts.get(provider) || 0) + 1;
       providerCounts.set(provider, count);
       add({
@@ -871,6 +906,23 @@ async function collectSpeakerCandidates({ include_cli = true, include_browser = 
     // Match CDP tabs with discovered browser candidates
     for (const candidate of candidates) {
       if (candidate.type !== "browser") continue;
+      // For extension candidates, match by title instead of hostname
+      const candidateUrl = String(candidate.url || "");
+      if (candidateUrl.startsWith("chrome-extension://")) {
+        const candidateTitle = String(candidate.title || "").toLowerCase();
+        if (candidateTitle) {
+          const matches = cdpTabs.filter(t =>
+            String(t.url || "").startsWith("chrome-extension://") &&
+            String(t.title || "").toLowerCase().includes(candidateTitle)
+          );
+          if (matches.length === 1) {
+            candidate.cdp_available = true;
+            candidate.cdp_tab_id = matches[0].id;
+            candidate.cdp_ws_url = matches[0].webSocketDebuggerUrl;
+          }
+        }
+        continue;
+      }
       let candidateHost = "";
       try {
         candidateHost = new URL(candidate.url).hostname.toLowerCase();
@@ -910,7 +962,8 @@ function formatSpeakerCandidatesReport({ candidates, browserNote }) {
   } else {
     out += `${browser.map(c => {
       const icon = c.cdp_available ? "⚡자동" : "📋클립보드";
-      return `- \`${c.speaker}\` [${icon}] [${c.browser}] ${c.title}\n  ${c.url}`;
+      const extTag = String(c.url || "").startsWith("chrome-extension://") ? " [Extension]" : "";
+      return `- \`${c.speaker}\` [${icon}]${extTag} [${c.browser}] ${c.title}\n  ${c.url}`;
     }).join("\n")}\n`;
   }
 

@@ -138,6 +138,15 @@ class DevToolsMcpAdapter extends BrowserControlPort {
             foundTab = { ...tab, endpoint };
             break;
           }
+          // Strategy 3: Extension title match
+          if (selectorConfig.isExtension && tabUrl.startsWith("chrome-extension://")) {
+            const titlePatterns = selectorConfig.titlePatterns || [];
+            const lowerTitle = String(tab.title || "").toLowerCase();
+            if (titlePatterns.some(p => lowerTitle.includes(p.toLowerCase()))) {
+              foundTab = { ...tab, endpoint };
+              break;
+            }
+          }
         }
         if (foundTab) break;
       } catch {
