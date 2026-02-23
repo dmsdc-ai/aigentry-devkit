@@ -58,7 +58,38 @@ esac
 if command -v tmux >/dev/null 2>&1; then
   info "tmux found (deliberation monitor will use it)"
 else
-  warn "tmux not found. Deliberation monitor terminals won't auto-open."
+  info "tmux not found. Attempting to install..."
+  TMUX_INSTALLED=0
+  case "$PLATFORM" in
+    Darwin)
+      if command -v brew >/dev/null 2>&1; then
+        brew install tmux && TMUX_INSTALLED=1
+      else
+        warn "Homebrew not found. Install tmux manually: brew install tmux"
+      fi
+      ;;
+    Linux)
+      if command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get update -qq && sudo apt-get install -y tmux && TMUX_INSTALLED=1
+      elif command -v dnf >/dev/null 2>&1; then
+        sudo dnf install -y tmux && TMUX_INSTALLED=1
+      elif command -v yum >/dev/null 2>&1; then
+        sudo yum install -y tmux && TMUX_INSTALLED=1
+      elif command -v pacman >/dev/null 2>&1; then
+        sudo pacman -S --noconfirm tmux && TMUX_INSTALLED=1
+      else
+        warn "No supported package manager found. Install tmux manually."
+      fi
+      ;;
+    *)
+      warn "Unsupported platform for auto-install. Install tmux manually."
+      ;;
+  esac
+  if [ "$TMUX_INSTALLED" -eq 1 ]; then
+    info "tmux installed successfully"
+  else
+    warn "tmux installation failed. Deliberation monitor auto-window is disabled."
+  fi
 fi
 
 if command -v claude >/dev/null 2>&1; then
