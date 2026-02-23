@@ -22,6 +22,7 @@
  *   deliberation_clipboard_prepare_turn 브라우저 LLM용 턴 프롬프트를 클립보드로 복사
  *   deliberation_clipboard_submit_turn  클립보드 텍스트를 현재 턴 응답으로 제출
  *   deliberation_browser_auto_turn      브라우저 LLM에 자동으로 턴을 전송하고 응답을 수집 (CDP 기반)
+ *   deliberation_request_review         코드 리뷰 요청 (CLI 리뷰어 자동 호출, sync/async 모드)
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -2531,6 +2532,269 @@ server.tool(
     if (notInstalled.length > 0) result += `\n**⚠️ 미설치:** ${notInstalled.join(", ")} (PATH에서 찾을 수 없음)`;
 
     return { content: [{ type: "text", text: result }] };
+  })
+);
+
+// ── Request Review (auto-review) ───────────────────────────────
+
+function invokeCliReviewer(command, prompt, timeoutMs) {
+  const args = ["-p", prompt, "--no-input"];
+  try {
+    const result = execFileSync(command, args, {
+      encoding: "utf-8",
+      timeout: timeoutMs,
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: 5 * 1024 * 1024,
+      windowsHide: true,
+    });
+    return { ok: true, response: result.trim() };
+  } catch (error) {
+    if (error && error.killed) {
+      return { ok: false, error: "timeout" };
+    }
+    const msg = error instanceof Error ? error.message : String(error);
+    return { ok: false, error: msg };
+  }
+}
+
+function buildReviewPrompt(context, question, priorReviews) {
+  let prompt = `You are a code reviewer. Provide a concise, structured review.\n\n`;
+  prompt += `## Context\n${context}\n\n`;
+  prompt += `## Review Question\n${question}\n\n`;
+  if (priorReviews.length > 0) {
+    prompt += `## Prior Reviews\n`;
+    for (const r of priorReviews) {
+      prompt += `### ${r.reviewer}\n${r.response}\n\n`;
+    }
+  }
+  prompt += `Respond with your review. Be specific about issues, risks, and suggestions.`;
+  return prompt;
+}
+
+function synthesizeReviews(context, question, reviews) {
+  if (reviews.length === 0) return "(No reviews completed)";
+
+  let synthesis = `## Review Synthesis\n\n`;
+  synthesis += `**Question:** ${question}\n`;
+  synthesis += `**Reviews:** ${reviews.length}\n\n`;
+
+  synthesis += `### Individual Reviews\n\n`;
+  for (const r of reviews) {
+    synthesis += `#### ${r.reviewer}\n${r.response}\n\n`;
+  }
+
+  if (reviews.length > 1) {
+    synthesis += `### Summary\n`;
+    synthesis += `${reviews.length} reviewer(s) provided feedback on: ${question}\n`;
+    synthesis += `Reviewers: ${reviews.map(r => r.reviewer).join(", ")}\n`;
+  }
+
+  return synthesis;
+}
+
+server.tool(
+  "deliberation_request_review",
+  "코드 리뷰를 요청합니다. 여러 CLI 리뷰어에게 동시에 리뷰를 요청하고 결과를 종합합니다.",
+  {
+    context: z.string().describe("리뷰할 변경사항 설명 (코드, diff, 설계 등)"),
+    question: z.string().describe("리뷰 질문 (예: 'Is this error handling sufficient?')"),
+    reviewers: z.array(z.string().trim().min(1).max(64)).min(1).describe("리뷰어 CLI 목록 (예: [\"claude\", \"codex\"])"),
+    mode: z.enum(["sync", "async"]).default("sync").describe("sync: 결과 대기 후 반환, async: session_id 즉시 반환"),
+    deadline_ms: z.number().int().min(5000).max(600000).default(60000).describe("전체 타임아웃 (밀리초, 기본 60초)"),
+    min_reviews: z.number().int().min(1).default(1).describe("최소 필요 리뷰 수 (기본 1)"),
+    on_timeout: z.enum(["partial", "fail"]).default("partial").describe("타임아웃 시 동작: partial=부분 결과 반환, fail=에러"),
+  },
+  safeToolHandler("deliberation_request_review", async ({ context, question, reviewers, mode, deadline_ms, min_reviews, on_timeout }) => {
+    // Validate reviewers exist in PATH
+    const validReviewers = [];
+    const invalidReviewers = [];
+    for (const r of reviewers) {
+      const normalized = normalizeSpeaker(r);
+      if (!normalized) continue;
+      if (commandExistsInPath(normalized)) {
+        validReviewers.push(normalized);
+      } else {
+        invalidReviewers.push(normalized);
+      }
+    }
+
+    if (validReviewers.length === 0) {
+      return {
+        content: [{
+          type: "text",
+          text: `❌ 유효한 리뷰어가 없습니다. PATH에서 찾을 수 없는 CLI: ${invalidReviewers.join(", ")}\n\n사용 가능한 CLI를 확인하려면 deliberation_speaker_candidates를 호출하세요.`,
+        }],
+      };
+    }
+
+    // Create mini-session
+    const sessionId = generateSessionId("review");
+    const callerSpeaker = detectCallerSpeaker() || "requester";
+    const now = new Date().toISOString();
+
+    const state = {
+      id: sessionId,
+      project: getProjectSlug(),
+      topic: question.slice(0, 80),
+      type: "auto_review",
+      status: "active",
+      max_rounds: 1,
+      current_round: 1,
+      current_speaker: validReviewers[0],
+      speakers: validReviewers,
+      participant_profiles: validReviewers.map(r => ({ speaker: r, type: "cli", command: r })),
+      log: [],
+      synthesis: null,
+      requester: callerSpeaker,
+      review_context: context,
+      review_question: question,
+      review_mode: mode,
+      review_deadline_ms: deadline_ms,
+      review_min_reviews: min_reviews,
+      review_on_timeout: on_timeout,
+      pending_turn_id: generateTurnId(),
+      monitor_terminal_window_ids: [],
+      created: now,
+      updated: now,
+    };
+
+    withSessionLock(sessionId, () => {
+      ensureDirs();
+      saveSession(state);
+    });
+
+    // Async mode: return immediately
+    if (mode === "async") {
+      const warn = invalidReviewers.length > 0
+        ? `\n⚠️ PATH에서 찾을 수 없는 리뷰어 (제외됨): ${invalidReviewers.join(", ")}`
+        : "";
+      return {
+        content: [{
+          type: "text",
+          text: `✅ 비동기 리뷰 세션 생성됨\n\n**Session ID:** ${sessionId}\n**리뷰어:** ${validReviewers.join(", ")}\n**모드:** async${warn}\n\n진행 상태는 \`deliberation_status(session_id: "${sessionId}")\`로 확인하세요.`,
+        }],
+      };
+    }
+
+    // Sync mode: invoke each reviewer sequentially with deadline enforcement
+    const globalStart = Date.now();
+    const softBudgetPerReviewer = Math.floor(deadline_ms / validReviewers.length);
+    const completedReviews = [];
+    const timedOutReviewers = [];
+    const failedReviewers = [];
+
+    for (const reviewer of validReviewers) {
+      const elapsed = Date.now() - globalStart;
+      const remaining = deadline_ms - elapsed;
+
+      // Global deadline check
+      if (remaining <= 1000) {
+        timedOutReviewers.push(reviewer);
+        continue;
+      }
+
+      // Per-reviewer timeout: min of soft budget and remaining global time
+      const reviewerTimeout = Math.min(softBudgetPerReviewer, remaining);
+
+      const prompt = buildReviewPrompt(context, question, completedReviews);
+      const result = invokeCliReviewer(reviewer, prompt, reviewerTimeout);
+
+      if (result.ok) {
+        const entry = { reviewer, response: result.response };
+        completedReviews.push(entry);
+
+        // Add to session log
+        withSessionLock(sessionId, () => {
+          const latest = loadSession(sessionId);
+          if (!latest) return;
+          latest.log.push({
+            round: 1,
+            speaker: reviewer,
+            content: result.response,
+            timestamp: new Date().toISOString(),
+            turn_id: generateTurnId(),
+            channel_used: "cli_auto_review",
+            fallback_reason: null,
+          });
+          latest.updated = new Date().toISOString();
+          saveSession(latest);
+        });
+      } else if (result.error === "timeout") {
+        timedOutReviewers.push(reviewer);
+      } else {
+        failedReviewers.push({ reviewer, error: result.error });
+      }
+    }
+
+    // Check min_reviews threshold
+    if (completedReviews.length < min_reviews) {
+      if (on_timeout === "fail") {
+        // Mark session as failed
+        withSessionLock(sessionId, () => {
+          const latest = loadSession(sessionId);
+          if (!latest) return;
+          latest.status = "completed";
+          latest.synthesis = `Review failed: only ${completedReviews.length}/${min_reviews} required reviews completed.`;
+          saveSession(latest);
+          archiveState(latest);
+          cleanupSyncMarkdown(latest);
+        });
+
+        return {
+          content: [{
+            type: "text",
+            text: `❌ 리뷰 실패: 최소 ${min_reviews}개 리뷰 필요, ${completedReviews.length}개만 완료\n\n**Session:** ${sessionId}\n**완료:** ${completedReviews.map(r => r.reviewer).join(", ") || "(없음)"}\n**타임아웃:** ${timedOutReviewers.join(", ") || "(없음)"}\n**실패:** ${failedReviewers.map(r => `${r.reviewer}: ${r.error}`).join(", ") || "(없음)"}`,
+          }],
+        };
+      }
+      // on_timeout === "partial": fall through to return partial results
+    }
+
+    // Synthesize
+    const synthesis = synthesizeReviews(context, question, completedReviews);
+
+    // Complete session
+    let archivePath = null;
+    withSessionLock(sessionId, () => {
+      const latest = loadSession(sessionId);
+      if (!latest) return;
+      latest.status = "completed";
+      latest.synthesis = synthesis;
+      latest.current_speaker = "none";
+      saveSession(latest);
+      archivePath = archiveState(latest);
+      cleanupSyncMarkdown(latest);
+    });
+
+    const totalMs = Date.now() - globalStart;
+    const coverage = `${completedReviews.length}/${validReviewers.length}`;
+    const warn = invalidReviewers.length > 0
+      ? `\n**제외된 리뷰어 (미설치):** ${invalidReviewers.join(", ")}`
+      : "";
+    const timeoutInfo = timedOutReviewers.length > 0
+      ? `\n**타임아웃 리뷰어:** ${timedOutReviewers.join(", ")}`
+      : "";
+    const failInfo = failedReviewers.length > 0
+      ? `\n**실패 리뷰어:** ${failedReviewers.map(r => `${r.reviewer}: ${r.error}`).join(", ")}`
+      : "";
+
+    const resultPayload = {
+      synthesis,
+      completed_reviewers: completedReviews.map(r => r.reviewer),
+      timed_out_reviewers: timedOutReviewers,
+      failed_reviewers: failedReviewers.map(r => r.reviewer),
+      coverage,
+      mode: "sync",
+      session_id: sessionId,
+      elapsed_ms: totalMs,
+    };
+
+    return {
+      content: [{
+        type: "text",
+        text: `## Review 완료\n\n**Session:** ${sessionId}\n**Coverage:** ${coverage}\n**소요 시간:** ${totalMs}ms\n**완료 리뷰어:** ${completedReviews.map(r => r.reviewer).join(", ") || "(없음)"}${timeoutInfo}${failInfo}${warn}\n\n${synthesis}\n\n---\n\n\`\`\`json\n${JSON.stringify(resultPayload, null, 2)}\n\`\`\``,
+      }],
+    };
   })
 );
 
