@@ -611,56 +611,67 @@ function collectBrowserLlmTabsViaAppleScript() {
   const domainList = `{${escapedDomains.map(d => `"${d}"`).join(", ")}}`;
   const appList = `{${escapedApps.map(a => `"${a}"`).join(", ")}}`;
 
-  const script = [
-    `set llmDomains to ${domainList}`,
-    `set browserApps to ${appList}`,
-    "set outText to \"\"",
-    // Pre-check running apps via System Events (no locate dialog)
-    "tell application \"System Events\"",
-    "set runningApps to name of every application process",
-    "end tell",
-    "repeat with appName in browserApps",
-    "if runningApps contains (appName as string) then",
-    "try",
-    "tell application (appName as string)",
-    "if (appName as string) is \"Safari\" then",
-    "repeat with w in windows",
-    "try",
-    "repeat with t in tabs of w",
-    "set u to URL of t as string",
-    "set matched to false",
-    "repeat with d in llmDomains",
-    "if u contains (d as string) then set matched to true",
-    "end repeat",
-    "if matched then set outText to outText & (appName as string) & tab & (name of t as string) & tab & u & linefeed",
-    "end repeat",
-    "end try",
-    "end repeat",
-    "else",
-    "repeat with w in windows",
-    "try",
-    "repeat with t in tabs of w",
-    "set u to URL of t as string",
-    "set matched to false",
-    "repeat with d in llmDomains",
-    "if u contains (d as string) then set matched to true",
-    "end repeat",
-    "if matched then set outText to outText & (appName as string) & tab & (title of t as string) & tab & u & linefeed",
-    "end repeat",
-    "end try",
-    "end repeat",
-    "end if",
-    "end tell",
-    "on error errMsg",
-    "set outText to outText & (appName as string) & tab & \"ERROR\" & tab & errMsg & linefeed",
-    "end try",
-    "end if",
-    "end repeat",
-    "return outText",
-  ];
+  // NOTE: Use stdin pipe (`osascript -`) instead of multiple `-e` flags
+  // because osascript's `-e` mode silently breaks with nested try/on error blocks.
+  // Also wrap dynamic `tell application` with `using terms from` so that
+  // Chrome-specific properties like `tabs` resolve via the scripting dictionary.
+  // Use ASCII character 9 for tab delimiter because `using terms from`
+  // shadows the built-in `tab` constant, turning it into the literal string "tab".
+  const scriptText = `set llmDomains to ${domainList}
+set browserApps to ${appList}
+set outText to ""
+set tabChar to ASCII character 9
+tell application "System Events"
+set runningApps to name of every application process
+end tell
+repeat with appName in browserApps
+if runningApps contains (appName as string) then
+try
+if (appName as string) is "Safari" then
+using terms from application "Safari"
+tell application (appName as string)
+repeat with w in windows
+try
+repeat with t in tabs of w
+set u to URL of t as string
+set matched to false
+repeat with d in llmDomains
+if u contains (d as string) then set matched to true
+end repeat
+if matched then set outText to outText & (appName as string) & tabChar & (name of t as string) & tabChar & u & linefeed
+end repeat
+end try
+end repeat
+end tell
+end using terms from
+else
+using terms from application "Google Chrome"
+tell application (appName as string)
+repeat with w in windows
+try
+repeat with t in tabs of w
+set u to URL of t as string
+set matched to false
+repeat with d in llmDomains
+if u contains (d as string) then set matched to true
+end repeat
+if matched then set outText to outText & (appName as string) & tabChar & (title of t as string) & tabChar & u & linefeed
+end repeat
+end try
+end repeat
+end tell
+end using terms from
+end if
+on error errMsg
+set outText to outText & (appName as string) & tabChar & "ERROR" & tabChar & errMsg & linefeed
+end try
+end if
+end repeat
+return outText`;
 
   try {
-    const raw = execFileSync("osascript", script.flatMap(line => ["-e", line]), {
+    const raw = execFileSync("osascript", ["-"], {
+      input: scriptText,
       encoding: "utf-8",
       timeout: 8000,
       maxBuffer: 2 * 1024 * 1024,
