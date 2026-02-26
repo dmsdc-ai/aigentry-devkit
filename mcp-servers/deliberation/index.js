@@ -26,7 +26,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { execFileSync } from "child_process";
+import { execFileSync, spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 import os from "os";
@@ -641,20 +641,55 @@ async function ensureCdpAvailable() {
 
   // If none respond and platform is macOS, try auto-launching Chrome with CDP
   if (process.platform === "darwin") {
+    // Chrome 145+ requires --user-data-dir for CDP to work.
+    // The default data dir is rejected, so we copy the profile to ~/.chrome-cdp.
+    const chromeUserDataDir = path.join(os.homedir(), "Library", "Application Support", "Google", "Chrome");
+    const cdpDataDir = path.join(os.homedir(), ".chrome-cdp");
+    const profileDir = "Default";
+
     try {
-      execFileSync("open", ["-a", "Google Chrome", "--args", "--remote-debugging-port=9222"], {
-        timeout: 5000,
-        stdio: "ignore",
-      });
+      const srcProfile = path.join(chromeUserDataDir, profileDir);
+      const dstProfile = path.join(cdpDataDir, profileDir);
+      if (!fs.existsSync(dstProfile) && fs.existsSync(srcProfile)) {
+        fs.mkdirSync(cdpDataDir, { recursive: true });
+        execFileSync("cp", ["-R", srcProfile, dstProfile], { timeout: 30000, stdio: "ignore" });
+        // Create minimal Local State with single profile to avoid profile picker
+        const localStateSrc = path.join(chromeUserDataDir, "Local State");
+        if (fs.existsSync(localStateSrc)) {
+          const state = JSON.parse(fs.readFileSync(localStateSrc, "utf8"));
+          state.profile.profiles_created = 1;
+          state.profile.last_used = profileDir;
+          if (state.profile.info_cache) {
+            const kept = {};
+            if (state.profile.info_cache[profileDir]) kept[profileDir] = state.profile.info_cache[profileDir];
+            state.profile.info_cache = kept;
+          }
+          fs.writeFileSync(path.join(cdpDataDir, "Local State"), JSON.stringify(state));
+        }
+      }
+    } catch { /* proceed with launch attempt anyway */ }
+
+    const chromeBin = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+    const launchArgs = [
+      "--remote-debugging-port=9222",
+      "--remote-allow-origins=*",
+      `--user-data-dir=${cdpDataDir}`,
+      `--profile-directory=${profileDir}`,
+      "--no-first-run",
+    ];
+
+    try {
+      const child = spawn(chromeBin, launchArgs, { stdio: "ignore", detached: true });
+      child.unref();
     } catch {
       return {
         available: false,
-        reason: "Chrome 자동 실행에 실패했습니다. Chrome을 수동으로 --remote-debugging-port=9222 옵션과 함께 실행해주세요.",
+        reason: "Chrome 자동 실행에 실패했습니다. Chrome을 수동으로 --remote-debugging-port=9222 --user-data-dir=~/.chrome-cdp 옵션과 함께 실행해주세요.",
       };
     }
 
     // Wait for Chrome to initialize CDP
-    sleepMs(2000);
+    sleepMs(5000);
 
     // Retry CDP connection after launch
     for (const endpoint of endpoints) {
