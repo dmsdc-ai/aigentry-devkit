@@ -1,0 +1,13 @@
+{
+  "schema_version": "2.0.0",
+  "tool": "aigentry",
+  "phase": 0,
+  "phase_name": "setup",
+  "tdd_state": null,
+  "active_lens": null,
+  "branch": null,
+  "modes": [],
+  "tasks": [],
+  "tdd_exemptions": [],
+  "evidence": {}
+}

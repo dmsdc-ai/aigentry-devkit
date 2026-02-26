@@ -34,6 +34,7 @@
     "skills/deliberation-executor/**",
     "skills/env-manager/**",
     "skills/youtube-analyzer/**",
+    "templates/aigentry/**",
     "LICENSE",
     "README.md"
   ],
