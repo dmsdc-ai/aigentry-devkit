@@ -1,0 +1,32 @@
+{
+  "version": "1.0.0",
+  "servers": {
+    "deliberation": {
+      "install_method": "git_clone",
+      "repo": "https://github.com/dmsdc-ai/aigentry-devkit.git",
+      "subpath": "mcp-servers/deliberation",
+      "command": "node",
+      "args": ["{{install_dir}}/mcp-servers/deliberation/index.js"],
+      "description": "다중 AI 에이전트 토론 및 합의 도출 서버. 여러 LLM이 협력하여 복잡한 문제를 분석합니다.",
+      "default": true,
+      "category": "collaboration",
+      "codex_compatible": false
+    },
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp@latest"],
+      "description": "라이브러리 및 프레임워크의 최신 공식 문서를 실시간으로 조회합니다. 코드 작성 시 정확한 API 참조를 제공합니다.",
+      "default": true,
+      "category": "research",
+      "codex_compatible": true
+    },
+    "sequential-thinking": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+      "description": "단계별 순차적 사고를 통해 복잡한 문제를 체계적으로 분석하고 해결합니다.",
+      "default": false,
+      "category": "reasoning",
+      "codex_compatible": true
+    }
+  }
+}

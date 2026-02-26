@@ -171,8 +171,46 @@ else
   fi
 fi
 
+# ── MCP Server Bundle ──
+header "5. MCP Server Bundle"
+
+# context7 (기본 포함)
+info "Verifying context7 MCP server (default)..."
+if npx -y @upstash/context7-mcp@latest --help >/dev/null 2>&1; then
+  info "context7 MCP server available (npx @upstash/context7-mcp)"
+else
+  warn "context7 MCP server not available. Check npm/npx installation."
+fi
+
+# 선택 서버
+if [ -t 0 ]; then
+  echo ""
+  echo -e "  ${BOLD}추가 MCP 서버 설치 (선택):${NC}"
+  echo ""
+  OPTIONAL_SERVERS="sequential-thinking"
+  SELECTED_SERVERS=""
+  for srv in $OPTIONAL_SERVERS; do
+    case "$srv" in
+      sequential-thinking)
+        desc="구조화된 사고 프로세스"
+        ;;
+    esac
+    printf "  Enable ${CYAN}%-24s${NC} — %s? [y/N] " "$srv" "$desc"
+    read -r answer </dev/tty
+    case "$answer" in
+      [yY]*) SELECTED_SERVERS="$SELECTED_SERVERS $srv" ;;
+    esac
+  done
+  SELECTED_SERVERS=$(echo "$SELECTED_SERVERS" | xargs)
+  if [ -n "$SELECTED_SERVERS" ]; then
+    info "Selected optional servers: $SELECTED_SERVERS"
+  else
+    info "No optional servers selected"
+  fi
+fi
+
 # ── MCP 등록 ──
-header "5. MCP Registration"
+header "6. MCP Registration"
 
 MCP_CONFIG="$CLAUDE_DIR/.mcp.json"
 
@@ -207,11 +245,65 @@ else
     "deliberation": {
       "command": "node",
       "args": ["$MCP_DEST/index.js"]
+    },
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp@latest"]
     }
   }
 }
 MCPEOF
   info "Created $MCP_CONFIG with deliberation MCP"
+fi
+
+# context7 MCP 등록
+if node -e "const fs=require('fs');let c={};try{c=JSON.parse(fs.readFileSync('$MCP_CONFIG','utf-8'));}catch{}process.exit(c.mcpServers?.context7?0:1)" 2>/dev/null; then
+  info "context7 MCP already registered"
+else
+  node -e "
+    const fs = require('fs');
+    let c = {};
+    try {
+      c = JSON.parse(fs.readFileSync('$MCP_CONFIG', 'utf-8'));
+    } catch {
+      c = {};
+    }
+    if (!c.mcpServers) c.mcpServers = {};
+    c.mcpServers.context7 = {
+      command: 'npx',
+      args: ['-y', '@upstash/context7-mcp@latest']
+    };
+    fs.writeFileSync('$MCP_CONFIG', JSON.stringify(c, null, 2));
+  "
+  info "Registered context7 MCP in $MCP_CONFIG"
+fi
+
+# 선택 서버 MCP 등록
+if [ -n "${SELECTED_SERVERS:-}" ]; then
+  for srv in $SELECTED_SERVERS; do
+    case "$srv" in
+      sequential-thinking)
+        SRV_CMD="npx"
+        SRV_ARGS='["-y","@modelcontextprotocol/server-sequential-thinking"]'
+        ;;
+    esac
+    node -e "
+      const fs = require('fs');
+      let c = {};
+      try {
+        c = JSON.parse(fs.readFileSync('$MCP_CONFIG', 'utf-8'));
+      } catch {
+        c = {};
+      }
+      if (!c.mcpServers) c.mcpServers = {};
+      c.mcpServers['$srv'] = {
+        command: '$SRV_CMD',
+        args: $SRV_ARGS
+      };
+      fs.writeFileSync('$MCP_CONFIG', JSON.stringify(c, null, 2));
+    "
+    info "Registered $srv MCP in $MCP_CONFIG"
+  done
 fi
 
 # Claude Code CLI 등록 (최신 런타임 경로)
@@ -223,6 +315,11 @@ if command -v claude >/dev/null 2>&1; then
       info "Registered deliberation MCP in Claude Code user scope (~/.claude.json)"
     else
       warn "Claude Code MCP registration failed. Run manually: claude mcp add --scope user deliberation -- node $MCP_DEST/index.js"
+    fi
+    # context7 등록
+    claude mcp remove --scope user context7 >/dev/null 2>&1 || true
+    if claude mcp add --scope user context7 -- npx -y @upstash/context7-mcp@latest >/dev/null 2>&1; then
+      info "Registered context7 MCP in Claude Code user scope"
     fi
   else
     if claude mcp add deliberation -- node "$MCP_DEST/index.js" >/dev/null 2>&1; then
@@ -242,7 +339,7 @@ else
 fi
 
 # ── Config 템플릿 ──
-header "6. Config Templates"
+header "7. Config Templates"
 
 # settings.json
 SETTINGS_DEST="$CLAUDE_DIR/settings.json"
@@ -269,7 +366,7 @@ else
 fi
 
 # ── 참가자 CLI 선택 ──
-header "7. Participant CLI Selection"
+header "8. Participant CLI Selection"
 
 # Detect available CLIs
 AVAILABLE_CLIS=""
@@ -331,6 +428,8 @@ if command -v codex >/dev/null 2>&1; then
   codex mcp add deliberation -- node "$MCP_DEST/index.js" 2>/dev/null && \
     info "Registered deliberation MCP in Codex" || \
     warn "Codex MCP registration failed (may already exist)"
+  codex mcp add context7 -- npx -y @upstash/context7-mcp@latest 2>/dev/null && \
+    info "Registered context7 MCP in Codex" || true
 
   if codex mcp list 2>/dev/null | grep -q "deliberation"; then
     info "Codex MCP verification passed (deliberation found)"
@@ -339,7 +438,7 @@ if command -v codex >/dev/null 2>&1; then
   fi
 fi
 
-header "8. Cross-platform Notes"
+header "9. Cross-platform Notes"
 info "Supported participant CLIs: claude, codex, gemini, qwen, chatgpt, aider, llm, opencode, cursor"
 info "Manage enabled CLIs anytime: deliberation_cli_config MCP tool"
 info "Browser LLM tab detection: macOS automation + CDP scan (Linux/Windows need browser remote-debugging port)."
@@ -351,7 +450,7 @@ echo ""
 echo -e "  ${BOLD}Installed components:${NC}"
 echo -e "    Skills:     $(ls -d "$SKILLS_DEST"/*/ 2>/dev/null | wc -l | tr -d ' ') skills in $SKILLS_DEST"
 echo -e "    HUD:        $HUD_DEST/simple-status.sh"
-echo -e "    MCP Server: $MCP_DEST"
+echo -e "    MCP Servers: deliberation + context7 (default) + ${SELECTED_SERVERS:-none} (optional)"
 echo -e "    Config:     $CLAUDE_DIR"
 echo ""
 echo -e "  ${BOLD}Next steps:${NC}"

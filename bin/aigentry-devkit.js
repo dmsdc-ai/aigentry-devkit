@@ -32,6 +32,28 @@ function commandExists(command) {
   return result.status === 0;
 }
 
+function loadMcpRegistry() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(rootDir, "config", "mcp-registry.json"), "utf-8"));
+  } catch {
+    return { servers: {} };
+  }
+}
+
+function checkMcpServerStatus(name, serverDef) {
+  // deliberation: check local install
+  if (serverDef.local_install) {
+    const indexPath = path.join(HOME, ".local", "lib", "mcp-deliberation", "index.js");
+    return fs.existsSync(indexPath) ? "installed" : "not_installed";
+  }
+  // npx servers: check if registered in .mcp.json
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(HOME, ".claude", ".mcp.json"), "utf-8"));
+    if (cfg.mcpServers?.[name]) return "registered";
+  } catch {}
+  return serverDef.default ? "not_registered" : "available";
+}
+
 function run(command, args) {
   const result = spawnSync(command, args, { stdio: "inherit" });
   if (result.error) {
@@ -135,16 +157,49 @@ function runDoctor() {
 
   console.log("🔍 aigentry-devkit Doctor\n");
   let allPassed = true;
+
+  console.log("  📋 System Checks:");
   for (const check of checks) {
     let ok = false;
     try { ok = check.test(); } catch { ok = false; }
     const icon = ok ? "✅" : "❌";
-    console.log(`  ${icon} ${check.name}`);
+    console.log(`    ${icon} ${check.name}`);
     if (!ok) {
-      console.log(`     → ${check.fix}`);
+      console.log(`       → ${check.fix}`);
       allPassed = false;
     }
   }
+
+  // MCP Server Bundle checks
+  console.log("\n  📦 MCP Servers:");
+  const registry = loadMcpRegistry();
+  for (const [name, def] of Object.entries(registry.servers || {})) {
+    const status = checkMcpServerStatus(name, def);
+    let icon, label;
+    switch (status) {
+      case "installed":
+      case "registered":
+        icon = "✅";
+        label = def.local_install ? "installed" : "registered";
+        break;
+      case "not_registered":
+        icon = "⚠️";
+        label = "not registered (default server — run setup)";
+        allPassed = false;
+        break;
+      case "not_installed":
+        icon = "❌";
+        label = "not installed";
+        allPassed = false;
+        break;
+      default:
+        icon = "➖";
+        label = "available (optional)";
+    }
+    const defaultTag = def.default ? " [default]" : " [optional]";
+    console.log(`    ${icon} ${name}${defaultTag} — ${label}`);
+  }
+
   console.log(allPassed ? "\n✅ 모든 검사 통과!" : "\n⚠️ 일부 항목 수정 필요");
   process.exit(allPassed ? 0 : 1);
 }
