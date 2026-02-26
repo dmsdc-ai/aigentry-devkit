@@ -1946,12 +1946,24 @@ server.tool(
   "새 deliberation을 시작합니다. 여러 토론을 동시에 진행할 수 있습니다.",
   {
     topic: z.string().describe("토론 주제"),
-    rounds: z.number().default(3).describe("라운드 수 (기본 3)"),
+    rounds: z.coerce.number().default(3).describe("라운드 수 (기본 3)"),
     first_speaker: z.string().trim().min(1).max(64).optional().describe("첫 발언자 이름 (미지정 시 speakers의 첫 항목)"),
-    speakers: z.array(z.string().trim().min(1).max(64)).min(1).optional().describe("참가자 이름 목록 (예: codex, claude, web-chatgpt-1)"),
-    require_manual_speakers: z.boolean().default(true).describe("true면 speakers를 반드시 직접 지정해야 시작"),
-    auto_discover_speakers: z.boolean().default(false).describe("speakers 생략 시 PATH 기반 자동 탐색 여부 (require_manual_speakers=false일 때만 사용)"),
-    participant_types: z.record(z.string(), z.enum(["cli", "browser", "browser_auto", "manual"])).optional().describe("speaker별 타입 오버라이드 (예: {\"chatgpt\": \"browser_auto\"})"),
+    speakers: z.preprocess(
+      (v) => (typeof v === "string" ? JSON.parse(v) : v),
+      z.array(z.string().trim().min(1).max(64)).min(1).optional()
+    ).describe("참가자 이름 목록 (예: codex, claude, web-chatgpt-1)"),
+    require_manual_speakers: z.preprocess(
+      (v) => (typeof v === "string" ? v === "true" : v),
+      z.boolean().default(true)
+    ).describe("true면 speakers를 반드시 직접 지정해야 시작"),
+    auto_discover_speakers: z.preprocess(
+      (v) => (typeof v === "string" ? v === "true" : v),
+      z.boolean().default(false)
+    ).describe("speakers 생략 시 PATH 기반 자동 탐색 여부 (require_manual_speakers=false일 때만 사용)"),
+    participant_types: z.preprocess(
+      (v) => (typeof v === "string" ? JSON.parse(v) : v),
+      z.record(z.string(), z.enum(["cli", "browser", "browser_auto", "manual"])).optional()
+    ).describe("speaker별 타입 오버라이드 (예: {\"chatgpt\": \"browser_auto\"})"),
   },
   safeToolHandler("deliberation_start", async ({ topic, rounds, first_speaker, speakers, require_manual_speakers, auto_discover_speakers, participant_types }) => {
     const sessionId = generateSessionId(topic);
