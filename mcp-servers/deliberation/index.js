@@ -112,6 +112,77 @@ function isExtensionLlmTab(url = "", title = "") {
   );
 }
 
+// ── Sprint 1: Smart Speaker Ordering + Persona Roles ────────────
+
+function selectNextSpeaker(session) {
+  const { speakers, current_speaker, log, ordering_strategy } = session;
+  switch (ordering_strategy || "cyclic") {
+    case "random":
+      return speakers[Math.floor(Math.random() * speakers.length)];
+    case "weighted-random": {
+      const window = log.slice(-(speakers.length * 2));
+      const counts = new Map(speakers.map(s => [s, 0]));
+      for (const entry of window) {
+        if (counts.has(entry.speaker)) counts.set(entry.speaker, counts.get(entry.speaker) + 1);
+      }
+      const maxCount = Math.max(...counts.values(), 1);
+      const weights = speakers.map(s => maxCount + 1 - counts.get(s));
+      const total = weights.reduce((a, b) => a + b, 0);
+      let r = Math.random() * total;
+      for (let i = 0; i < speakers.length; i++) {
+        r -= weights[i];
+        if (r <= 0) return speakers[i];
+      }
+      return speakers[speakers.length - 1];
+    }
+    case "cyclic":
+    default: {
+      const idx = speakers.indexOf(current_speaker);
+      return speakers[(idx + 1) % speakers.length];
+    }
+  }
+}
+
+function loadRolePrompt(role) {
+  if (!role || role === "free") return "";
+  try {
+    const promptPath = path.join(__dirnameEsm, "selectors", "roles", `${role}.md`);
+    return fs.readFileSync(promptPath, "utf-8").trim();
+  } catch {
+    return "";
+  }
+}
+
+const ROLE_KEYWORDS = {
+  critic: /문제|위험|실패|약점|리스크|반대|비판|결함|취약/,
+  implementer: /구현|코드|방법|설계|빌드|개발|함수|모듈|파일/,
+  mediator: /합의|정리|결론|종합|요약|중재|절충|균형/,
+  researcher: /사례|데이터|연구|벤치마크|비교|논문|참고/,
+};
+
+function inferSuggestedRole(text) {
+  const scores = {};
+  for (const [role, pattern] of Object.entries(ROLE_KEYWORDS)) {
+    const matches = (text.match(new RegExp(pattern, "g")) || []).length;
+    if (matches > 0) scores[role] = matches;
+  }
+  if (Object.keys(scores).length === 0) return "free";
+  return Object.entries(scores).sort((a, b) => b[1] - a[1])[0][0];
+}
+
+function parseVotes(text) {
+  const votes = [];
+  for (const line of text.split("\n")) {
+    const agree = line.match(/\[AGREE\]/i);
+    const disagree = line.match(/\[DISAGREE\]/i);
+    const conditional = line.match(/\[CONDITIONAL:\s*(.+?)\]/i);
+    if (agree) votes.push({ line: line.trim(), vote: "agree" });
+    else if (disagree) votes.push({ line: line.trim(), vote: "disagree" });
+    else if (conditional) votes.push({ line: line.trim(), vote: "conditional", condition: conditional[1].trim() });
+  }
+  return votes;
+}
+
 const PRODUCT_DISCLAIMER = "ℹ️ 이 도구는 외부 웹사이트를 영구 수정하지 않습니다. 브라우저 문맥을 읽기 전용으로 참조하여 발화자를 라우팅합니다.";
 const LOCKS_SUBDIR = ".locks";
 const LOCK_RETRY_MS = 25;
@@ -1804,13 +1875,21 @@ function formatRecentLogForPrompt(state, maxEntries = 4) {
 function buildClipboardTurnPrompt(state, speaker, prompt, includeHistoryEntries = 4) {
   const recent = formatRecentLogForPrompt(state, includeHistoryEntries);
   const extraPrompt = prompt ? `\n[추가 지시]\n${prompt}\n` : "";
+
+  // Role prompt injection
+  const speakerRole = (state.speaker_roles || {})[speaker] || "free";
+  const rolePromptText = loadRolePrompt(speakerRole);
+  const roleSection = rolePromptText
+    ? `\n[role]\nrole: ${speakerRole}\n${rolePromptText}\n[/role]\n`
+    : "";
+
   return `[deliberation_turn_request]
 session_id: ${state.id}
 project: ${state.project}
 topic: ${state.topic}
 round: ${state.current_round}/${state.max_rounds}
 target_speaker: ${speaker}
-required_turn: ${state.current_speaker}
+required_turn: ${state.current_speaker}${roleSection}
 
 [recent_log]
 ${recent}
@@ -1818,7 +1897,7 @@ ${recent}
 
 [response_rule]
 - 위 토론 맥락을 반영해 ${speaker}의 이번 턴 응답만 작성
-- 마크다운 본문만 출력 (불필요한 머리말/꼬리말 금지)
+- 마크다운 본문만 출력 (불필요한 머리말/꼬리말 금지)${speakerRole !== "free" ? `\n- 배정된 역할(${speakerRole})의 관점에서 분석하고 응답` : ""}
 [/response_rule]
 [/deliberation_turn_request]
 `;
@@ -1871,6 +1950,8 @@ function submitDeliberationTurn({ session_id, speaker, content, turn_id, channel
       };
     }
 
+    const votes = parseVotes(content);
+    const suggestedRole = inferSuggestedRole(content);
     state.log.push({
       round: state.current_round,
       speaker: normalizedSpeaker,
@@ -1879,13 +1960,18 @@ function submitDeliberationTurn({ session_id, speaker, content, turn_id, channel
       turn_id: state.pending_turn_id || null,
       channel_used: channel_used || null,
       fallback_reason: fallback_reason || null,
+      votes: votes.length > 0 ? votes : undefined,
+      suggested_next_role: suggestedRole !== "free" ? suggestedRole : undefined,
     });
 
-    const idx = state.speakers.indexOf(normalizedSpeaker);
-    const nextIdx = (idx + 1) % state.speakers.length;
-    state.current_speaker = state.speakers[nextIdx];
+    state.current_speaker = selectNextSpeaker(state);
 
-    if (nextIdx === 0) {
+    // Round transition: check if all speakers have spoken this round
+    const roundEntries = state.log.filter(e => e.round === state.current_round);
+    const spokeSpeakers = new Set(roundEntries.map(e => e.speaker));
+    const allSpoke = state.speakers.every(s => spokeSpeakers.has(s));
+
+    if (allSpoke) {
       if (state.current_round >= state.max_rounds) {
         state.status = "awaiting_synthesis";
         state.current_speaker = "none";
@@ -1964,8 +2050,14 @@ server.tool(
       (v) => (typeof v === "string" ? JSON.parse(v) : v),
       z.record(z.string(), z.enum(["cli", "browser", "browser_auto", "manual"])).optional()
     ).describe("speaker별 타입 오버라이드 (예: {\"chatgpt\": \"browser_auto\"})"),
+    ordering_strategy: z.enum(["cyclic", "random", "weighted-random"]).default("cyclic")
+      .describe("발언 순서 전략: cyclic(순서대로), random(매턴 무작위), weighted-random(덜 말한 사람 우선)"),
+    speaker_roles: z.preprocess(
+      (v) => (typeof v === "string" ? JSON.parse(v) : v),
+      z.record(z.string(), z.enum(["critic", "implementer", "mediator", "researcher", "free"])).optional()
+    ).describe("speaker별 역할 배정 (예: {\"claude\": \"critic\", \"codex\": \"implementer\"})"),
   },
-  safeToolHandler("deliberation_start", async ({ topic, rounds, first_speaker, speakers, require_manual_speakers, auto_discover_speakers, participant_types }) => {
+  safeToolHandler("deliberation_start", async ({ topic, rounds, first_speaker, speakers, require_manual_speakers, auto_discover_speakers, participant_types, ordering_strategy, speaker_roles }) => {
     const sessionId = generateSessionId(topic);
     const hasManualSpeakers = Array.isArray(speakers) && speakers.length > 0;
     const candidateSnapshot = await collectSpeakerCandidates({ include_cli: true, include_browser: true });
@@ -2013,6 +2105,8 @@ server.tool(
       synthesis: null,
       pending_turn_id: generateTurnId(),
       monitor_terminal_window_ids: [],
+      ordering_strategy: ordering_strategy || "cyclic",
+      speaker_roles: speaker_roles || {},
       created: new Date().toISOString(),
       updated: new Date().toISOString(),
     };
@@ -2082,7 +2176,7 @@ server.tool(
     return {
       content: [{
         type: "text",
-        text: `✅ Deliberation 시작!\n\n**세션:** ${sessionId}\n**프로젝트:** ${state.project}\n**주제:** ${topic}\n**라운드:** ${rounds}\n**참가자 구성:** ${participantMode}\n**참가자:** ${speakerOrder.join(", ")}\n**첫 발언:** ${state.current_speaker}\n**동시 진행 세션:** ${active.length}개${terminalMsg}${detectWarning}\n\n**Transport 라우팅:**\n${transportSummary}\n\n💡 이후 도구 호출 시 session_id: "${sessionId}" 를 사용하세요.`,
+        text: `✅ Deliberation 시작!\n\n**세션:** ${sessionId}\n**프로젝트:** ${state.project}\n**주제:** ${topic}\n**라운드:** ${rounds}\n**발언 순서:** ${state.ordering_strategy || "cyclic"}\n**참가자 구성:** ${participantMode}\n**참가자:** ${speakerOrder.join(", ")}\n**첫 발언:** ${state.current_speaker}\n**동시 진행 세션:** ${active.length}개${terminalMsg}${detectWarning}\n\n**역할 배정:**\n${speakerOrder.map(s => `  - \`${s}\`: ${(state.speaker_roles || {})[s] || "free"}`).join("\n")}\n\n**Transport 라우팅:**\n${transportSummary}\n\n💡 이후 도구 호출 시 session_id: "${sessionId}" 를 사용하세요.`,
       }],
     };
   })
@@ -2264,7 +2358,7 @@ server.tool(
     return {
       content: [{
         type: "text",
-        text: `## 턴 라우팅 — ${state.id}\n\n**현재 speaker:** ${speaker}\n**Transport:** ${transport}${reason ? ` (fallback: ${reason})` : ""}${profileInfo}\n**Turn ID:** ${turnId || "(없음)"}\n**라운드:** ${state.current_round}/${state.max_rounds}\n\n${guidance}${extra}\n\n${PRODUCT_DISCLAIMER}`,
+        text: `## 턴 라우팅 — ${state.id}\n\n**현재 speaker:** ${speaker}\n**Transport:** ${transport}${reason ? ` (fallback: ${reason})` : ""}${profileInfo}\n**역할:** ${(state.speaker_roles || {})[speaker] || "free"}\n**Turn ID:** ${turnId || "(없음)"}\n**라운드:** ${state.current_round}/${state.max_rounds}\n**발언 순서:** ${state.ordering_strategy || "cyclic"}\n\n${guidance}${extra}\n\n${PRODUCT_DISCLAIMER}`,
       }],
     };
   })

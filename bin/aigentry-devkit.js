@@ -5,18 +5,23 @@ const path = require("path");
 const { spawnSync } = require("child_process");
 
 const rootDir = path.resolve(__dirname, "..");
+const HOME = process.env.HOME || process.env.USERPROFILE || "";
 
 function printHelp() {
   const text = [
     "aigentry-devkit CLI",
     "",
     "Usage:",
-    "  aigentry-devkit install [--force]",
-    "  aigentry-devkit --help",
+    "  aigentry-devkit setup [--force]    Install/setup aigentry-devkit",
+    "  aigentry-devkit install [--force]   Alias for setup",
+    "  aigentry-devkit doctor              Diagnose installation health",
+    "  aigentry-devkit update [--force]    Update to latest version",
+    "  aigentry-devkit --help              Show this help",
     "",
     "Examples:",
-    "  npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit install",
-    "  npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit install --force",
+    "  npx @dmsdc-ai/aigentry-devkit setup",
+    "  npx @dmsdc-ai/aigentry-devkit doctor",
+    "  npx @dmsdc-ai/aigentry-devkit update",
   ].join("\n");
   process.stdout.write(`${text}\n`);
 }
@@ -73,8 +78,97 @@ function runInstall(flags) {
   run("bash", args);
 }
 
+function runDoctor() {
+  const checks = [
+    {
+      name: "Node.js 18+",
+      test: () => {
+        const v = process.versions.node.split(".").map(Number);
+        return v[0] >= 18;
+      },
+      fix: "Node.js 18+ 설치: https://nodejs.org/",
+    },
+    {
+      name: "MCP Server 파일",
+      test: () => fs.existsSync(path.join(HOME, ".local", "lib", "mcp-deliberation", "index.js")),
+      fix: "npx @dmsdc-ai/aigentry-devkit setup 실행",
+    },
+    {
+      name: "MCP 등록 (.mcp.json)",
+      test: () => {
+        try {
+          const cfg = JSON.parse(fs.readFileSync(path.join(HOME, ".claude", ".mcp.json"), "utf-8"));
+          return !!cfg.mcpServers?.deliberation;
+        } catch { return false; }
+      },
+      fix: "npx @dmsdc-ai/aigentry-devkit setup 실행",
+    },
+    {
+      name: "Skills 심볼릭 링크",
+      test: () => {
+        const skillsDir = path.join(HOME, ".claude", "skills");
+        return fs.existsSync(path.join(skillsDir, "deliberation")) ||
+               fs.existsSync(path.join(skillsDir, "clipboard-image"));
+      },
+      fix: "npx @dmsdc-ai/aigentry-devkit setup 실행",
+    },
+    {
+      name: "tmux",
+      test: () => commandExists("tmux"),
+      fix: process.platform === "darwin"
+        ? "brew install tmux"
+        : process.platform === "win32"
+        ? "선택사항 — Windows Terminal 사용 시 불필요"
+        : "apt install tmux",
+    },
+    {
+      name: "Chrome (CDP용)",
+      test: () => {
+        if (process.platform === "darwin") {
+          return fs.existsSync("/Applications/Google Chrome.app");
+        }
+        return commandExists("google-chrome") || commandExists("chromium-browser") || commandExists("chrome");
+      },
+      fix: "Chrome 설치 (브라우저 LLM 자동화에 필요, 선택사항)",
+    },
+  ];
+
+  console.log("🔍 aigentry-devkit Doctor\n");
+  let allPassed = true;
+  for (const check of checks) {
+    let ok = false;
+    try { ok = check.test(); } catch { ok = false; }
+    const icon = ok ? "✅" : "❌";
+    console.log(`  ${icon} ${check.name}`);
+    if (!ok) {
+      console.log(`     → ${check.fix}`);
+      allPassed = false;
+    }
+  }
+  console.log(allPassed ? "\n✅ 모든 검사 통과!" : "\n⚠️ 일부 항목 수정 필요");
+  process.exit(allPassed ? 0 : 1);
+}
+
+function runUpdate(flags) {
+  console.log("📦 aigentry-devkit 업데이트 중...\n");
+  const npmResult = spawnSync("npm", ["install", "-g", "@dmsdc-ai/aigentry-devkit@latest"], {
+    stdio: "inherit",
+    shell: process.platform === "win32",
+  });
+  if (npmResult.status !== 0) {
+    console.error("\n❌ npm 업데이트 실패. 수동으로 실행하세요:");
+    console.error("  npm install -g @dmsdc-ai/aigentry-devkit@latest");
+    process.exit(1);
+  }
+  console.log("\n✅ 패키지 업데이트 완료. 설정 재적용 중...\n");
+  flags.add("--force");
+  runInstall(flags);
+}
+
+// ── CLI Entry Point ──
+
 const argv = process.argv.slice(2);
-let command = "install";
+let command = "setup";
 if (argv.length > 0 && !argv[0].startsWith("-")) {
   command = argv.shift();
 }
@@ -85,10 +179,19 @@ if (command === "help" || flags.has("--help") || flags.has("-h")) {
   process.exit(0);
 }
 
-if (command !== "install") {
-  process.stderr.write(`Unknown command: ${command}\n\n`);
-  printHelp();
-  process.exit(1);
+switch (command) {
+  case "install":
+  case "setup":
+    runInstall(flags);
+    break;
+  case "doctor":
+    runDoctor();
+    break;
+  case "update":
+    runUpdate(flags);
+    break;
+  default:
+    process.stderr.write(`Unknown command: ${command}\n\n`);
+    printHelp();
+    process.exit(1);
 }
-
-runInstall(flags);
