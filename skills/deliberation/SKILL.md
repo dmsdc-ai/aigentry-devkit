@@ -35,6 +35,7 @@ Claude/Codex를 포함해 MCP를 지원하는 임의 CLI들이 구조화된 토�
 | `deliberation_synthesize` | 합성 보고서 생성 및 토론 완료 | 선택적* |
 | `deliberation_list` | 과거 토론 아카이브 목록 | 불필요 |
 | `deliberation_reset` | 세션 초기화 (지정 시 해당 세션만, 미지정 시 전체) | 선택적 |
+| `deliberation_cli_config` | 참가자 LLM 활성화/비활성화 설정 | 불필요 |
 
 *\*선택적: 활성 세션이 1개면 자동 선택. 여러 세션 진행 중이면 필수.*
 
@@ -57,8 +58,9 @@ Claude/Codex를 포함해 MCP를 지원하는 임의 CLI들이 구조화된 토�
 ## 워크플로우
 
 ### A. 사용자 선택형 진행 (권장)
-1. `deliberation_speaker_candidates` → 참가 가능한 CLI/브라우저 speaker 확인
-2. **AskUserQuestion으로 참가자 선택** — 감지된 CLI/브라우저 speaker 목록을 `multiSelect: true`로 제시하여 사용자가 원하는 참가자만 체크. 예:
+1. `deliberation_cli_config()` → 활성 LLM 설정 확인 (필요 시 변경)
+2. `deliberation_speaker_candidates` → 참가 가능한 CLI/브라우저 speaker 확인
+3. **AskUserQuestion으로 참가자 선택** — 감지된 CLI/브라우저 speaker 목록을 `multiSelect: true`로 제시하여 사용자가 원하는 참가자만 체크. 예:
    ```
    AskUserQuestion({
      questions: [{
@@ -76,12 +78,12 @@ Claude/Codex를 포함해 MCP를 지원하는 임의 CLI들이 구조화된 토�
      }]
    })
    ```
-3. `deliberation_start` (선택된 speakers 전달) → session_id 획득
-4. `deliberation_route_turn` → 현재 차례 speaker transport 자동 결정
+4. `deliberation_start` (선택된 speakers 전달) → session_id 획득
+5. `deliberation_route_turn` → 현재 차례 speaker transport 자동 결정
    - CLI speaker → 자동 응답
    - browser_auto → CDP로 자동 전송/수집
-5. 반복 후 `deliberation_synthesize(session_id)` → 합성 완료
-6. 구현이 필요하면 `deliberation-executor` 스킬로 handoff
+6. 반복 후 `deliberation_synthesize(session_id)` → 합성 완료
+7. 구현이 필요하면 `deliberation-executor` 스킬로 handoff
    예: "session_id {id} 합의안 구현해줘"
 
 ### B. 병렬 세션 운영
@@ -128,6 +130,61 @@ bash deliberation-monitor.sh --tmux
 - 사이드패널은 title 기반 매칭으로 감지됩니다 (extension ID가 아닌 탭 제목으로 식별).
 - `deliberation_browser_llm_tabs`에서 사이드패널 탭이 `[Extension]` 태그와 함께 표시됩니다.
 - **절대로 "사이드패널은 지원 안 됨"이라고 안내하지 마세요.** 사이드패널은 일반 웹 탭과 동일하게 CDP로 자동화됩니다.
+
+## LLM 활성화/비활성화 설정
+
+사용자가 deliberation에 참여할 LLM을 복수 선택하여 활성화/비활성화할 수 있습니다.
+
+### 지원 LLM 목록
+
+| LLM | 이름 | 타입 |
+|-----|------|------|
+| Claude | `claude` | CLI |
+| Codex | `codex` | CLI |
+| Gemini | `gemini` | CLI |
+| Qwen | `qwen` | CLI |
+| ChatGPT | `chatgpt` | CLI |
+| Aider | `aider` | CLI |
+| LLM (Simon Willison) | `llm` | CLI |
+| OpenCode | `opencode` | CLI |
+| Cursor | `cursor` | CLI |
+| Continue | `continue` | CLI |
+| 브라우저 LLM (웹) | `web-*` | Browser (CDP) |
+
+### 설정 방법
+
+**현재 설정 조회:**
+```
+deliberation_cli_config()
+```
+
+**특정 LLM만 활성화 (복수 선택):**
+```
+deliberation_cli_config(enabled_clis: ["claude", "codex", "gemini"])
+```
+
+**전체 자동 감지로 복원:**
+```
+deliberation_cli_config(enabled_clis: [])
+```
+
+### 설정 동작 방식
+
+- **활성화된 LLM만** `deliberation_speaker_candidates`에 표시됩니다
+- **활성화된 LLM만** `deliberation_start`의 speakers로 사용 가능합니다
+- 설정은 `~/.local/lib/mcp-deliberation/config.json`에 저장됩니다
+- `enabled_clis: []` (빈 배열)이면 전체 자동 감지 모드 (PATH에서 CLI 탐색)
+
+### 워크플로우에서의 사용
+
+토론 시작 전 LLM 설정을 확인하거나 변경할 수 있습니다:
+
+1. `deliberation_cli_config()` → 현재 활성 LLM 확인
+2. 필요 시 `deliberation_cli_config(enabled_clis: [...])` → 원하는 LLM 활성화
+3. `deliberation_speaker_candidates` → 활성화된 후보 목록 확인
+4. `deliberation_start(speakers: [...])` → 토론 시작
+
+> **팁:** 품질을 위해 claude, codex, gemini 같은 상용 LLM만 활성화하는 것을 권장합니다.
 
 ## 역할 규칙
 
