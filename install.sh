@@ -143,16 +143,33 @@ fi
 # ── MCP Deliberation Server ──
 header "4. MCP Deliberation Server"
 
+DELIB_REPO="https://github.com/dmsdc-ai/aigentry-deliberation.git"
+
 if [ "$FORCE" -eq 1 ] && [ -d "$MCP_DEST" ]; then
   rm -rf "$MCP_DEST"
 fi
-mkdir -p "$MCP_DEST"
-cp -R "$DEVKIT_DIR/mcp-servers/deliberation/." "$MCP_DEST/"
-chmod +x "$MCP_DEST/session-monitor.sh"
 
-info "Installing dependencies..."
-(cd "$MCP_DEST" && npm install --omit=dev)
-info "MCP deliberation server installed at $MCP_DEST"
+if [ -d "$MCP_DEST" ] && [ -f "$MCP_DEST/index.js" ] && [ "$FORCE" -ne 1 ]; then
+  info "MCP deliberation server already installed at $MCP_DEST (use --force to reinstall)"
+else
+  info "Installing from $DELIB_REPO ..."
+  DELIB_TMP=$(mktemp -d)
+  if git clone --depth 1 "$DELIB_REPO" "$DELIB_TMP" 2>/dev/null; then
+    rm -rf "$MCP_DEST"
+    mkdir -p "$MCP_DEST"
+    # Copy all files except .git
+    rsync -a --exclude='.git' --exclude='node_modules' "$DELIB_TMP/" "$MCP_DEST/"
+    rm -rf "$DELIB_TMP"
+    chmod +x "$MCP_DEST/session-monitor.sh" 2>/dev/null || true
+    info "Installing dependencies..."
+    (cd "$MCP_DEST" && npm install --omit=dev)
+    info "MCP deliberation server installed at $MCP_DEST"
+  else
+    rm -rf "$DELIB_TMP"
+    warn "Failed to clone $DELIB_REPO. Check network and try again."
+    warn "Manual install: git clone $DELIB_REPO $MCP_DEST && cd $MCP_DEST && npm install"
+  fi
+fi
 
 # ── MCP 등록 ──
 header "5. MCP Registration"

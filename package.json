@@ -28,7 +28,6 @@
     "hud/**",
     "install.sh",
     "install.ps1",
-    "mcp-servers/deliberation/**",
     "skills/clipboard-image/**",
     "skills/deliberation/**",
     "skills/deliberation-executor/**",
