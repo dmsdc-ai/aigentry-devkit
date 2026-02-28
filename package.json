@@ -1,6 +1,6 @@
 {
   "name": "@dmsdc-ai/aigentry-devkit",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Cross-platform installer and tooling bundle for aigentry-devkit",
   "license": "MIT",
   "repository": {
@@ -40,7 +40,7 @@
     "README.md"
   ],
   "scripts": {
-    "postinstall": "node bin/aigentry-devkit.js setup || true",
+    "postinstall": "echo '[aigentry-devkit] Run: npx aigentry-devkit setup' || true",
     "test": "node bin/aigentry-devkit.js --help"
   },
   "keywords": [
