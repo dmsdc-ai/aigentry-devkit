@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+# Create a new isolated WTM session with worktree + symlinked shared resources
+
+source "${HOME}/.wtm/lib/common.sh"
+
+# Parse arguments
+if [[ $# -lt 3 ]]; then
+  cat <<'EOF'
+Usage: wtm create <project> <type> <name> [options]
+Options:
+  --parent <session-id>   Create as child of parent session
+  --group <name>          Add to session group
+  --chain <session-id>    Chain from previous session
+  --lazy                  Create lazy session (defer worktree creation)
+EOF
+  exit 1
+fi
+
+PROJECT="$1"
+TYPE="$2"
+NAME="$3"
+shift 3
+
+# Parse optional flags
+PARENT_SESSION=""
+SESSION_GROUP=""
+CHAIN_FROM=""
+LAZY_MODE=false
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --parent) PARENT_SESSION="${2:-}"; shift 2 ;;
+    --group)  SESSION_GROUP="${2:-}"; shift 2 ;;
+    --chain)  CHAIN_FROM="${2:-}"; shift 2 ;;
+    --lazy)   LAZY_MODE=true; shift ;;
+    *) log_warn "Unknown option: $1"; shift ;;
+  esac
+done
+
+# Resolve project
+PROJECT_INFO=$(get_project "${PROJECT}") || {
+  log_error "Project '${PROJECT}' not found. Run: wtm init ${PROJECT} <repo> <local-path>"
+  exit 1
+}
+
+IFS='|' read -r REPO LOCAL_PATH BASE_BRANCH <<< "${PROJECT_INFO}"
+
+SESSION_ID=$(make_session_id "${PROJECT}" "${TYPE}" "${NAME}")
+BRANCH_NAME="${TYPE}/${NAME}"
+WORKTREE_DIR="${WTM_WORKTREES}/${PROJECT}/${TYPE}-${NAME}"
+TMUX_SESSION="wtm_${PROJECT}_${TYPE}-${NAME}"
+TERMINAL_TYPE=""
+TERMINAL_CAPS=""
+
+# Check if session already exists
+if get_session "${SESSION_ID}" &>/dev/null; then
+  log_error "Session '${SESSION_ID}' already exists. Kill it first: wtm kill ${SESSION_ID}"
+  exit 1
+fi
+
+# --lazy mode: create metadata-only session, defer worktree creation
+if $LAZY_MODE; then
+  log_info "Creating lazy session: ${SESSION_ID} (worktree deferred)"
+  create_lazy_session "${SESSION_ID}" "${PROJECT}" "${TYPE}" "${NAME}" "${LOCAL_PATH}" "${BASE_BRANCH}"
+  if [[ -n "${SESSION_GROUP}" ]]; then
+    add_to_group "${SESSION_ID}" "${SESSION_GROUP}"
+  fi
+  emit_event "session.created" "{\"session_id\":\"${SESSION_ID}\",\"project\":\"${PROJECT}\",\"type\":\"${TYPE}\",\"lazy\":true}"
+  exit 0
+fi
+
+log_info "Creating session: ${SESSION_ID}"
+log_info "  Project: ${PROJECT} (${REPO})"
+log_info "  Branch:  ${BRANCH_NAME}"
+log_info "  Worktree: ${WORKTREE_DIR}"
+
+# Step 1: Fetch latest from origin
+log_info "Fetching latest from origin..."
+cd "${LOCAL_PATH}"
+git fetch origin "${BASE_BRANCH}" --quiet
+
+# Step 2: Create branch and worktree
+log_info "Creating worktree..."
+mkdir -p "$(dirname "${WORKTREE_DIR}")"
+
+# If parent specified, branch from parent's branch
+if [[ -n "${PARENT_SESSION}" ]]; then
+  PARENT_DATA=$(get_session "${PARENT_SESSION}") || {
+    log_error "Parent session '${PARENT_SESSION}' not found"
+    exit 1
+  }
+  PARENT_BRANCH=$(echo "${PARENT_DATA}" | python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('branch',''))")
+  log_info "Branching from parent: ${PARENT_SESSION} (${PARENT_BRANCH})"
+  git branch "${BRANCH_NAME}" "${PARENT_BRANCH}" 2>/dev/null || true
+else
+  git branch "${BRANCH_NAME}" "origin/${BASE_BRANCH}" 2>/dev/null || true
+fi
+git worktree add "${WORKTREE_DIR}" "${BRANCH_NAME}"
+
+# Step 3: Symlink shared resources (node_modules, .env, etc.)
+log_info "Symlinking shared resources..."
+source "${HOME}/.wtm/lib/symlink.sh"
+setup_symlinks "${LOCAL_PATH}" "${WORKTREE_DIR}"
+
+# Step 3b: Set up shared build cache symlinks (.turbo, .cache, etc.)
+log_info "Setting up build cache symlinks..."
+setup_build_cache_symlinks "${LOCAL_PATH}" "${WORKTREE_DIR}"
+
+# Step 4: Open terminal session
+log_info "Opening terminal session..."
+TERMINAL_TYPE=$(open_terminal_session "${SESSION_ID}" "${WORKTREE_DIR}" "bash")
+TERMINAL_TIER=$(get_terminal_tier "${TERMINAL_TYPE}")
+
+# Step 5: Write session metadata into worktree
+cat > "${WORKTREE_DIR}/.wtm-session.json" <<EOF
+{
+  "session_id": "${SESSION_ID}",
+  "project": "${PROJECT}",
+  "type": "${TYPE}",
+  "name": "${NAME}",
+  "branch": "${BRANCH_NAME}",
+  "base_branch": "${BASE_BRANCH}",
+  "worktree": "${WORKTREE_DIR}",
+  "source": "${LOCAL_PATH}",
+  "created_at": "$(now_iso)"
+}
+EOF
+
+# Step 6: Register session
+SESSION_JSON=$(python3 -c "
+import json, sys, datetime
+s = {
+    'project': sys.argv[1],
+    'type': sys.argv[2],
+    'name': sys.argv[3],
+    'branch': sys.argv[4],
+    'base_branch': sys.argv[5],
+    'worktree': sys.argv[6],
+    'source': sys.argv[7],
+    'tmux': sys.argv[8],  # backward compat
+    'terminal': {
+        'type': sys.argv[14],
+        'session_name': sys.argv[8] if sys.argv[14] == 'tmux' else None,
+        'pid': None,
+        'capabilities': sys.argv[15].split(',') if sys.argv[15] else ['launch']
+    },
+    'status': 'active',
+    'created_at': sys.argv[9],
+    'last_activity_at': sys.argv[9],
+    'ttl_hours': 168,
+    'tags': [],
+    'template': None,
+    'parent_session': sys.argv[10] if sys.argv[10] != '' else None,
+    'child_sessions': [],
+    'session_group': sys.argv[11] if sys.argv[11] != '' else None,
+    'session_chain': {'previous': sys.argv[12] if sys.argv[12] != '' else None, 'next': None},
+    'metrics': {'commits': 0, 'files_changed': 0, 'lines_added': 0, 'lines_removed': 0, 'duration_minutes': 0},
+    'health': {'worktree_ok': True, 'terminal_ok': True, 'tmux_ok': True, 'watcher_ok': True, 'symlinks_ok': True, 'last_check': None},
+    'context': {'journal_path': None, 'last_handoff': None, 'conversation_refs': []},
+    'cross_project': {'depends_on': [], 'depended_by': [], 'shared_group': None},
+    'machine': {'origin_machine': sys.argv[13], 'last_sync': None, 'sync_branch': None}
+}
+print(json.dumps(s))
+" "${PROJECT}" "${TYPE}" "${NAME}" "${BRANCH_NAME}" "${BASE_BRANCH}" "${WORKTREE_DIR}" "${LOCAL_PATH}" "${TMUX_SESSION}" "$(now_iso)" "${PARENT_SESSION}" "${SESSION_GROUP}" "${CHAIN_FROM}" "$(hostname -s 2>/dev/null || echo unknown)" "${TERMINAL_TYPE}" "${TERMINAL_CAPS}")
+
+upsert_session "${SESSION_ID}" "${SESSION_JSON}"
+
+# Step 7: Setup relationships
+if [[ -n "${PARENT_SESSION}" ]]; then
+  set_parent "${SESSION_ID}" "${PARENT_SESSION}"
+fi
+if [[ -n "${SESSION_GROUP}" ]]; then
+  add_to_group "${SESSION_ID}" "${SESSION_GROUP}"
+fi
+if [[ -n "${CHAIN_FROM}" ]]; then
+  chain_sessions "${CHAIN_FROM}" "${SESSION_ID}"
+fi
+
+# Step 8: Initialize context
+init_context "${SESSION_ID}"
+journal_append "${SESSION_ID}" "milestone" "Session created" "{\"branch\":\"${BRANCH_NAME}\",\"parent\":\"${PARENT_SESSION:-none}\"}"
+
+# Step 9: Emit event
+emit_event "session.created" "{\"session_id\":\"${SESSION_ID}\",\"project\":\"${PROJECT}\",\"type\":\"${TYPE}\"}"
+
+# Step 10: Start file watcher (background)
+log_info "Starting file watcher..."
+bash "${HOME}/.wtm/bin/wtm-watch" "${SESSION_ID}" &
+WATCHER_PID=$!
+echo "${WATCHER_PID}" > "${WTM_WATCHERS}/${SESSION_ID//[:\/]/_}.pid"
+
+log_ok ""
+log_ok "Session Ready!"
+log_ok ""
+log_ok "  ID:       ${SESSION_ID}"
+log_ok "  Type:     ${TYPE}"
+log_ok "  Branch:   ${BRANCH_NAME}"
+log_ok "  Worktree: ${WORKTREE_DIR}"
+log_ok "  Terminal: ${TERMINAL_TYPE} (Tier ${TERMINAL_TIER})"
+if [[ "${TERMINAL_TYPE}" == "tmux" ]]; then
+  log_ok "  Attach:   tmux attach -t ${TMUX_SESSION}"
+else
+  log_ok "  Note:     Session runs in a separate ${TERMINAL_TYPE} window"
+fi
+log_ok ""
+log_ok "Commands:"
+log_ok "  Changes:  wtm changes ${SESSION_ID}"
+log_ok "  Kill:     wtm kill ${SESSION_ID}"

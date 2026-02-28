@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# WTM Share - Session export, import, and handoff
+
+set -euo pipefail
+
+source "${HOME}/.wtm/lib/common.sh"
+source "${HOME}/.wtm/lib/share.sh"
+
+# Load metrics for tracking if available
+[[ -f "${HOME}/.wtm/lib/metrics.sh" ]] && source "${HOME}/.wtm/lib/metrics.sh" || true
+
+case "${1:-}" in
+  export)
+    shift
+    export_session "$@"
+    ;;
+  import)
+    shift
+    import_session "$@"
+    ;;
+  handoff)
+    shift
+    handoff_session "$@"
+    ;;
+  *)
+    echo "Usage: wtm share {export|import|handoff} [args]"
+    echo ""
+    echo "Commands:"
+    echo "  export <session_id>           Export session as .tar.gz bundle"
+    echo "  import <bundle_path>          Import session from bundle"
+    echo "  handoff <session_id> [msg]    Push branch and generate handoff info"
+    exit 1
+    ;;
+esac

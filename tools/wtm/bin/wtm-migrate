@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# WTM Migrate - Schema migration management
+set -euo pipefail
+source "${HOME}/.wtm/lib/common.sh"
+source "${HOME}/.wtm/lib/migrate.sh"
+
+case "${1:-status}" in
+  status|"")
+    echo ""
+    echo "  Schema Versions:"
+    echo "  ─────────────────────────────"
+    echo "  sessions.json:  v$(get_schema_version "${WTM_SESSIONS}") (target: v${WTM_CURRENT_SESSIONS_VERSION})"
+    echo "  projects.json:  v$(get_schema_version "${WTM_PROJECTS}") (target: v${WTM_CURRENT_PROJECTS_VERSION})"
+    s_ver=$(get_schema_version "${WTM_SESSIONS}")
+    p_ver=$(get_schema_version "${WTM_PROJECTS}")
+    if [[ ${s_ver} -lt ${WTM_CURRENT_SESSIONS_VERSION} ]] || [[ ${p_ver} -lt ${WTM_CURRENT_PROJECTS_VERSION} ]]; then
+      echo ""
+      echo "  Migrations pending. Run: wtm migrate run"
+    else
+      echo ""
+      echo "  All schemas up to date."
+    fi
+    echo ""
+    ;;
+  run)
+    log_info "Running pending migrations..."
+    ensure_all_schemas
+    log_ok "All migrations complete."
+    ;;
+  help|--help|-h)
+    cat <<EOF
+Usage:
+  wtm migrate           Show current schema versions
+  wtm migrate run       Run pending migrations
+EOF
+    ;;
+  *)
+    log_error "Unknown migrate command: $1"
+    exit 1
+    ;;
+esac

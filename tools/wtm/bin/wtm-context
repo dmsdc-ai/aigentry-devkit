@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# WTM Context - Activity journal and handoff management
+set -euo pipefail
+source "${HOME}/.wtm/lib/common.sh"
+source "${HOME}/.wtm/lib/context.sh"
+
+case "${1:-help}" in
+  journal)
+    shift
+    if [[ $# -lt 1 ]]; then
+      echo "Usage: wtm context journal <session-id> [--tail N]"
+      exit 1
+    fi
+    session_id="$1"
+    shift
+    count=20
+    [[ "${1:-}" == "--tail" ]] && count="${2:-20}"
+    echo ""
+    echo "  Journal for: ${session_id}"
+    echo "  ─────────────────────────────"
+    journal_tail "${session_id}" "${count}"
+    echo ""
+    ;;
+  log)
+    shift
+    if [[ $# -lt 3 ]]; then
+      echo "Usage: wtm context log <session-id> <type> <message> [metadata-json]"
+      echo "Types: file_edit, command_run, decision, note, error, milestone"
+      exit 1
+    fi
+    local _meta="${4-}"
+    : "${_meta:="{}"}"
+    journal_append "$1" "$2" "$3" "${_meta}"
+    log_ok "Journal entry added."
+    ;;
+  handoff)
+    shift
+    if [[ $# -lt 2 ]]; then
+      echo "Usage: wtm context handoff <session-id> <summary> [open-files-json] [pending-tasks-json]"
+      exit 1
+    fi
+    save_handoff "$1" "$2" "${3:-[]}" "${4:-[]}"
+    ;;
+  resume)
+    shift
+    if [[ $# -lt 1 ]]; then
+      echo "Usage: wtm context resume <session-id>"
+      exit 1
+    fi
+    echo ""
+    echo "  Resuming session: $1"
+    echo "  ─────────────────────────────"
+    restore_handoff "$1"
+    echo ""
+    echo "  Recent activity:"
+    journal_tail "$1" 10
+    echo ""
+    ;;
+  rotate)
+    shift
+    if [[ $# -lt 1 ]]; then
+      echo "Usage: wtm context rotate <session-id> [--keep N]"
+      exit 1
+    fi
+    session_id="$1"
+    shift
+    keep=500
+    [[ "${1:-}" == "--keep" ]] && keep="${2:-500}"
+    journal_rotate "${session_id}" "${keep}"
+    ;;
+  ref)
+    shift
+    if [[ $# -lt 2 ]]; then
+      echo "Usage: wtm context ref <session-id> <conversation-ref>"
+      exit 1
+    fi
+    add_conversation_ref "$1" "$2"
+    log_ok "Conversation reference added."
+    ;;
+  help|--help|-h)
+    cat <<'EOF'
+Usage:
+  wtm context journal <sid> [--tail N]       View journal
+  wtm context log <sid> <type> <message>     Add journal entry
+  wtm context handoff <sid> <summary>        Save handoff
+  wtm context resume <sid>                   Show handoff + recent journal
+  wtm context rotate <sid> [--keep N]        Rotate journal
+  wtm context ref <sid> <conversation-ref>   Add conversation reference
+EOF
+    ;;
+  *)
+    log_error "Unknown context command: $1"
+    exit 1
+    ;;
+esac

@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# Clean up dead or completed PSM sessions
+
+source "${HOME}/.wtm/lib/common.sh"
+
+log_info "Scanning for dead sessions..."
+
+python3 -c "
+import json, subprocess, os
+
+with open('${WTM_SESSIONS}') as f:
+    data = json.load(f)
+
+sessions = data.get('sessions', {})
+dead = []
+
+for sid, s in sessions.items():
+    worktree = s.get('worktree', '')
+
+    # Check if worktree still exists
+    worktree_exists = os.path.isdir(worktree) if worktree else False
+
+    # Check if terminal session is alive (PID-based + tmux fallback)
+    import os as _os
+    safe_id = sid.replace(':', '__').replace('/', '__')
+    pid_file = _os.path.expanduser(f'~/.wtm/pids/{safe_id}.json')
+    terminal_alive = False
+    if _os.path.exists(pid_file):
+        try:
+            with open(pid_file) as pf:
+                pdata = json.load(pf)
+            _os.kill(int(pdata.get('pid', 0)), 0)
+            terminal_alive = True
+        except:
+            pass
+    if not terminal_alive:
+        tmux = s.get('tmux', '')
+        if tmux:
+            try:
+                result = subprocess.run(['tmux', 'has-session', '-t', tmux],
+                                      capture_output=True, timeout=5)
+                terminal_alive = result.returncode == 0
+            except:
+                terminal_alive = False
+
+    if not worktree_exists and not terminal_alive:
+        dead.append(sid)
+        print(f'DEAD:{sid}')
+
+# Remove dead sessions
+for sid in dead:
+    del data['sessions'][sid]
+
+with open('${WTM_SESSIONS}', 'w') as f:
+    json.dump(data, f, indent=2)
+
+if dead:
+    print(f'CLEANED:{len(dead)}')
+else:
+    print('ALL_ALIVE')
+" | while read -r line; do
+  case "${line}" in
+    DEAD:*)
+      sid="${line#DEAD:}"
+      backup_session "${sid}" 2>/dev/null || true
+      log_warn "Removed dead session: ${sid} (backed up)"
+      ;;
+    CLEANED:*)
+      log_ok "Cleaned ${line#CLEANED:} dead session(s)"
+      ;;
+    ALL_ALIVE)
+      log_ok "All sessions are healthy."
+      ;;
+  esac
+done
+
+# Clean orphaned watcher PIDs
+for pidfile in "${WTM_WATCHERS}"/*.pid; do
+  [[ -f "${pidfile}" ]] || continue
+  pid=$(cat "${pidfile}")
+  if ! kill -0 "${pid}" 2>/dev/null; then
+    rm -f "${pidfile}"
+    log_warn "Cleaned orphaned watcher PID file: ${pidfile}"
+  fi
+done
+
+# Clean orphaned PID files
+for pidfile in "${WTM_PIDS:-${WTM_HOME}/pids}"/*.json; do
+  [[ -f "${pidfile}" ]] || continue
+  pid=$(python3 -c "import json; print(json.load(open('${pidfile}')).get('pid',''))" 2>/dev/null) || continue
+  if [[ -n "${pid}" ]] && ! kill -0 "${pid}" 2>/dev/null; then
+    rm -f "${pidfile}"
+    log_warn "Cleaned orphaned terminal PID file: ${pidfile}"
+  fi
+done
+
+# Clean old backups (>30 days)
+cleanup_old_backups 30
+
+# TTL-based cleanup: remove sessions that exceeded their time-to-live
+log_info "Checking for TTL-expired sessions..."
+cleanup_expired_sessions
+
+log_ok "Cleanup complete."

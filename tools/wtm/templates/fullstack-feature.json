@@ -1,0 +1,10 @@
+{
+  "name": "fullstack-feature",
+  "description": "Full-stack feature with frontend and backend",
+  "type": "feature",
+  "ttl_hours": 336,
+  "tags": ["fullstack"],
+  "post_create_commands": ["cd frontend && npm install", "cd backend && pip install -r requirements.txt"],
+  "pre_commit_checks": ["npm run lint", "pytest tests/"],
+  "symlink_patterns": ["node_modules:dir", "frontend/node_modules:dir", ".env:file", "venv:dir"]
+}

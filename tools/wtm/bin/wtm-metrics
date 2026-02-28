@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# WTM Metrics - Usage and ROI reporting
+
+set -euo pipefail
+
+source "${HOME}/.wtm/lib/common.sh"
+source "${HOME}/.wtm/lib/metrics.sh"
+
+case "${1:-}" in
+  --daily)
+    generate_report "daily"
+    ;;
+  --weekly)
+    generate_report "weekly"
+    ;;
+  --lifetime)
+    generate_report "lifetime"
+    ;;
+  "")
+    generate_report "lifetime"
+    ;;
+  *)
+    echo "Usage: wtm metrics [--daily|--weekly|--lifetime]"
+    exit 1
+    ;;
+esac

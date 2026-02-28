@@ -438,7 +438,43 @@ if command -v codex >/dev/null 2>&1; then
   fi
 fi
 
-header "9. Cross-platform Notes"
+# ── WTM (WorkTree Manager) ──
+header "9. WTM (WorkTree Manager)"
+
+WTM_SRC="$DEVKIT_DIR/tools/wtm"
+WTM_DEST="$HOME/.local/lib/wtm"
+WTM_BIN="$HOME/.local/bin"
+
+if [ -d "$WTM_SRC/bin" ]; then
+  mkdir -p "$WTM_DEST" "$WTM_BIN"
+
+  if [ -d "$WTM_DEST/bin" ] && [ "$FORCE" -ne 1 ]; then
+    info "WTM already installed at $WTM_DEST (use --force to reinstall)"
+  else
+    cp -R "$WTM_SRC/bin" "$WTM_SRC/lib" "$WTM_DEST/" 2>/dev/null || true
+    [ -d "$WTM_SRC/plugins" ] && cp -R "$WTM_SRC/plugins" "$WTM_DEST/"
+    [ -d "$WTM_SRC/migrations" ] && cp -R "$WTM_SRC/migrations" "$WTM_DEST/"
+    [ -d "$WTM_SRC/templates" ] && cp -R "$WTM_SRC/templates" "$WTM_DEST/"
+    [ -f "$WTM_SRC/wtm-shell-init.sh" ] && cp "$WTM_SRC/wtm-shell-init.sh" "$WTM_DEST/"
+
+    # Make all bin scripts executable
+    chmod +x "$WTM_DEST/bin/"* 2>/dev/null || true
+
+    # Symlink main wtm command to PATH
+    ln -sf "$WTM_DEST/bin/wtm" "$WTM_BIN/wtm"
+    info "WTM installed at $WTM_DEST"
+    info "Symlinked wtm → $WTM_BIN/wtm"
+
+    # Add ~/.local/bin to PATH hint
+    if ! echo "$PATH" | tr ':' '\n' | grep -q "$WTM_BIN"; then
+      warn "Add to your shell profile: export PATH=\"\$HOME/.local/bin:\$PATH\""
+    fi
+  fi
+else
+  warn "WTM source not found in devkit (skipping)"
+fi
+
+header "10. Cross-platform Notes"
 info "Supported participant CLIs: claude, codex, gemini, qwen, chatgpt, aider, llm, opencode, cursor"
 info "Manage enabled CLIs anytime: deliberation_cli_config MCP tool"
 info "Browser LLM tab detection: macOS automation + CDP scan (Linux/Windows need browser remote-debugging port)."
@@ -451,6 +487,7 @@ echo -e "  ${BOLD}Installed components:${NC}"
 echo -e "    Skills:     $(ls -d "$SKILLS_DEST"/*/ 2>/dev/null | wc -l | tr -d ' ') skills in $SKILLS_DEST"
 echo -e "    HUD:        $HUD_DEST/simple-status.sh"
 echo -e "    MCP Servers: deliberation + context7 (default) + ${SELECTED_SERVERS:-none} (optional)"
+echo -e "    WTM:        ${WTM_DEST:-skipped}"
 echo -e "    Config:     $CLAUDE_DIR"
 echo ""
 echo -e "  ${BOLD}Next steps:${NC}"

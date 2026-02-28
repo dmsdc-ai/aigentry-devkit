@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# WTM Detect - Auto-discover and register projects
+set -euo pipefail
+source "${HOME}/.wtm/lib/common.sh"
+source "${HOME}/.wtm/lib/detect.sh"
+
+case "${1:-scan}" in
+  scan|"")
+    echo ""
+    echo "  Scanning for unregistered projects..."
+    echo "  ─────────────────────────────────────"
+    local_count=0
+    discover_projects | while IFS='|' read -r path name remote; do
+      echo "  FOUND: ${name} (${remote:-no remote}) at ${path}"
+      local_count=$((local_count + 1))
+    done
+    echo ""
+    echo "  Use 'psm detect --auto' to register all, or 'psm detect --add <path>' for one."
+    echo ""
+    ;;
+  --auto)
+    log_info "Auto-registering all discovered projects..."
+    discover_projects | while IFS='|' read -r path name remote; do
+      auto_register "${path}" "${name}"
+      log_ok "Registered: ${name} -> ${path}"
+    done
+    log_ok "Auto-registration complete."
+    ;;
+  --paths)
+    shift
+    # Override discovery paths for this scan
+    for p in "$@"; do
+      expanded="${p/#\~/$HOME}"
+      if [[ -d "${expanded}" ]]; then
+        for dir in "${expanded}"/*/; do
+          [[ -d "${dir}/.git" ]] || continue
+          name=$(basename "${dir}")
+          remote=$(git -C "${dir}" remote get-url origin 2>/dev/null || echo "")
+          echo "  FOUND: ${name} (${remote:-no remote}) at ${dir}"
+        done
+      fi
+    done
+    ;;
+  --add)
+    shift
+    if [[ $# -lt 1 ]]; then
+      echo "Usage: wtm detect --add <path> [alias]"
+      exit 1
+    fi
+    auto_register "$1" "${2:-}"
+    ;;
+  --monorepo)
+    shift
+    if [[ $# -lt 1 ]]; then
+      echo "Usage: wtm detect --monorepo <project-path>"
+      exit 1
+    fi
+    echo ""
+    echo "  Monorepo packages in $1:"
+    echo "  ─────────────────────────"
+    detect_monorepo_packages "$1" | while read -r pkg; do
+      echo "  - ${pkg}"
+    done
+    echo ""
+    ;;
+  help|--help|-h)
+    cat <<'EOF'
+Usage:
+  wtm detect                     Scan and list discovered projects
+  wtm detect --auto              Scan and auto-register all
+  wtm detect --paths ~/a ~/b     Scan specific paths
+  wtm detect --add <path> [name] Register a specific path
+  wtm detect --monorepo <path>   List monorepo packages
+EOF
+    ;;
+  *)
+    log_error "Unknown detect command: $1"
+    exit 1
+    ;;
+esac

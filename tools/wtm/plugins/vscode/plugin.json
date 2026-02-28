@@ -1,0 +1,10 @@
+{
+  "name": "vscode",
+  "version": "1.0.0",
+  "description": "VS Code integration - auto-open worktree on session create",
+  "hooks": {
+    "session.created": "hooks/on-create.sh",
+    "session.killed": "hooks/on-kill.sh"
+  },
+  "commands": {}
+}

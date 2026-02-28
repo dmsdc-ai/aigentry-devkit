@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# WTM Template - Manage session templates
+
+set -euo pipefail
+
+source "${HOME}/.wtm/lib/common.sh"
+source "${HOME}/.wtm/lib/template.sh"
+
+case "${1:-}" in
+  list)
+    list_templates
+    ;;
+  create)
+    shift
+    create_template_from_session "$@"
+    ;;
+  show)
+    shift
+    show_template "$@"
+    ;;
+  *)
+    echo "Usage: wtm template {list|create|show} [args]"
+    echo ""
+    echo "Commands:"
+    echo "  list                          List all available templates"
+    echo "  create <session_id> <name>    Create template from existing session"
+    echo "  show <name>                   Show template details"
+    exit 1
+    ;;
+esac

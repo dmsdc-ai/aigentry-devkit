@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# List active PSM sessions
+
+source "${HOME}/.wtm/lib/common.sh"
+
+FILTER_GROUP=""
+if [[ "${1:-}" == "--group" ]]; then
+  FILTER_GROUP="${2:-}"
+  shift 2
+fi
+FILTER_PROJECT="${1:-}"
+
+python3 -c "
+import json, subprocess, os, sys
+
+with open('${WTM_SESSIONS}') as f:
+    data = json.load(f)
+
+sessions = data.get('sessions', {})
+if not sessions:
+    print('No active sessions.')
+    exit(0)
+
+# Check which sessions are alive via PID files
+pids_dir = os.path.expanduser('~/.wtm/pids')
+live_pids = set()
+if os.path.isdir(pids_dir):
+    for fname in os.listdir(pids_dir):
+        if fname.endswith('.json'):
+            try:
+                with open(os.path.join(pids_dir, fname)) as pf:
+                    pdata = json.load(pf)
+                pid = pdata.get('pid')
+                if pid:
+                    os.kill(int(pid), 0)
+                    live_pids.add(fname[:-5])  # safe_id without .json
+            except:
+                pass
+
+# Also check tmux sessions for backward compat
+try:
+    result = subprocess.run(['tmux', 'list-sessions', '-F', '#{session_name}'],
+                          capture_output=True, text=True, timeout=5)
+    live_tmux = set(result.stdout.strip().split('\n')) if result.returncode == 0 else set()
+except:
+    live_tmux = set()
+
+filter_project = '${FILTER_PROJECT}'
+filter_group = '${FILTER_GROUP}'
+
+print()
+print(f\"  {'ID':<30} {'Type':<10} {'Branch':<22} {'Group':<15} {'Term':<6} {'Created':<16}\")
+print(f\"  {'─'*30} {'─'*10} {'─'*22} {'─'*15} {'─'*6} {'─'*16}\")
+
+count = 0
+for sid, s in sessions.items():
+    if filter_project and s.get('project') != filter_project:
+        continue
+    group = s.get('session_group', '') or ''
+    if filter_group and group != filter_group:
+        continue
+    safe_id = sid.replace(':', '__').replace('/', '__')
+    terminal = s.get('terminal', {})
+    term_type = terminal.get('type', '') if isinstance(terminal, dict) else ''
+    tmux_name = s.get('tmux', '')
+    alive = safe_id in live_pids or tmux_name in live_tmux
+    alive_icon = '●' if alive else '○'
+    created = s.get('created_at', '?')[:16]
+    parent = s.get('parent_session')
+    prefix = '  └─ ' if parent else '  '
+    branch = s.get('branch', '?')
+    if len(branch) > 22:
+        branch = branch[:19] + '...'
+    if len(group) > 15:
+        group = group[:12] + '...'
+    print(f\"{prefix}{sid:<30} {s.get('type','?'):<10} {branch:<22} {group:<15} {alive_icon:<6} {created:<16}\")
+    count += 1
+
+print()
+print(f'  Total: {count} session(s)')
+print(f'  ● = terminal alive, ○ = terminal dead')
+print()
+"

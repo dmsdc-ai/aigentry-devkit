@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# WTM Plugin Management - list, install, remove, info for plugins
+
+set -euo pipefail
+
+source "${HOME}/.wtm/lib/common.sh"
+
+usage() {
+  cat <<EOF
+WTM Plugin Manager
+
+Usage:
+  wtm plugin list                  List installed plugins
+  wtm plugin install <path>        Install plugin from directory path
+  wtm plugin remove <name>         Remove an installed plugin
+  wtm plugin info <name>           Show detailed plugin information
+
+Examples:
+  wtm plugin install ./my-plugin
+  wtm plugin info my-plugin
+  wtm plugin remove my-plugin
+EOF
+}
+
+case "${1:-help}" in
+  list)
+    list_plugins
+    ;;
+  install)
+    shift
+    if [[ $# -lt 1 ]]; then
+      log_error "Usage: wtm plugin install <path>"
+      exit 1
+    fi
+    install_plugin "$1"
+    ;;
+  remove)
+    shift
+    if [[ $# -lt 1 ]]; then
+      log_error "Usage: wtm plugin remove <name>"
+      exit 1
+    fi
+    remove_plugin "$1"
+    ;;
+  info)
+    shift
+    if [[ $# -lt 1 ]]; then
+      log_error "Usage: wtm plugin info <name>"
+      exit 1
+    fi
+    get_plugin_info "$1"
+    ;;
+  help|--help|-h)
+    usage
+    ;;
+  *)
+    log_error "Unknown plugin command: $1"
+    usage
+    exit 1
+    ;;
+esac

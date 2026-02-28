@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Kill a PSM session and clean up resources
+
+source "${HOME}/.wtm/lib/common.sh"
+
+if [[ $# -lt 1 ]]; then
+  echo "Usage: wtm kill <session-id>"
+  exit 1
+fi
+
+SESSION_ID="$1"
+FORCE="${2:-}"
+
+SESSION_DATA=$(get_session "${SESSION_ID}") || {
+  log_error "Session '${SESSION_ID}' not found"
+  exit 1
+}
+
+WORKTREE=$(echo "${SESSION_DATA}" | python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('worktree',''))")
+TMUX_SESSION=$(echo "${SESSION_DATA}" | python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('tmux',''))")
+# Terminal abstraction handles kill
+BRANCH=$(echo "${SESSION_DATA}" | python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('branch',''))")
+SOURCE=$(echo "${SESSION_DATA}" | python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('source',''))")
+
+# Step 0: Backup session before destruction
+BACKUP_DIR=$(backup_session "${SESSION_ID}")
+log_info "Backed up to: ${BACKUP_DIR}"
+
+# Step 0.5: Check cross-project impact
+IMPACT=$(check_impact "${SESSION_ID}" 2>/dev/null || echo "")
+if [[ -n "${IMPACT}" ]] && [[ "${IMPACT}" != *"No cross-project"* ]] && [[ "${IMPACT}" != *"No dependents"* ]]; then
+  log_warn "This session has cross-project dependents:"
+  echo "${IMPACT}"
+  if [[ "${FORCE}" != "--force" ]] && [[ "${FORCE}" != "--delete-branch" ]]; then
+    read -p "  Continue killing? [y/N] " -n 1 -r
+    echo
+    [[ $REPLY =~ ^[Yy]$ ]] || exit 0
+  fi
+fi
+
+# Step 0.7: Save final journal entry
+journal_append "${SESSION_ID}" "milestone" "Session killed" '{}' 2>/dev/null || true
+
+log_info "Killing session: ${SESSION_ID}"
+
+# Step 1: Stop file watcher
+WATCHER_PID_FILE="${WTM_WATCHERS}/${SESSION_ID//[:\/]/_}.pid"
+if [[ -f "${WATCHER_PID_FILE}" ]]; then
+  WATCHER_PID=$(cat "${WATCHER_PID_FILE}")
+  kill "${WATCHER_PID}" 2>/dev/null || true
+  rm -f "${WATCHER_PID_FILE}"
+  log_info "Stopped watcher (PID: ${WATCHER_PID})"
+fi
+
+# Step 2: Kill terminal session (handles tmux + PID-based for all tiers)
+kill_terminal_session "${SESSION_ID}"
+log_info "Killed terminal session for: ${SESSION_ID}"
+
+# Step 3: Remove worktree
+if [[ -d "${WORKTREE}" ]]; then
+  cd "${SOURCE}"
+  git worktree remove "${WORKTREE}" --force 2>/dev/null || {
+    log_warn "Force-removing worktree directory..."
+    rm -rf "${WORKTREE}"
+    git worktree prune
+  }
+  log_info "Removed worktree: ${WORKTREE}"
+fi
+
+# Step 4: Optionally delete branch
+if [[ "${FORCE}" == "--delete-branch" ]] && [[ -n "${BRANCH}" ]]; then
+  cd "${SOURCE}"
+  git branch -D "${BRANCH}" 2>/dev/null || true
+  log_info "Deleted branch: ${BRANCH}"
+fi
+
+# Step 5: Remove from sessions.json
+remove_session "${SESSION_ID}"
+
+# Step 5.5: Optionally purge context
+if [[ "${FORCE}" == "--purge-context" ]] || [[ "${3:-}" == "--purge-context" ]]; then
+  CTX_DIR=$(get_context_dir "${SESSION_ID}" 2>/dev/null || echo "")
+  if [[ -n "${CTX_DIR}" ]] && [[ -d "${CTX_DIR}" ]]; then
+    rm -rf "${CTX_DIR}"
+    log_info "Purged context directory: ${CTX_DIR}"
+  fi
+fi
+
+# Step 6: Emit event
+emit_event "session.killed" "{\"session_id\":\"${SESSION_ID}\",\"backup\":\"${BACKUP_DIR}\"}" 2>/dev/null || true
+
+log_ok "Session '${SESSION_ID}' killed and cleaned up."

@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# WTM - WorkTree Manager (Hybrid: Worktree + Symlink + Watch)
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${HOME}/.wtm/lib/common.sh"
+
+ensure_dirs
+# Rotate structured log if needed
+[[ -f "${WTM_HOME}/logs/events.jsonl" ]] && log_rotate 2>/dev/null || true
+
+usage() {
+  cat <<EOF
+WTM - WorkTree Manager (Hybrid Mode)
+
+Usage:
+  wtm create <project> <type> <name>   Create isolated session
+  wtm list [project]                    List active sessions
+  wtm info <session-id>                 Show session details
+  wtm kill <session-id>                 Kill session and cleanup
+  wtm cleanup                           Clean completed sessions
+  wtm watch <session-id>                Start file watcher
+  wtm changes <session-id>              Show changes from other sessions
+  wtm init <alias> <repo> <local-path>  Register a project
+  wtm health [check|heal|--daemon]      Session health checks
+  wtm migrate [run]                     Schema migration
+  wtm detect [--auto|--add]             Auto-discover projects
+  wtm group [list|show|create|kill]     Session groups
+  wtm deps [list|add|link|impact]       Cross-project dependencies
+  wtm context [journal|handoff|resume]  Activity journal & handoff
+  wtm sync [init|push|pull|merge]       Cross-machine state sync
+  wtm machine [id|list|register]        Machine identity management
+  wtm auto [description]                Auto-detect project & create session
+  wtm pipeline [start|status|commit|finish]  Full lifecycle pipeline
+  wtm template [list|create|show]       Session templates
+  wtm metrics [--daily|--weekly|--lifetime]  Usage & ROI reporting
+  wtm share [export|import|handoff]     Session sharing & handoff
+  wtm dashboard [--watch|--export]      Enhanced session overview
+  wtm plugin [list|install|remove|info]  Plugin management
+
+Types: feature, fix, review, experiment
+EOF
+}
+
+case "${1:-help}" in
+  create)
+    shift
+    bash "${SCRIPT_DIR}/wtm-create" "$@"
+    ;;
+  list)
+    shift
+    bash "${SCRIPT_DIR}/wtm-list" "$@"
+    ;;
+  info)
+    shift
+    bash "${SCRIPT_DIR}/wtm-info" "$@"
+    ;;
+  kill)
+    shift
+    bash "${SCRIPT_DIR}/wtm-kill" "$@"
+    ;;
+  cleanup)
+    shift
+    bash "${SCRIPT_DIR}/wtm-cleanup" "$@"
+    ;;
+  watch)
+    shift
+    bash "${SCRIPT_DIR}/wtm-watch" "$@"
+    ;;
+  changes)
+    shift
+    bash "${SCRIPT_DIR}/wtm-changes" "$@"
+    ;;
+  init)
+    shift
+    bash "${SCRIPT_DIR}/wtm-init" "$@"
+    ;;
+  health)
+    shift
+    bash "${SCRIPT_DIR}/wtm-health" "$@"
+    ;;
+  migrate)
+    shift
+    bash "${SCRIPT_DIR}/wtm-migrate" "$@"
+    ;;
+  detect)
+    shift
+    bash "${SCRIPT_DIR}/wtm-detect" "$@"
+    ;;
+  group)
+    shift
+    bash "${SCRIPT_DIR}/wtm-group" "$@"
+    ;;
+  deps)
+    shift
+    bash "${SCRIPT_DIR}/wtm-deps" "$@"
+    ;;
+  context)
+    shift
+    bash "${SCRIPT_DIR}/wtm-context" "$@"
+    ;;
+  sync)
+    shift
+    bash "${SCRIPT_DIR}/wtm-sync" "$@"
+    ;;
+  machine)
+    shift
+    bash "${SCRIPT_DIR}/wtm-machine" "$@"
+    ;;
+  auto)
+    shift
+    bash "${SCRIPT_DIR}/wtm-auto" "$@"
+    ;;
+  pipeline)
+    shift
+    bash "${SCRIPT_DIR}/wtm-pipeline" "$@"
+    ;;
+  template)
+    shift
+    bash "${SCRIPT_DIR}/wtm-template" "$@"
+    ;;
+  metrics)
+    shift
+    bash "${SCRIPT_DIR}/wtm-metrics" "$@"
+    ;;
+  share)
+    shift
+    bash "${SCRIPT_DIR}/wtm-share" "$@"
+    ;;
+  dashboard)
+    shift
+    bash "${SCRIPT_DIR}/wtm-dashboard" "$@"
+    ;;
+  plugin)
+    shift
+    bash "${SCRIPT_DIR}/wtm-plugin" "$@"
+    ;;
+  help|--help|-h)
+    usage
+    ;;
+  *)
+    log_error "Unknown command: $1"
+    usage
+    exit 1
+    ;;
+esac

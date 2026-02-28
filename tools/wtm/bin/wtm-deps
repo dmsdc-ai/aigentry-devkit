@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# WTM Deps - Cross-project dependency management
+set -euo pipefail
+source "${HOME}/.wtm/lib/common.sh"
+source "${HOME}/.wtm/lib/cross-project.sh"
+
+case "${1:-help}" in
+  list)
+    shift
+    if [[ $# -lt 1 ]]; then
+      echo "Usage: wtm deps list <project>"
+      exit 1
+    fi
+    echo ""
+    echo "  Dependencies for: $1"
+    echo "  ─────────────────────────────"
+    list_project_deps "$1"
+    echo ""
+    ;;
+  add)
+    shift
+    if [[ $# -lt 2 ]]; then
+      echo "Usage: wtm deps add <project> <depends-on>"
+      exit 1
+    fi
+    add_project_dependency "$1" "$2"
+    log_ok "Added dependency: $1 -> $2"
+    ;;
+  remove)
+    shift
+    if [[ $# -lt 2 ]]; then
+      echo "Usage: wtm deps remove <project> <depends-on>"
+      exit 1
+    fi
+    remove_project_dependency "$1" "$2"
+    log_ok "Removed dependency: $1 -> $2"
+    ;;
+  link)
+    shift
+    if [[ $# -lt 2 ]]; then
+      echo "Usage: wtm deps link <session-id> <depends-on-session>"
+      exit 1
+    fi
+    add_session_cross_dep "$1" "$2"
+    log_ok "Linked: $1 depends on $2"
+    ;;
+  unlink)
+    shift
+    if [[ $# -lt 2 ]]; then
+      echo "Usage: wtm deps unlink <session-id> <depends-on-session>"
+      exit 1
+    fi
+    remove_session_cross_dep "$1" "$2"
+    log_ok "Unlinked: $1 no longer depends on $2"
+    ;;
+  impact)
+    shift
+    if [[ $# -lt 1 ]]; then
+      echo "Usage: wtm deps impact <session-id>"
+      exit 1
+    fi
+    echo ""
+    echo "  Impact analysis for: $1"
+    echo "  ─────────────────────────────"
+    check_impact "$1"
+    echo ""
+    ;;
+  shared-group)
+    shift
+    if [[ $# -lt 2 ]]; then
+      echo "Usage: wtm deps shared-group <group-name> <sid> [sid...]"
+      exit 1
+    fi
+    group_name="$1"
+    shift
+    for sid in "$@"; do
+      set_shared_group "${sid}" "${group_name}"
+    done
+    log_ok "Shared group '${group_name}' set for $# session(s)"
+    ;;
+  help|--help|-h)
+    cat <<'EOF'
+Usage:
+  wtm deps list <project>                          List project dependencies
+  wtm deps add <project> <depends-on>              Add project dependency
+  wtm deps remove <project> <depends-on>           Remove project dependency
+  wtm deps link <session-id> <depends-on-session>  Link session cross-dep
+  wtm deps unlink <session-id> <depends-on-session>Unlink session cross-dep
+  wtm deps impact <session-id>                     Check who depends on this
+  wtm deps shared-group <name> <sid> [sid...]       Create shared group
+EOF
+    ;;
+  *)
+    log_error "Unknown deps command: $1"
+    exit 1
+    ;;
+esac

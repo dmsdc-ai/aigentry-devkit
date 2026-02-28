@@ -1,0 +1,42 @@
+{
+  "version": "1.0.0",
+  "last_updated": "",
+  "structure": {
+    "max_lines": 100,
+    "navigation_pattern": "hierarchical",
+    "reference_style": "next_references"
+  },
+  "categories": {
+    "agents": {
+      "description": "에이전트 사용법",
+      "count": 0
+    },
+    "errors": {
+      "description": "에러 해결 패턴",
+      "count": 0
+    },
+    "costs": {
+      "description": "비용 정보",
+      "count": 0
+    },
+    "tools": {
+      "description": "도구 선택 규칙",
+      "count": 0
+    },
+    "prompts": {
+      "description": "프롬프트 템플릿",
+      "count": 0
+    }
+  },
+  "capture": {
+    "enabled": true,
+    "types": ["error", "cost", "prompt"],
+    "auto_index": true
+  },
+  "stats": {
+    "total_files": 0,
+    "total_errors_captured": 0,
+    "total_costs_captured": 0,
+    "total_prompts_captured": 0
+  }
+}

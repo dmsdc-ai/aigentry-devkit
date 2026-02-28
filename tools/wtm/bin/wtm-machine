@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# WTM Machine - Machine identity management
+set -euo pipefail
+source "${HOME}/.wtm/lib/common.sh"
+source "${HOME}/.wtm/lib/sync.sh"
+
+case "${1:-id}" in
+  id)
+    echo "$(get_machine_id)"
+    ;;
+  list)
+    echo ""
+    echo "  Known Machines"
+    echo "  ─────────────────────────────"
+    list_machines
+    ;;
+  register)
+    register_machine "$(get_machine_id)"
+    log_ok "Machine '$(get_machine_id)' registered"
+    ;;
+  help|--help|-h)
+    cat <<'EOF'
+Usage:
+  wtm machine id         Show this machine's ID
+  wtm machine list       List known machines
+  wtm machine register   Register this machine
+EOF
+    ;;
+  *)
+    log_error "Unknown machine command: $1"
+    exit 1
+    ;;
+esac

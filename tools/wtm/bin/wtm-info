@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+# Show detailed info for a PSM session
+
+source "${HOME}/.wtm/lib/common.sh"
+
+if [[ $# -lt 1 ]]; then
+  echo "Usage: wtm info <session-id>"
+  exit 1
+fi
+
+SESSION_ID="$1"
+
+SESSION_DATA=$(get_session "${SESSION_ID}") || {
+  log_error "Session '${SESSION_ID}' not found"
+  exit 1
+}
+
+# Extract worktree and source for disk functions
+_INFO_WORKTREE=$(echo "${SESSION_DATA}" | python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('worktree',''))")
+_INFO_SOURCE=$(echo "${SESSION_DATA}" | python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('source',''))")
+
+echo "${SESSION_DATA}" | python3 -c "
+import json, subprocess, os, sys
+
+s = json.loads(sys.stdin.read())
+worktree = s.get('worktree', '')
+tmux = s.get('tmux', '')
+terminal = s.get('terminal', {})
+term_type = terminal.get('type', 'unknown') if isinstance(terminal, dict) else ('tmux' if tmux else 'unknown')
+term_caps = terminal.get('capabilities', []) if isinstance(terminal, dict) else []
+
+# Check terminal status (PID-based + tmux)
+import os as _os
+safe_id = '${SESSION_ID}'.replace(':', '__').replace('/', '__')
+pid_file = _os.path.expanduser(f'~/.wtm/pids/{safe_id}.json')
+terminal_alive = False
+if _os.path.exists(pid_file):
+    try:
+        with open(pid_file) as pf:
+            pdata = json.load(pf)
+        _os.kill(int(pdata.get('pid', 0)), 0)
+        terminal_alive = True
+    except:
+        pass
+if not terminal_alive and tmux:
+    try:
+        result = subprocess.run(['tmux', 'has-session', '-t', tmux], capture_output=True, timeout=5)
+        terminal_alive = result.returncode == 0
+    except:
+        pass
+
+# Check worktree disk usage
+try:
+    result = subprocess.run(['du', '-sh', worktree], capture_output=True, text=True, timeout=10)
+    disk = result.stdout.split()[0] if result.returncode == 0 else '?'
+except:
+    disk = '?'
+
+# Check git status in worktree
+try:
+    result = subprocess.run(['git', '-C', worktree, 'status', '--short'],
+                          capture_output=True, text=True, timeout=10)
+    changes = len([l for l in result.stdout.strip().split('\n') if l.strip()]) if result.returncode == 0 else 0
+except:
+    changes = '?'
+
+# Check watcher
+watcher_file = os.path.expanduser(f'~/.wtm/watchers/${SESSION_ID}'.replace(':', '_').replace('/', '_') + '.pid')
+watcher_alive = False
+if os.path.exists(watcher_file):
+    try:
+        with open(watcher_file) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)
+        watcher_alive = True
+    except:
+        pass
+
+print()
+print(f\"  Session: ${SESSION_ID}\")
+print(f\"  {'─' * 55}\")
+print(f\"  Project:    {s.get('project', '?')}\")
+print(f\"  Type:       {s.get('type', '?')}\")
+print(f\"  Branch:     {s.get('branch', '?')}\")
+print(f\"  Base:       {s.get('base_branch', '?')}\")
+print(f\"  Worktree:   {worktree}\")
+print(f\"  Source:     {s.get('source', '?')}\")
+print(f\"  Disk:       {disk}\")
+print(f\"  Changes:    {changes} file(s) modified\")
+tier_map = {'tmux': 1, 'background': 3}
+tier = tier_map.get(term_type, 2)
+print(f\"  Terminal:   {term_type} (Tier {tier})\")
+print(f\"  Alive:      {'● yes' if terminal_alive else '○ no'}\")
+if tmux:
+    print(f\"  Tmux name:  {tmux}\")
+if term_caps:
+    print(f\"  Caps:       {', '.join(term_caps)}\")
+print(f\"  Watcher:    {'● running' if watcher_alive else '○ stopped'}\")
+print(f\"  Created:    {s.get('created_at', '?')}\")
+print(f\"  TTL:        {s.get('ttl_hours', '?')} hours\")
+print(f\"  Tags:       {', '.join(s.get('tags', [])) or 'none'}\")
+
+# Relationships
+parent = s.get('parent_session')
+children = s.get('child_sessions', [])
+group = s.get('session_group')
+chain = s.get('session_chain', {})
+
+if parent or children or group or chain.get('previous') or chain.get('next'):
+    print()
+    print(f\"  Relationships\")
+    print(f\"  {'─' * 40}\")
+    if parent:
+        print(f\"  Parent:     {parent}\")
+    if children:
+        print(f\"  Children:   {', '.join(children)}\")
+    if group:
+        print(f\"  Group:      {group}\")
+    if chain.get('previous') or chain.get('next'):
+        print(f\"  Chain prev: {chain.get('previous', 'none')}\")
+        print(f\"  Chain next: {chain.get('next', 'none')}\")
+
+# Context
+ctx = s.get('context', {})
+if ctx:
+    print()
+    print(f\"  Context\")
+    print(f\"  {'─' * 40}\")
+    journal = ctx.get('journal_path', '')
+    if journal and os.path.exists(os.path.expanduser(journal.replace('~', os.path.expanduser('~')))):
+        try:
+            with open(os.path.expanduser(journal.replace('~', os.path.expanduser('~')))) as jf:
+                jlines = jf.readlines()
+            print(f\"  Journal:    {len(jlines)} entries\")
+        except:
+            print(f\"  Journal:    path set\")
+    else:
+        print(f\"  Journal:    not initialized\")
+    handoff = ctx.get('last_handoff')
+    if handoff:
+        print(f\"  Handoff:    {handoff.get('timestamp', '?')[:16]}\")
+        print(f\"  Summary:    {handoff.get('summary', 'N/A')[:60]}\")
+    refs = ctx.get('conversation_refs', [])
+    if refs:
+        print(f\"  Conv refs:  {len(refs)}\")
+
+# Cross-project
+cp = s.get('cross_project', {})
+deps_on = cp.get('depends_on', [])
+deps_by = cp.get('depended_by', [])
+shared = cp.get('shared_group')
+if deps_on or deps_by or shared:
+    print()
+    print(f\"  Cross-Project\")
+    print(f\"  {'─' * 40}\")
+    if deps_on:
+        print(f\"  Depends on: {', '.join(deps_on)}\")
+    if deps_by:
+        print(f\"  Depended by: {', '.join(deps_by)}\")
+    if shared:
+        print(f\"  Shared grp: {shared}\")
+
+# Machine
+machine = s.get('machine', {})
+if machine.get('origin_machine'):
+    print()
+    print(f\"  Machine\")
+    print(f\"  {'─' * 40}\")
+    print(f\"  Origin:     {machine.get('origin_machine', '?')}\")
+    if machine.get('last_sync'):
+        print(f\"  Last sync:  {machine.get('last_sync', '?')}\")
+
+print()
+"
+
+# Show accurate disk usage (excludes symlinked dirs) and symlink savings
+if [[ -n "${_INFO_WORKTREE}" ]] && [[ -d "${_INFO_WORKTREE}" ]]; then
+  _REAL_DISK=$(get_worktree_disk_usage "${_INFO_WORKTREE}")
+  echo "  Disk (real): ${_REAL_DISK} (excluding symlinked dirs)"
+  if [[ -n "${_INFO_SOURCE}" ]] && [[ -d "${_INFO_SOURCE}" ]]; then
+    _SAVINGS=$(get_symlink_savings "${_INFO_WORKTREE}" "${_INFO_SOURCE}")
+    echo "  Symlink savings: ${_SAVINGS}"
+  fi
+  echo ""
+fi

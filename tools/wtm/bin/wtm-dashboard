@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+# WTM Dashboard - Enhanced session overview with watch mode
+
+set -euo pipefail
+
+source "${HOME}/.wtm/lib/common.sh"
+
+# Load optional libs
+[[ -f "${HOME}/.wtm/lib/metrics.sh" ]] && source "${HOME}/.wtm/lib/metrics.sh" || true
+[[ -f "${HOME}/.wtm/lib/health.sh" ]]  && source "${HOME}/.wtm/lib/health.sh"  || true
+
+show_dashboard() {
+  local sessions_file="${WTM_SESSIONS}"
+
+  echo -e "${CYAN}=== WTM Dashboard ===${NC}"
+  echo -e "  $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+  echo ""
+
+  # Session summary counts
+  if [[ -f "${sessions_file}" ]]; then
+    python3 -c "
+import json, sys
+with open(sys.argv[1]) as f:
+    data = json.load(f)
+sessions = data.get('sessions', {})
+active = sum(1 for s in sessions.values() if s.get('status') == 'active')
+lazy   = sum(1 for s in sessions.values() if s.get('status') == 'lazy')
+total  = len(sessions)
+print(f'  Sessions: {active} active  {lazy} lazy  {total} total')
+" "${sessions_file}" 2>/dev/null || echo "  Sessions: (unable to read)"
+  else
+    echo "  Sessions: no sessions file"
+  fi
+
+  # Disk usage of worktrees directory
+  if [[ -d "${WTM_WORKTREES}" ]]; then
+    local disk_usage
+    disk_usage=$(du -sh "${WTM_WORKTREES}" 2>/dev/null | cut -f1) || disk_usage="?"
+    echo "  Worktrees disk: ${disk_usage}"
+  fi
+
+  # Accurate disk usage excluding symlinked dirs (from lib/disk.sh)
+  local real_disk_usage
+  real_disk_usage=$(get_total_wtm_disk_usage 2>/dev/null) || real_disk_usage=""
+  if [[ -n "${real_disk_usage}" ]]; then
+    echo "  Worktrees real: ${real_disk_usage} (excluding symlinks)"
+  fi
+
+  # Disk warning check
+  check_disk_warning 2>/dev/null || true
+
+  # Today's metrics if available
+  if [[ -f "${WTM_METRICS:-}" ]] || [[ -f "${WTM_HOME}/metrics.json" ]]; then
+    local metrics_file="${WTM_METRICS:-${WTM_HOME}/metrics.json}"
+    python3 -c "
+import json, sys, datetime
+today = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d')
+try:
+    with open(sys.argv[1]) as f:
+        data = json.load(f)
+    day = data.get('daily', {}).get(today, {})
+    created = day.get('sessions_created', 0)
+    killed  = day.get('sessions_killed', 0)
+    symlinks = day.get('symlinks_created', 0)
+    print(f'  Today: {created} sessions created  {killed} killed  {symlinks} symlinks')
+except Exception:
+    pass
+" "${metrics_file}" 2>/dev/null || true
+  fi
+
+  echo ""
+
+  # Per-session table
+  if [[ -f "${sessions_file}" ]]; then
+    local session_count
+    session_count=$(python3 -c "
+import json
+with open('${sessions_file}') as f:
+    d = json.load(f)
+print(len(d.get('sessions', {})))
+" 2>/dev/null) || session_count=0
+
+    if [[ "${session_count}" -gt 0 ]]; then
+      printf "  ${BLUE}%-28s %-8s %-10s %-10s %s${NC}\n" "SESSION ID" "HEALTH" "STATUS" "DISK" "BRANCH"
+      printf "  %-28s %-8s %-10s %-10s %s\n" \
+        "$(printf '─%.0s' {1..28})" \
+        "$(printf '─%.0s' {1..8})" \
+        "$(printf '─%.0s' {1..10})" \
+        "$(printf '─%.0s' {1..10})" \
+        "$(printf '─%.0s' {1..30})"
+
+      python3 -c "
+import json
+with open('${sessions_file}') as f:
+    data = json.load(f)
+sessions = data.get('sessions', {})
+for sid, s in sessions.items():
+    worktree = s.get('worktree', '')
+    branch   = s.get('branch', '?')
+    status   = s.get('status', '?')
+    print(f'{sid}|{worktree}|{branch}|{status}')
+" 2>/dev/null | while IFS='|' read -r sid worktree branch status; do
+        # Health check
+        local health_str="?"
+        local health_color="${NC}"
+        if declare -f check_session_health &>/dev/null; then
+          local result
+          result=$(check_session_health "${sid}" 2>/dev/null) || result="0/4|error"
+          local score="${result%%|*}"
+          local score_num="${score%%/*}"
+          if [[ "${score_num}" == "4" ]]; then
+            health_str="${score} OK"
+            health_color="${GREEN}"
+          elif [[ "${score_num}" -ge 2 ]]; then
+            health_str="${score} WARN"
+            health_color="${YELLOW}"
+          else
+            health_str="${score} CRIT"
+            health_color="${RED}"
+          fi
+        else
+          health_str="N/A"
+          health_color="${NC}"
+        fi
+
+        # Disk usage for worktree
+        local disk="?"
+        if [[ -n "${worktree}" ]] && [[ -d "${worktree}" ]]; then
+          disk=$(du -sh "${worktree}" 2>/dev/null | cut -f1) || disk="?"
+        fi
+
+        # Status color
+        local status_color="${NC}"
+        case "${status}" in
+          active)  status_color="${GREEN}" ;;
+          lazy)    status_color="${YELLOW}" ;;
+          *)       status_color="${RED}" ;;
+        esac
+
+        printf "  %-28s ${health_color}%-8s${NC} ${status_color}%-10s${NC} %-10s %s\n" \
+          "${sid:0:28}" "${health_str}" "${status}" "${disk}" "${branch}"
+      done
+    else
+      echo "  (no sessions)"
+    fi
+  else
+    echo "  (no sessions file)"
+  fi
+
+  echo ""
+}
+
+# Watch mode: clear and redraw at interval
+watch_dashboard() {
+  local interval="${1:-10}"
+  while true; do
+    clear
+    show_dashboard
+    sleep "${interval}"
+  done
+}
+
+# JSON output for external tools
+show_dashboard_json() {
+  python3 -c "
+import json, sys, os
+
+sessions_file = os.environ.get('WTM_SESSIONS', os.path.expanduser('~/.wtm/sessions.json'))
+metrics_file  = os.environ.get('WTM_METRICS',  os.path.expanduser('~/.wtm/metrics.json'))
+
+sessions = {}
+if os.path.isfile(sessions_file):
+    with open(sessions_file) as f:
+        sessions = json.load(f).get('sessions', {})
+
+metrics = {}
+if os.path.isfile(metrics_file):
+    with open(metrics_file) as f:
+        metrics = json.load(f)
+
+output = {
+    'sessions': sessions,
+    'session_count': len(sessions),
+    'metrics': metrics
+}
+print(json.dumps(output, indent=2))
+"
+}
+
+case "${1:-}" in
+  --watch)
+    watch_dashboard "${2:-10}"
+    ;;
+  --export)
+    show_dashboard_json
+    ;;
+  *)
+    show_dashboard
+    ;;
+esac

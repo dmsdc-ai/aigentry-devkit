@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+# WTM Auto - Auto-detection and session creation
+# Usage:
+#   wtm auto [description]
+#   wtm auto "add authentication"  → feature/add-authentication
+#   wtm auto 123                   → fix/issue-123
+#   wtm auto                       → interactive prompts
+
+set -euo pipefail
+
+source "${HOME}/.wtm/lib/common.sh"
+
+# Source automation libs if available
+[[ -f "${WTM_HOME}/lib/defaults.sh" ]] && source "${WTM_HOME}/lib/defaults.sh"
+[[ -f "${WTM_HOME}/lib/lazy.sh" ]]    && source "${WTM_HOME}/lib/lazy.sh"
+
+ensure_dirs
+init_config 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+# Walk up from path looking for a directory that matches a registered project
+detect_project_from_cwd() {
+  local path="${1:-$(pwd)}"
+  python3 -c "
+import json, sys, os
+
+projects_path = sys.argv[1]
+search_path = os.path.realpath(sys.argv[2])
+
+with open(projects_path) as f:
+    data = json.load(f)
+
+aliases = data.get('aliases', {})
+
+# Walk up the directory tree
+current = search_path
+while current != '/':
+    for alias, info in aliases.items():
+        local_path = os.path.realpath(os.path.expanduser(info.get('local', '')))
+        if current == local_path or current.startswith(local_path + '/'):
+            print(alias)
+            sys.exit(0)
+    current = os.path.dirname(current)
+
+sys.exit(1)
+" "${WTM_PROJECTS}" "${path}" 2>/dev/null || echo ""
+}
+
+# Infer session type from a branch name prefix
+detect_session_type() {
+  local branch_name="${1:-}"
+  python3 -c "
+import sys, re
+branch = sys.argv[1]
+type_map = {
+    'feature': ['feature', 'feat', 'add', 'new'],
+    'fix':     ['fix', 'bugfix', 'hotfix', 'patch'],
+    'review':  ['review', 'pr', 'chore'],
+    'experiment': ['experiment', 'exp', 'spike', 'test', 'wip'],
+}
+for stype, prefixes in type_map.items():
+    for prefix in prefixes:
+        if re.match(rf'^{re.escape(prefix)}[/\-_]', branch, re.IGNORECASE):
+            print(stype)
+            sys.exit(0)
+# Default
+print('feature')
+" "${branch_name}"
+}
+
+# Slugify a description into a session name
+# Handles issue numbers (123 → issue-123), PR URLs, and plain text
+suggest_session_name() {
+  local context="$1"
+  python3 -c "
+import sys, re
+
+ctx = sys.argv[1].strip()
+
+# PR URL: extract PR number
+m = re.search(r'pull/(\d+)', ctx)
+if m:
+    print(f'pr-{m.group(1)}')
+    sys.exit(0)
+
+# Pure issue number
+if re.match(r'^\d+$', ctx):
+    print(f'issue-{ctx}')
+    sys.exit(0)
+
+# Plain text: slugify
+slug = ctx.lower()
+slug = re.sub(r'[^a-z0-9]+', '-', slug)
+slug = slug.strip('-')[:50]
+print(slug)
+" "${context}"
+}
+
+# Infer session type from description/context
+infer_type_from_description() {
+  local desc="$1"
+  python3 -c "
+import sys, re
+desc = sys.argv[1].lower()
+# Issue numbers → fix
+if re.match(r'^\d+$', desc.strip()):
+    print('fix')
+    sys.exit(0)
+# PR URL
+if 'pull/' in desc:
+    print('review')
+    sys.exit(0)
+keywords_fix = ['fix', 'bug', 'patch', 'repair', 'hotfix', 'resolve', 'crash', 'error']
+keywords_exp = ['spike', 'experiment', 'test', 'wip', 'try', 'explore', 'poc']
+keywords_review = ['review', 'pr', 'chore', 'doc', 'docs', 'update deps', 'bump']
+for kw in keywords_fix:
+    if kw in desc:
+        print('fix')
+        sys.exit(0)
+for kw in keywords_exp:
+    if kw in desc:
+        print('experiment')
+        sys.exit(0)
+for kw in keywords_review:
+    if kw in desc:
+        print('review')
+        sys.exit(0)
+print('feature')
+" "${desc}"
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+main() {
+  local description="${1:-}"
+
+  # 1. Detect project from CWD
+  local project
+  project=$(detect_project_from_cwd "$(pwd)")
+  if [[ -z "${project}" ]]; then
+    log_error "No registered WTM project found in current directory tree."
+    log_info  "Register your project first: wtm init <alias> <repo> <local-path>"
+    exit 1
+  fi
+  log_info "Detected project: ${project}"
+
+  local project_info repo local_path base_branch
+  project_info=$(get_project "${project}") || {
+    log_error "Could not load project info for: ${project}"
+    exit 1
+  }
+  IFS='|' read -r repo local_path base_branch <<< "${project_info}"
+
+  # 2. If no description provided, prompt interactively
+  if [[ -z "${description}" ]]; then
+    read -rp "$(echo -e "${CYAN}[WTM]${NC} Session description (or issue number): ")" description
+    [[ -z "${description}" ]] && { log_error "Description required."; exit 1; }
+  fi
+
+  # 3. Infer type and name
+  local type name
+  type=$(infer_type_from_description "${description}")
+  name=$(suggest_session_name "${description}")
+
+  # 4. Confirm with user
+  local session_id
+  session_id=$(make_session_id "${project}" "${type}" "${name}")
+  echo ""
+  echo -e "${BLUE}[WTM]${NC} Proposed session:"
+  echo -e "  ID:      ${CYAN}${session_id}${NC}"
+  echo -e "  Type:    ${type}"
+  echo -e "  Branch:  ${type}/${name}"
+  echo -e "  Project: ${project}"
+  echo ""
+  read -rp "$(echo -e "${CYAN}[WTM]${NC} Create this session? [Y/n]: ")" confirm
+  confirm="${confirm:-Y}"
+  if [[ ! "${confirm}" =~ ^[Yy]$ ]]; then
+    log_info "Cancelled."
+    exit 0
+  fi
+
+  # 5. Create the session (lazy by default)
+  local use_lazy
+  use_lazy=$(get_config "defaults.auto_watch" 2>/dev/null || echo "true")
+
+  create_lazy_session "${session_id}" "${project}" "${type}" "${name}" "${local_path}" "${base_branch}"
+
+  echo ""
+  log_ok "Session ready: ${session_id}"
+  log_info "Materialize worktree when needed: wtm materialize ${session_id}"
+  local _term_type
+  _term_type=$(resolve_terminal 2>/dev/null || echo "unknown")
+  if [[ "${_term_type}" == "tmux" ]]; then
+    log_info "Attach: tmux attach -t $(echo "${session_id}" | tr ':/' '__')"
+  else
+    log_info "Session runs in a separate ${_term_type} window"
+  fi
+}
+
+main "$@"

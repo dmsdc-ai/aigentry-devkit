@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# WTM File Watcher - Monitor other sessions' changes and notify
+# Runs as a background process per session
+
+source "${HOME}/.wtm/lib/common.sh"
+
+if [[ $# -lt 1 ]]; then
+  echo "Usage: wtm-watch <session-id>"
+  exit 1
+fi
+
+SESSION_ID="$1"
+LOG_FILE="${WTM_LOGS}/watch-${SESSION_ID//[:\/]/_}.log"
+
+# Get this session's worktree
+SESSION_DATA=$(get_session "${SESSION_ID}") || {
+  log_error "Session '${SESSION_ID}' not found"
+  exit 1
+}
+
+MY_WORKTREE=$(echo "${SESSION_DATA}" | python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('worktree',''))")
+MY_PROJECT=$(echo "${SESSION_DATA}" | python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('project',''))")
+
+# Find all OTHER session worktrees for the same project
+get_other_worktrees() {
+  python3 -c "
+import json
+with open('${WTM_SESSIONS}') as f:
+    data = json.load(f)
+for sid, s in data.get('sessions', {}).items():
+    if sid != '${SESSION_ID}' and s.get('project') == '${MY_PROJECT}':
+        print(f\"{sid}|{s.get('worktree', '')}\")
+"
+}
+
+# Write change notification
+notify_change() {
+  local other_session="$1"
+  local changed_file="$2"
+  local timestamp
+  timestamp=$(now_iso)
+
+  # Write to this session's change log
+  echo "${timestamp}|${other_session}|${changed_file}" >> "${LOG_FILE}"
+
+  # Write to a notification file that Claude Code hooks can read
+  local notify_dir="${MY_WORKTREE}/.wtm-notifications"
+  mkdir -p "${notify_dir}"
+  echo "${timestamp}|${other_session}|${changed_file}" >> "${notify_dir}/pending.log"
+
+  # Keep only last 100 notifications
+  if [[ -f "${notify_dir}/pending.log" ]]; then
+    tail -100 "${notify_dir}/pending.log" > "${notify_dir}/pending.log.tmp"
+    mv "${notify_dir}/pending.log.tmp" "${notify_dir}/pending.log"
+  fi
+}
+
+# Check if fswatch is available
+if ! command -v fswatch &>/dev/null; then
+  log_warn "fswatch not installed. Using polling fallback (30s interval)."
+
+  # Polling fallback
+  while true; do
+    while IFS='|' read -r other_sid other_worktree; do
+      if [[ -d "${other_worktree}" ]]; then
+        # Check for recent changes via git
+        changes=$(cd "${other_worktree}" && git diff --name-only 2>/dev/null)
+        if [[ -n "${changes}" ]]; then
+          while IFS= read -r file; do
+            notify_change "${other_sid}" "${file}"
+          done <<< "${changes}"
+        fi
+      fi
+    done < <(get_other_worktrees)
+
+    sleep 30
+  done
+else
+  # fswatch-based real-time monitoring
+  log_info "Starting fswatch for session ${SESSION_ID}..."
+
+  # Build list of worktrees to watch
+  WATCH_DIRS=()
+  while IFS='|' read -r other_sid other_worktree; do
+    if [[ -d "${other_worktree}" ]]; then
+      WATCH_DIRS+=("${other_worktree}")
+      log_info "Watching: ${other_sid} -> ${other_worktree}"
+    fi
+  done < <(get_other_worktrees)
+
+  if [[ ${#WATCH_DIRS[@]} -eq 0 ]]; then
+    log_info "No other sessions to watch. Waiting for new sessions..."
+    # Re-check every 60s for new sessions
+    while true; do
+      sleep 60
+      NEW_DIRS=()
+      while IFS='|' read -r other_sid other_worktree; do
+        if [[ -d "${other_worktree}" ]]; then
+          NEW_DIRS+=("${other_worktree}")
+        fi
+      done < <(get_other_worktrees)
+
+      if [[ ${#NEW_DIRS[@]} -gt 0 ]]; then
+        # Restart with new targets
+        exec bash "${HOME}/.wtm/bin/wtm-watch" "${SESSION_ID}"
+      fi
+    done
+  fi
+
+  # Watch with fswatch
+  fswatch -r \
+    --exclude '\.git' \
+    --exclude 'node_modules' \
+    --exclude '\.next' \
+    --exclude '\.psm-' \
+    --exclude '__pycache__' \
+    "${WATCH_DIRS[@]}" | while read -r changed_path; do
+
+    # Determine which session owns this change
+    for other_entry in $(get_other_worktrees); do
+      IFS='|' read -r other_sid other_worktree <<< "${other_entry}"
+      if [[ "${changed_path}" == "${other_worktree}"* ]]; then
+        rel_path="${changed_path#${other_worktree}/}"
+        notify_change "${other_sid}" "${rel_path}"
+        break
+      fi
+    done
+  done
+fi

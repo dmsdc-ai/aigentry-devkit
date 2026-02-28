@@ -1,0 +1,10 @@
+{
+  "name": "claude-code",
+  "version": "1.0.0",
+  "description": "Claude Code HUD and Hooks integration for WTM",
+  "hooks": {
+    "session.created": "hooks/on-create.sh",
+    "session.killed": "hooks/on-kill.sh"
+  },
+  "commands": {}
+}

@@ -1,0 +1,347 @@
+#!/usr/bin/env bash
+# WTM Pipeline - Full lifecycle pipeline management
+# Usage:
+#   wtm pipeline start [description]
+#   wtm pipeline status <session-id>
+#   wtm pipeline commit <session-id> <type> <message>
+#   wtm pipeline finish <session-id> [--yes]
+
+set -euo pipefail
+
+source "${HOME}/.wtm/lib/common.sh"
+
+[[ -f "${WTM_HOME}/lib/defaults.sh" ]] && source "${WTM_HOME}/lib/defaults.sh"
+[[ -f "${WTM_HOME}/lib/lazy.sh" ]]    && source "${WTM_HOME}/lib/lazy.sh"
+[[ -f "${WTM_HOME}/lib/commits.sh" ]] && source "${WTM_HOME}/lib/commits.sh" || true
+[[ -f "${WTM_HOME}/lib/branch.sh" ]]  && source "${WTM_HOME}/lib/branch.sh"  || true
+
+ensure_dirs
+init_config 2>/dev/null || true
+
+# Pipeline stages in order
+PIPELINE_STAGES=("detect" "work" "commit" "pr" "done")
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+detect_project_from_cwd() {
+  local path="${1:-$(pwd)}"
+  python3 -c "
+import json, sys, os
+
+projects_path = sys.argv[1]
+search_path = os.path.realpath(sys.argv[2])
+
+with open(projects_path) as f:
+    data = json.load(f)
+
+aliases = data.get('aliases', {})
+current = search_path
+while current != '/':
+    for alias, info in aliases.items():
+        local_path = os.path.realpath(os.path.expanduser(info.get('local', '')))
+        if current == local_path or current.startswith(local_path + '/'):
+            print(alias)
+            sys.exit(0)
+    current = os.path.dirname(current)
+
+sys.exit(1)
+" "${WTM_PROJECTS}" "${path}" 2>/dev/null || echo ""
+}
+
+suggest_session_name() {
+  local context="$1"
+  python3 -c "
+import sys, re
+ctx = sys.argv[1].strip()
+m = re.search(r'pull/(\d+)', ctx)
+if m:
+    print(f'pr-{m.group(1)}')
+    sys.exit(0)
+if re.match(r'^\d+$', ctx):
+    print(f'issue-{ctx}')
+    sys.exit(0)
+slug = ctx.lower()
+slug = re.sub(r'[^a-z0-9]+', '-', slug)
+slug = slug.strip('-')[:50]
+print(slug)
+" "${context}"
+}
+
+infer_type_from_description() {
+  local desc="$1"
+  python3 -c "
+import sys, re
+desc = sys.argv[1].lower()
+if re.match(r'^\d+$', desc.strip()):
+    print('fix')
+    sys.exit(0)
+if 'pull/' in desc:
+    print('review')
+    sys.exit(0)
+for kw in ['fix','bug','patch','repair','hotfix','resolve','crash','error']:
+    if kw in desc:
+        print('fix')
+        sys.exit(0)
+for kw in ['spike','experiment','wip','try','explore','poc']:
+    if kw in desc:
+        print('experiment')
+        sys.exit(0)
+for kw in ['review','pr','chore','doc','docs']:
+    if kw in desc:
+        print('review')
+        sys.exit(0)
+print('feature')
+" "${desc}"
+}
+
+# ---------------------------------------------------------------------------
+# Pipeline commands
+# ---------------------------------------------------------------------------
+
+pipeline_start() {
+  local description="${1:-}"
+
+  local project
+  project=$(detect_project_from_cwd "$(pwd)")
+  if [[ -z "${project}" ]]; then
+    log_error "No registered WTM project found in current directory tree."
+    exit 1
+  fi
+  log_info "Detected project: ${project}"
+
+  local project_info repo local_path base_branch
+  project_info=$(get_project "${project}") || {
+    log_error "Could not load project info for: ${project}"
+    exit 1
+  }
+  IFS='|' read -r repo local_path base_branch <<< "${project_info}"
+
+  if [[ -z "${description}" ]]; then
+    read -rp "$(echo -e "${CYAN}[WTM]${NC} Session description: ")" description
+    [[ -z "${description}" ]] && { log_error "Description required."; exit 1; }
+  fi
+
+  local type name session_id
+  type=$(infer_type_from_description "${description}")
+  name=$(suggest_session_name "${description}")
+  session_id=$(make_session_id "${project}" "${type}" "${name}")
+
+  # Suggest and validate branch name using lib/branch.sh
+  if declare -f suggest_branch_name &>/dev/null; then
+    local suggested_branch
+    suggested_branch=$(suggest_branch_name "${type}" "${name}")
+    log_info "Suggested branch: ${suggested_branch}"
+  fi
+
+  echo ""
+  echo -e "${BLUE}[WTM]${NC} Pipeline start:"
+  echo -e "  Session: ${CYAN}${session_id}${NC}"
+  echo -e "  Branch:  ${type}/${name}"
+  echo -e "  Stage:   detect → ${YELLOW}work${NC} → commit → pr → done"
+  echo ""
+
+  create_lazy_session "${session_id}" "${project}" "${type}" "${name}" "${local_path}" "${base_branch}"
+
+  # Set pipeline_stage to "work"
+  update_session_field "${session_id}" "pipeline_stage" '"work"'
+
+  log_ok "Pipeline started at stage: work"
+  log_info "Next: make changes, then run 'wtm pipeline commit ${session_id} feat \"your message\"'"
+}
+
+pipeline_status() {
+  local session_id="${1:-}"
+  [[ -z "${session_id}" ]] && { log_error "Usage: wtm pipeline status <session-id>"; exit 1; }
+
+  local session_json
+  session_json=$(get_session "${session_id}") || {
+    log_error "Session not found: ${session_id}"
+    exit 1
+  }
+
+  python3 -c "
+import json, sys
+
+s = json.loads(sys.argv[1])
+sid = s.get('id', sys.argv[2])
+status = s.get('status', '?')
+stage = s.get('pipeline_stage', 'none')
+branch = s.get('branch', '?')
+created = s.get('created_at', '?')
+worktree = s.get('worktree') or '(lazy - not materialized)'
+
+stages = ['detect', 'work', 'commit', 'pr', 'done']
+stage_display = ' → '.join(
+    f'[{st}]' if st == stage else st for st in stages
+)
+
+print(f'Session:  {sid}')
+print(f'Branch:   {branch}')
+print(f'Status:   {status}')
+print(f'Pipeline: {stage_display}')
+print(f'Worktree: {worktree}')
+print(f'Created:  {created}')
+" "${session_json}" "${session_id}"
+}
+
+pipeline_commit() {
+  local session_id="${1:-}"
+  local commit_type="${2:-feat}"
+  local message="${3:-}"
+
+  if [[ -z "${session_id}" ]] || [[ -z "${message}" ]]; then
+    log_error "Usage: wtm pipeline commit <session-id> <type> <message>"
+    log_info  "Types: feat, fix, chore, docs, refactor, test, style, perf"
+    exit 1
+  fi
+
+  local session_json
+  session_json=$(get_session "${session_id}") || {
+    log_error "Session not found: ${session_id}"
+    exit 1
+  }
+
+  local worktree
+  worktree=$(python3 -c "import json,sys; s=json.loads(sys.argv[1]); print(s.get('worktree') or '')" "${session_json}")
+
+  if [[ -z "${worktree}" ]]; then
+    log_warn "Worktree not materialized yet. Materializing now..."
+    materialize_worktree "${session_id}"
+    session_json=$(get_session "${session_id}")
+    worktree=$(python3 -c "import json,sys; s=json.loads(sys.argv[1]); print(s.get('worktree') or '')" "${session_json}")
+  fi
+
+  if [[ ! -d "${worktree}" ]]; then
+    log_error "Worktree directory not found: ${worktree}"
+    exit 1
+  fi
+
+  local use_conventional
+  use_conventional=$(get_config "defaults.conventional_commits" 2>/dev/null || echo "true")
+
+  local full_message
+  if [[ "${use_conventional}" == "true" ]]; then
+    full_message="${commit_type}: ${message}"
+  else
+    full_message="${message}"
+  fi
+
+  # Validate commit message against conventional commit pattern (from lib/commits.sh)
+  if declare -f validate_commit_msg &>/dev/null; then
+    local validation
+    validation=$(validate_commit_msg "${full_message}" 2>/dev/null) || true
+    if [[ "${validation}" == INVALID* ]]; then
+      log_warn "Commit message validation: ${validation}"
+      log_warn "Proceeding anyway, but consider fixing the format."
+    fi
+  fi
+
+  (
+    cd "${worktree}"
+    if [[ -z "$(git status --porcelain 2>/dev/null)" ]]; then
+      log_warn "Nothing to commit in ${worktree}"
+      exit 0
+    fi
+    git add -A
+    git commit -m "${full_message}"
+  )
+
+  update_session_field "${session_id}" "pipeline_stage" '"pr"'
+  log_ok "Committed: ${full_message}"
+  log_info "Pipeline advanced to stage: pr"
+  log_info "Next: open a PR, then run 'wtm pipeline finish ${session_id}'"
+}
+
+pipeline_finish() {
+  local session_id="${1:-}"
+  local auto_yes=false
+  [[ "${2:-}" == "--yes" ]] && auto_yes=true
+
+  [[ -z "${session_id}" ]] && { log_error "Usage: wtm pipeline finish <session-id> [--yes]"; exit 1; }
+
+  local session_json
+  session_json=$(get_session "${session_id}") || {
+    log_error "Session not found: ${session_id}"
+    exit 1
+  }
+
+  echo -e "${BLUE}[WTM]${NC} Finishing pipeline for: ${CYAN}${session_id}${NC}"
+  pipeline_status "${session_id}"
+  echo ""
+
+  if ! $auto_yes; then
+    read -rp "$(echo -e "${YELLOW}[WTM]${NC} Backup and kill session? [y/N]: ")" confirm
+    [[ "${confirm}" =~ ^[Yy]$ ]] || { log_info "Cancelled."; exit 0; }
+  fi
+
+  # Backup session data
+  local backup_dir="${WTM_BACKUPS}/pipeline-finish"
+  mkdir -p "${backup_dir}"
+  local ts
+  ts=$(date -u +"%Y%m%dT%H%M%SZ")
+  python3 -c "
+import json, sys
+with open(sys.argv[1]) as f:
+    data = json.load(f)
+s = data.get('sessions', {}).get(sys.argv[2], {})
+with open(sys.argv[3], 'w') as f:
+    json.dump(s, f, indent=2)
+" "${WTM_SESSIONS}" "${session_id}" "${backup_dir}/${session_id//[:\/]/_}_${ts}.json"
+
+  log_info "Session backed up to ${backup_dir}"
+
+  # Kill terminal session (handles tmux + PID-based for all tiers)
+  kill_terminal_session "${session_id}" 2>/dev/null || true
+  log_info "Terminal session killed for: ${session_id}"
+
+  # Remove git worktree if materialized
+  local worktree
+  worktree=$(python3 -c "import json,sys; s=json.loads(sys.argv[1]); print(s.get('worktree') or '')" "${session_json}")
+  if [[ -n "${worktree}" ]] && [[ -d "${worktree}" ]]; then
+    local source_dir
+    source_dir=$(python3 -c "import json,sys; s=json.loads(sys.argv[1]); print(s.get('source_dir',''))" "${session_json}")
+    if [[ -d "${source_dir}/.git" ]]; then
+      (cd "${source_dir}" && git worktree remove --force "${worktree}" 2>/dev/null) || rm -rf "${worktree}"
+    fi
+    log_info "Worktree removed: ${worktree}"
+  fi
+
+  # Update stage to done, then remove session
+  update_session_field "${session_id}" "pipeline_stage" '"done"'
+  remove_session "${session_id}"
+
+  log_ok "Pipeline complete for: ${session_id}"
+}
+
+# ---------------------------------------------------------------------------
+# Dispatch
+# ---------------------------------------------------------------------------
+
+usage() {
+  cat <<EOF
+WTM Pipeline - Full lifecycle management
+
+Usage:
+  wtm pipeline start [description]              Detect project, create session, set stage=work
+  wtm pipeline status <session-id>              Show current pipeline stage
+  wtm pipeline commit <session-id> <type> <msg> Conventional commit, advance to pr stage
+  wtm pipeline finish <session-id> [--yes]      Backup and kill session
+
+Commit types: feat, fix, chore, docs, refactor, test, style, perf
+EOF
+}
+
+case "${1:-help}" in
+  start)   shift; pipeline_start "$@" ;;
+  status)  shift; pipeline_status "$@" ;;
+  commit)  shift; pipeline_commit "$@" ;;
+  finish)  shift; pipeline_finish "$@" ;;
+  help|--help|-h) usage ;;
+  *)
+    log_error "Unknown pipeline command: $1"
+    usage
+    exit 1
+    ;;
+esac

@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# WTM Health - Session health checks and auto-healing
+set -euo pipefail
+source "${HOME}/.wtm/lib/common.sh"
+source "${HOME}/.wtm/lib/health.sh"
+
+case "${1:-status}" in
+  status|"")
+    # Show health of all sessions
+    system_health
+    ;;
+  check)
+    # Check specific session
+    shift
+    if [[ $# -lt 1 ]]; then
+      echo "Usage: wtm health check <session-id>"
+      exit 1
+    fi
+    result=$(check_session_health "$1")
+    IFS='|' read -r score issues <<< "${result}"
+    echo ""
+    echo "  Session: $1"
+    echo "  Health:  ${score}"
+    echo "  Issues:  ${issues}"
+    echo ""
+    ;;
+  --heal|heal)
+    # Auto-heal all sessions
+    shift
+    if [[ $# -ge 1 ]]; then
+      # Heal specific session
+      result=$(check_session_health "$1")
+      IFS='|' read -r score issues <<< "${result}"
+      for issue in ${issues}; do
+        [[ "${issue}" == "none" ]] && continue
+        auto_heal "$1" "${issue}"
+      done
+    else
+      # Heal all sessions - iterate via python3
+      python3 -c "
+import json
+with open('${WTM_SESSIONS}') as f:
+    data = json.load(f)
+for sid in data.get('sessions', {}):
+    if data['sessions'][sid].get('status') == 'active':
+        print(sid)
+" | while read -r sid; do
+        result=$(check_session_health "${sid}" 2>/dev/null) || continue
+        IFS='|' read -r score issues <<< "${result}"
+        for issue in ${issues}; do
+          [[ "${issue}" == "none" ]] && continue
+          auto_heal "${sid}" "${issue}"
+        done
+      done
+    fi
+    ;;
+  --daemon)
+    shift
+    case "${1:-start}" in
+      start) start_health_daemon "${2:-30}" ;;
+      stop)  stop_health_daemon ;;
+      *)     echo "Usage: wtm health --daemon {start|stop} [interval_minutes]" ;;
+    esac
+    ;;
+  help|--help|-h)
+    cat <<EOF
+Usage:
+  wtm health                    Show health of all sessions
+  wtm health check <sid>        Check specific session
+  wtm health heal [sid]         Auto-heal issues
+  wtm health --daemon start     Start background health daemon
+  wtm health --daemon stop      Stop health daemon
+EOF
+    ;;
+  *)
+    log_error "Unknown health command: $1"
+    exit 1
+    ;;
+esac

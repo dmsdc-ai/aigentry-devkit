@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Register a project with PSM
+
+source "${HOME}/.wtm/lib/common.sh"
+
+if [[ $# -lt 3 ]]; then
+  echo "Usage: wtm init <alias> <repo> <local-path>"
+  echo "Example: wtm init aigentry dmsdc-ai/aigentry /Users/duckyoungkim/projects/aigentry"
+  exit 1
+fi
+
+ALIAS="$1"
+REPO="$2"
+LOCAL_PATH="$3"
+BASE="${4:-main}"
+
+# Expand ~ in path
+LOCAL_PATH="${LOCAL_PATH/#\~/$HOME}"
+
+if [[ ! -d "${LOCAL_PATH}/.git" ]]; then
+  log_error "${LOCAL_PATH} is not a git repository"
+  exit 1
+fi
+
+python3 -c "
+import json, os
+
+path = os.path.expanduser('${WTM_PROJECTS}')
+if os.path.exists(path):
+    with open(path) as f:
+        data = json.load(f)
+else:
+    data = {'aliases': {}, 'defaults': {'worktree_root': '~/.wtm/worktrees', 'cleanup_after_days': 14}}
+
+data['aliases']['${ALIAS}'] = {
+    'repo': '${REPO}',
+    'local': '${LOCAL_PATH}',
+    'default_base': '${BASE}'
+}
+
+with open(path, 'w') as f:
+    json.dump(data, f, indent=2)
+"
+
+log_ok "Project '${ALIAS}' registered: ${REPO} -> ${LOCAL_PATH}"

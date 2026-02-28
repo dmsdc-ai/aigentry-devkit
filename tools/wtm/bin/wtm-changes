@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Show recent file changes from other PSM sessions
+
+source "${HOME}/.wtm/lib/common.sh"
+
+if [[ $# -lt 1 ]]; then
+  echo "Usage: wtm changes <session-id> [--clear]"
+  exit 1
+fi
+
+SESSION_ID="$1"
+CLEAR="${2:-}"
+
+SESSION_DATA=$(get_session "${SESSION_ID}") || {
+  log_error "Session '${SESSION_ID}' not found"
+  exit 1
+}
+
+WORKTREE=$(echo "${SESSION_DATA}" | python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('worktree',''))")
+NOTIFY_FILE="${WORKTREE}/.wtm-notifications/pending.log"
+
+if [[ ! -f "${NOTIFY_FILE}" ]] || [[ ! -s "${NOTIFY_FILE}" ]]; then
+  log_ok "No pending notifications from other sessions."
+  exit 0
+fi
+
+echo ""
+echo "  Recent changes from other sessions:"
+echo "  ─────────────────────────────────────────────"
+
+python3 -c "
+import sys
+from collections import defaultdict
+
+changes = defaultdict(list)
+with open('${NOTIFY_FILE}') as f:
+    for line in f:
+        parts = line.strip().split('|', 2)
+        if len(parts) == 3:
+            ts, session, file = parts
+            changes[session].append((ts, file))
+
+for session, files in changes.items():
+    print(f'  Session: {session}')
+    # Show last 10 changes per session
+    for ts, f in files[-10:]:
+        print(f'    {ts[:16]}  {f}')
+    if len(files) > 10:
+        print(f'    ... and {len(files) - 10} more')
+    print()
+"
+
+# Conflict detection: check if this session's branch has diverged from base
+BASE_BRANCH=$(echo "${SESSION_DATA}" | python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('base_branch','main'))")
+if [[ -n "${WORKTREE}" ]] && [[ -d "${WORKTREE}" ]]; then
+  echo ""
+  echo "  Branch conflict check:"
+  echo "  ─────────────────────────────────────────────"
+  CONFLICT_STATUS=$(detect_branch_conflicts "${WORKTREE}" "${BASE_BRANCH}" 2>/dev/null | head -1)
+  if [[ -n "${CONFLICT_STATUS}" ]]; then
+    CONFLICT_DETAIL=$(detect_branch_conflicts "${WORKTREE}" "${BASE_BRANCH}" 2>/dev/null | tail -1)
+    if [[ "${CONFLICT_STATUS}" == "UP_TO_DATE" ]]; then
+      log_ok "  Branch is up to date with origin/${BASE_BRANCH}."
+    else
+      log_warn "  ${CONFLICT_STATUS}"
+      if [[ -n "${CONFLICT_DETAIL}" ]] && [[ "${CONFLICT_DETAIL}" != "${CONFLICT_STATUS}" ]]; then
+        if [[ "${CONFLICT_DETAIL}" == CONFLICTS* ]]; then
+          log_error "  ${CONFLICT_DETAIL}"
+        else
+          log_ok "  ${CONFLICT_DETAIL}"
+        fi
+      fi
+      suggest_conflict_resolution "${CONFLICT_STATUS}"
+    fi
+  fi
+  echo ""
+fi
+
+if [[ "${CLEAR}" == "--clear" ]]; then
+  > "${NOTIFY_FILE}"
+  log_ok "Notifications cleared."
+fi

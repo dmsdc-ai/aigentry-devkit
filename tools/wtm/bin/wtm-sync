@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# WTM Sync - Cross-machine state synchronization
+set -euo pipefail
+source "${HOME}/.wtm/lib/common.sh"
+source "${HOME}/.wtm/lib/sync.sh"
+
+case "${1:-help}" in
+  init)
+    shift
+    if [[ $# -lt 1 ]]; then
+      echo "Usage: wtm sync init <project>"
+      exit 1
+    fi
+    sync_init "$1"
+    ;;
+  push)
+    shift
+    if [[ $# -lt 1 ]]; then
+      echo "Usage: wtm sync push <project>"
+      exit 1
+    fi
+    sync_push "$1"
+    ;;
+  pull)
+    shift
+    if [[ $# -lt 2 ]]; then
+      echo "Usage: wtm sync pull <project> <from-machine>"
+      exit 1
+    fi
+    sync_pull "$1" "$2"
+    ;;
+  merge)
+    shift
+    if [[ $# -lt 3 ]]; then
+      echo "Usage: wtm sync merge <project> <from-machine> <session-id>"
+      exit 1
+    fi
+    sync_merge_session "$1" "$2" "$3"
+    ;;
+  status)
+    shift
+    if [[ $# -lt 1 ]]; then
+      echo "Usage: wtm sync status <project>"
+      exit 1
+    fi
+    echo ""
+    echo "  Sync status for: $1"
+    echo "  ─────────────────────────────"
+    local_machine=$(get_machine_id)
+    echo "  Local machine: ${local_machine}"
+    sync_dir="${WTM_HOME}/sync-worktree/$1"
+    if [[ -d "${sync_dir}" ]]; then
+      echo "  Sync worktree: ${sync_dir}"
+      if [[ -d "${sync_dir}/.git" ]] || [[ -f "${sync_dir}/.git" ]]; then
+        last_commit=$(git -C "${sync_dir}" log -1 --format="%h %s (%cr)" 2>/dev/null || echo "no commits")
+        echo "  Last sync: ${last_commit}"
+      fi
+    else
+      echo "  Sync not initialized. Run: wtm sync init $1"
+    fi
+    echo ""
+    echo "  Known machines:"
+    list_machines
+    ;;
+  help|--help|-h)
+    cat <<'EOF'
+Usage:
+  wtm sync init <project>                         Initialize sync
+  wtm sync push <project>                         Push state to remote
+  wtm sync pull <project> <from-machine>           Pull state from machine
+  wtm sync merge <project> <from-machine> <sid>    Merge specific session
+  wtm sync status <project>                        Show sync status
+EOF
+    ;;
+  *)
+    log_error "Unknown sync command: $1"
+    exit 1
+    ;;
+esac
