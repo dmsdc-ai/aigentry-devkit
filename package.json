@@ -32,6 +32,7 @@
     "skills/deliberation/**",
     "skills/deliberation-executor/**",
     "skills/env-manager/**",
+    "skills/npm-release/**",
     "skills/youtube-analyzer/**",
     "templates/aigentry/**",
     "templates/knowledge/**",
