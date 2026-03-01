@@ -1,5 +1,7 @@
 # aigentry-devkit
 
+Part of the [aigentry platform](https://github.com/dmsdc-ai) — AI 의사결정을 감사 가능하게 만드는 오픈소스 엔진. aigentry-devkit is Layer 3: developer tools, hooks, and automation for the aigentry ecosystem.
+
 **Your AI development environment, packaged.**
 
 A comprehensive development kit that bundles skills, hooks, MCP servers, HUD/statusline, and configuration templates for Claude Code, Codex CLI, and other MCP-compatible CLIs. Install once, use everywhere.
@@ -498,6 +500,18 @@ Built with:
 - [Claude Code](https://github.com/anthropic-ai/claude-code) by Anthropic
 - [Model Context Protocol](https://modelcontextprotocol.io/) by Anthropic
 - [oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode) - Multi-agent orchestration framework
+
+## Part of the aigentry platform
+
+aigentry-devkit is one component of the aigentry platform — an open-source engine for making AI decision-making auditable.
+
+| Package | Role |
+|---------|------|
+| [`@dmsdc-ai/aigentry-brain`](https://github.com/dmsdc-ai/aigentry-brain) | Cross-LLM memory OS |
+| [`@dmsdc-ai/aigentry-deliberation`](https://github.com/dmsdc-ai/aigentry-deliberation) | Multi-AI deliberation engine |
+| [`aigentry-registry`](https://github.com/dmsdc-ai/aigentry-registry) | AI agent evaluation (Python) |
+| [`aigentry-ssot`](https://github.com/dmsdc-ai/aigentry-ssot) | MCP contract schemas |
+| `@dmsdc-ai/aigentry-devkit` | Developer tools, hooks, and automation (this package) |
 
 ---
 
