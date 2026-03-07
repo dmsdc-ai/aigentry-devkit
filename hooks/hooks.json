@@ -8,6 +8,23 @@
             "type": "command",
             "command": "bash '${CLAUDE_PLUGIN_ROOT}/hooks/session-start'",
             "async": false
+          },
+          {
+            "type": "command",
+            "command": "bash '${CLAUDE_PLUGIN_ROOT}/hooks/brain-session-start.sh'",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '${CLAUDE_PLUGIN_ROOT}/hooks/brain-session-end.sh'",
+            "async": true
           }
         ]
       }
