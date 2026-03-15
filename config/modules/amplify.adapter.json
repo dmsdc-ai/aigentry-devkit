@@ -1,0 +1,23 @@
+{
+  "name": "amplify",
+  "version": "latest",
+  "capabilities": {
+    "cli": true,
+    "daemon": false,
+    "mcp_server": false,
+    "skill_provider": false,
+    "hook_provider": false,
+    "transport": false
+  },
+  "healthcheck": {
+    "command": "aigentry-amplify --help",
+    "timeout_ms": 10000
+  },
+  "attach": {
+    "install_command": "npm install -g @dmsdc-ai/aigentry-amplify",
+    "post_install": [],
+    "config_path": "~/.aigentry/amplify.json",
+    "env_vars": {}
+  },
+  "depends_on": []
+}

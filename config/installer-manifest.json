@@ -1,0 +1,205 @@
+{
+  "version": 1,
+  "compatibility": {
+    "node": ">=18",
+    "telepty": {
+      "required": true,
+      "target": "0.1.45"
+    },
+    "deliberation": {
+      "required": true,
+      "target": "managed-by-devkit"
+    },
+    "brain": {
+      "required": false,
+      "target": "latest-compatible"
+    },
+    "dustcraw": {
+      "required": false,
+      "target": "0.3.1"
+    },
+    "registry_api": {
+      "required": false,
+      "contract_version": "2026-03-14"
+    },
+    "amplify": {
+      "required": false,
+      "target": "latest"
+    }
+  },
+  "profiles": {
+    "core": {
+      "description": "telepty + deliberation + devkit core assets",
+      "components": [
+        "devkit-core",
+        "telepty",
+        "deliberation"
+      ]
+    },
+    "autoresearch-public": {
+      "description": "experiment runner + registry wiring + optional brain",
+      "components": [
+        "devkit-core",
+        "telepty",
+        "deliberation",
+        "wtm-experiment",
+        "registry-wiring",
+        "brain"
+      ],
+      "optional_components": [
+        "brain"
+      ]
+    },
+    "curator-public": {
+      "description": "dustcraw + brain + registry wiring on top of core",
+      "components": [
+        "devkit-core",
+        "telepty",
+        "deliberation",
+        "brain",
+        "dustcraw",
+        "registry-wiring"
+      ]
+    },
+    "ecosystem-full": {
+      "description": "all public components",
+      "components": [
+        "devkit-core",
+        "telepty",
+        "deliberation",
+        "wtm-experiment",
+        "brain",
+        "dustcraw",
+        "registry-wiring"
+      ]
+    }
+  },
+  "components": {
+    "devkit-core": {
+      "phase": 1,
+      "required": true,
+      "depends_on": [],
+      "health_checks": [
+        "skills-installed",
+        "hooks-installed",
+        "wtm-installed"
+      ],
+      "failure_policy": "hard"
+    },
+    "telepty": {
+      "phase": 2,
+      "required": true,
+      "depends_on": [
+        "devkit-core"
+      ],
+      "install": {
+        "kind": "npm-global",
+        "package": "@dmsdc-ai/aigentry-telepty",
+        "version": "0.1.45"
+      },
+      "health_checks": [
+        "telepty-version",
+        "telepty-daemon"
+      ],
+      "failure_policy": "hard"
+    },
+    "deliberation": {
+      "phase": 3,
+      "required": true,
+      "depends_on": [
+        "telepty"
+      ],
+      "install": {
+        "kind": "local-runtime",
+        "source": "managed-by-devkit"
+      },
+      "health_checks": [
+        "deliberation-runtime",
+        "deliberation-mcp-registration"
+      ],
+      "failure_policy": "hard"
+    },
+    "brain": {
+      "phase": 4,
+      "required": false,
+      "depends_on": [
+        "devkit-core"
+      ],
+      "install": {
+        "kind": "npm-global",
+        "package": "@dmsdc-ai/aigentry-brain",
+        "mode_prompt": true
+      },
+      "health_checks": [
+        "brain-cli",
+        "brain-health"
+      ],
+      "failure_policy": "soft"
+    },
+    "dustcraw": {
+      "phase": 5,
+      "required": false,
+      "depends_on": [
+        "telepty"
+      ],
+      "install": {
+        "kind": "npm-global",
+        "package": "@dmsdc-ai/aigentry-dustcraw",
+        "version": "0.3.1",
+        "preset_prompt": true
+      },
+      "health_checks": [
+        "dustcraw-cli",
+        "dustcraw-bootstrap"
+      ],
+      "failure_policy": "soft"
+    },
+    "registry-wiring": {
+      "phase": 6,
+      "required": false,
+      "depends_on": [
+        "devkit-core"
+      ],
+      "install": {
+        "kind": "wiring",
+        "mode_prompt": [
+          "cloud",
+          "self-hosted",
+          "skip"
+        ]
+      },
+      "health_checks": [
+        "registry-health",
+        "registry-authenticated-call"
+      ],
+      "failure_policy": "soft"
+    },
+    "wtm-experiment": {
+      "phase": 1,
+      "required": false,
+      "depends_on": [
+        "devkit-core"
+      ],
+      "health_checks": [
+        "wtm-experiment-cli",
+        "wtm-experiment-template"
+      ],
+      "failure_policy": "hard"
+    },
+    "amplify": {
+      "phase": 4,
+      "required": false,
+      "depends_on": [
+        "devkit-core"
+      ],
+      "install": {
+        "kind": "npm-global",
+        "package": "@dmsdc-ai/aigentry-amplify"
+      },
+      "health_checks": [
+        "amplify-cli"
+      ],
+      "failure_policy": "soft"
+    }
+  }
+}
