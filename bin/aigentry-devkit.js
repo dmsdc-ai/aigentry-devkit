@@ -23,6 +23,14 @@ function findKittySocket() {
   return null;
 }
 
+function resolveFullPath(cmd) {
+  const result = spawnSync("which", [cmd], { stdio: "pipe", timeout: 3000 });
+  if (result.status === 0 && result.stdout) {
+    return result.stdout.toString().trim();
+  }
+  return cmd;
+}
+
 function printHelp() {
   const text = [
     "aigentry-devkit CLI",
@@ -838,10 +846,22 @@ function runStart() {
   const orchSession = active.find((s) => s.isOrchestrator);
 
   // 7. Build session command
+  const teleptyPath = resolveFullPath("telepty");
+  const aiCliPath = resolveFullPath(aiCli);
+
   const buildSessionCmd = (session) => {
     const parts = ["telepty", "allow", "--id", session.id, aiCli];
     if (workspace.autoPermissions) parts.push("--dangerously-skip-permissions");
     return parts;
+  };
+
+  const buildKittySessionArgs = (session) => {
+    let innerCmd = `${teleptyPath} allow --id ${session.id} ${aiCliPath}`;
+    if (workspace.autoPermissions) innerCmd += " --dangerously-skip-permissions";
+    return [
+      "--env", "TELEPTY_SESSION_ID=",
+      "--", "/bin/zsh", "-c", `unset TELEPTY_SESSION_ID; ${innerCmd}`,
+    ];
   };
 
   // 8. Launch background sessions
@@ -850,13 +870,14 @@ function runStart() {
     process.stdout.write(`  launching: ${session.name} (${session.id})\n`);
 
     if (useKitty) {
+      const kittyArgs = buildKittySessionArgs(session);
       const result = spawnSync("kitty", [
         "@", "--to", `unix:${kittySock}`,
         "launch",
         "--type=tab",
         "--tab-title", session.name,
         "--cwd", session.dir,
-        "--", ...cmd,
+        ...kittyArgs,
       ], { stdio: "pipe", timeout: 5000 });
       if (result.status !== 0) {
         process.stdout.write(`    warning: kitty tab launch failed for ${session.name}\n`);
@@ -880,13 +901,14 @@ function runStart() {
     if (useKitty || useTmux) {
       process.stdout.write(`  launching: ${orchSession.name} (orchestrator)\n`);
       if (useKitty) {
+        const kittyArgs = buildKittySessionArgs(orchSession);
         spawnSync("kitty", [
           "@", "--to", `unix:${kittySock}`,
           "launch",
           "--type=tab",
           "--tab-title", orchSession.name,
           "--cwd", orchSession.dir,
-          "--", ...cmd,
+          ...kittyArgs,
         ], { stdio: "pipe", timeout: 5000 });
         // Focus the orchestrator tab
         spawnSync("kitty", ["@", "--to", `unix:${kittySock}`, "focus-tab", "--match", `title:${orchSession.name}`], {
@@ -1011,6 +1033,9 @@ function runSession(subcommand, args) {
       // 2. Detect terminal and open new tab/window
       const kSock = findKittySocket();
       const useKitty = !!kSock;
+      const teleptyPath = resolveFullPath("telepty");
+      const claudePath = resolveFullPath("claude");
+      const wrappedCmd = `unset TELEPTY_SESSION_ID; ${teleptyPath} allow --id ${sessionId} ${claudePath} --dangerously-skip-permissions`;
 
       if (useKitty) {
         process.stdout.write(`Opening kitty tab for ${projectName} (socket: ${kSock})...\n`);
@@ -1020,7 +1045,8 @@ function runSession(subcommand, args) {
           "--type=tab",
           "--tab-title", projectName,
           "--cwd", projectDir,
-          "--", "telepty", "allow", "--id", sessionId, "claude", "--dangerously-skip-permissions",
+          "--env", "TELEPTY_SESSION_ID=",
+          "--", "/bin/zsh", "-c", wrappedCmd,
         ], { stdio: "pipe" });
 
         if (result.status !== 0) {
@@ -1028,7 +1054,7 @@ function runSession(subcommand, args) {
           process.stdout.write("  Socket launch failed, spawning new kitty process...\n");
           const fallback = spawnSync("kitty", [
             "--directory", projectDir,
-            "-e", "telepty", "allow", "--id", sessionId, "claude", "--dangerously-skip-permissions",
+            "-e", "/bin/zsh", "-c", wrappedCmd,
           ], { stdio: "pipe", detached: true });
           if (fallback.error) {
             process.stderr.write(`Failed to open kitty: ${fallback.error.message}\n`);
@@ -1041,7 +1067,7 @@ function runSession(subcommand, args) {
           "new-window", "-d",
           "-n", projectName,
           "-c", projectDir,
-          `telepty allow --id ${sessionId} claude --dangerously-skip-permissions`,
+          `${teleptyPath} allow --id ${sessionId} ${claudePath} --dangerously-skip-permissions`,
         ], { stdio: "pipe" });
       } else {
         process.stdout.write([
@@ -1049,7 +1075,7 @@ function runSession(subcommand, args) {
           "",
           "Run manually in a new terminal:",
           `  cd ${projectDir}`,
-          `  telepty allow --id ${sessionId} claude --dangerously-skip-permissions`,
+          `  ${teleptyPath} allow --id ${sessionId} ${claudePath} --dangerously-skip-permissions`,
           "",
         ].join("\n"));
         return;
