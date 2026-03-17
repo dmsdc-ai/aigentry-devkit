@@ -856,11 +856,12 @@ function runStart() {
   };
 
   const buildKittySessionArgs = (session) => {
-    let innerCmd = `${teleptyPath} allow --id ${session.id} ${aiCliPath}`;
-    if (workspace.autoPermissions) innerCmd += " --dangerously-skip-permissions";
+    const parts = [process.execPath, teleptyPath, "allow", "--id", session.id, aiCliPath];
+    if (workspace.autoPermissions) parts.push("--dangerously-skip-permissions");
     return [
       "--env", "TELEPTY_SESSION_ID=",
-      "--", "/bin/zsh", "-c", `unset TELEPTY_SESSION_ID; ${innerCmd}`,
+      "--env", `PATH=${process.env.PATH}`,
+      "--", ...parts,
     ];
   };
 
@@ -1035,7 +1036,8 @@ function runSession(subcommand, args) {
       const useKitty = !!kSock;
       const teleptyPath = resolveFullPath("telepty");
       const claudePath = resolveFullPath("claude");
-      const wrappedCmd = `unset TELEPTY_SESSION_ID; ${teleptyPath} allow --id ${sessionId} ${claudePath} --dangerously-skip-permissions`;
+      const nodeExec = process.execPath;
+      const currentPath = process.env.PATH || "";
 
       if (useKitty) {
         process.stdout.write(`Opening kitty tab for ${projectName} (socket: ${kSock})...\n`);
@@ -1046,7 +1048,8 @@ function runSession(subcommand, args) {
           "--tab-title", projectName,
           "--cwd", projectDir,
           "--env", "TELEPTY_SESSION_ID=",
-          "--", "/bin/zsh", "-c", wrappedCmd,
+          "--env", `PATH=${currentPath}`,
+          "--", nodeExec, teleptyPath, "allow", "--id", sessionId, claudePath, "--dangerously-skip-permissions",
         ], { stdio: "pipe" });
 
         if (result.status !== 0) {
@@ -1054,8 +1057,8 @@ function runSession(subcommand, args) {
           process.stdout.write("  Socket launch failed, spawning new kitty process...\n");
           const fallback = spawnSync("kitty", [
             "--directory", projectDir,
-            "-e", "/bin/zsh", "-c", wrappedCmd,
-          ], { stdio: "pipe", detached: true });
+            "-e", nodeExec, teleptyPath, "allow", "--id", sessionId, claudePath, "--dangerously-skip-permissions",
+          ], { stdio: "pipe", detached: true, env: { ...process.env, TELEPTY_SESSION_ID: "" } });
           if (fallback.error) {
             process.stderr.write(`Failed to open kitty: ${fallback.error.message}\n`);
             process.exit(1);
