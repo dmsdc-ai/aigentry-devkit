@@ -459,6 +459,22 @@ if should_run_phase 2 && component_selected "telepty"; then
   TELEPTY_INSTALLED_VERSION="$(telepty --version 2>/dev/null || true)"
   info "telepty version: ${TELEPTY_INSTALLED_VERSION:-unknown}"
 
+  # Semver comparison: warn if installed version is below target
+  TELEPTY_TARGET="$(manifest_eval "manifest.compatibility.telepty.target")" || TELEPTY_TARGET=""
+  if [ -n "$TELEPTY_TARGET" ] && [ -n "$TELEPTY_INSTALLED_VERSION" ]; then
+    version_gte() {
+      [ "$(printf '%s\n' "$1" "$2" | sort -V | head -n1)" = "$2" ]
+    }
+    # Strip any leading 'v' prefix
+    _installed="${TELEPTY_INSTALLED_VERSION#v}"
+    _target="${TELEPTY_TARGET#v}"
+    if ! version_gte "$_installed" "$_target"; then
+      warn "telepty $_installed is below target $_target — consider upgrading"
+    else
+      info "telepty version $_installed meets target $_target"
+    fi
+  fi
+
   telepty daemon >/dev/null 2>&1 || true
 
   TELEPTY_OK=0
@@ -510,6 +526,44 @@ if should_run_phase 4 && component_selected "brain"; then
         info "aigentry-brain health check passed"
       else
         warn "aigentry-brain health check failed. Run 'aigentry-brain setup' for manual completion."
+      fi
+
+      # Wire brain hooks into devkit hooks.json
+      HOOKS_FILE="$DEVKIT_DIR/hooks/hooks.json"
+      if [ -f "$HOOKS_FILE" ]; then
+        HOOKS_DIR="$DEVKIT_DIR/hooks"
+        BRAIN_START_CMD="bash $HOOKS_DIR/brain-session-start.sh"
+        BRAIN_END_CMD="bash $HOOKS_DIR/brain-session-end.sh"
+
+        # Check if brain hooks are already present
+        if ! grep -q "brain-session-start" "$HOOKS_FILE" 2>/dev/null; then
+          info "Wiring brain hooks into $HOOKS_FILE"
+          node -e "
+            const fs = require('fs');
+            const hf = JSON.parse(fs.readFileSync('$HOOKS_FILE', 'utf8'));
+            if (!hf.hooks) hf.hooks = {};
+
+            function ensureHook(eventName, matcher, cmd, isAsync) {
+              if (!hf.hooks[eventName]) hf.hooks[eventName] = [];
+              let group = hf.hooks[eventName].find(g => g.matcher === matcher);
+              if (!group) {
+                group = { matcher: matcher, hooks: [] };
+                hf.hooks[eventName].push(group);
+              }
+              const exists = group.hooks.some(h => h.command && h.command.includes(cmd));
+              if (!exists) {
+                group.hooks.push({ type: 'command', command: 'bash $HOOKS_DIR/' + cmd, async: isAsync });
+              }
+            }
+
+            ensureHook('SessionStart', 'startup|resume|clear|compact', 'brain-session-start.sh', true);
+            ensureHook('SessionEnd', '', 'brain-session-end.sh', true);
+
+            fs.writeFileSync('$HOOKS_FILE', JSON.stringify(hf, null, 2) + '\n');
+          " && info "Brain hooks wired into hooks.json" || warn "Failed to wire brain hooks"
+        else
+          info "Brain hooks already present in hooks.json"
+        fi
       fi
     else
       warn "aigentry-brain command not found after install"

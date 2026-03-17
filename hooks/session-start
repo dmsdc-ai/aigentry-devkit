@@ -17,7 +17,7 @@ for skill_dir in "$SKILLS_DIR"/*/; do
   skill_file="$skill_dir/SKILL.md"
   if [ -f "$skill_file" ]; then
     # Extract description from YAML frontmatter
-    desc=$(sed -n '/^---$/,/^---$/p' "$skill_file" | grep -E '^\s*description:' | head -1 | sed 's/.*description:\s*//' | head -c 100)
+    desc=$(awk '/^---$/{n++; next} n==1 && /^[ \t]*description:/{sub(/.*description:[ \t]*/, ""); if ($0 == "|" || $0 == ">") {getline; sub(/^[ \t]+/, ""); } print; exit}' "$skill_file" | head -c 100)
     SKILLS_LIST="$SKILLS_LIST\n- **$skill_name**: $desc"
   fi
 done

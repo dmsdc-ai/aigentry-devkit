@@ -10,8 +10,8 @@
     "transport": false
   },
   "healthcheck": {
-    "command": "curl -sf ${AIGENTRY_API_URL:-http://localhost:8080}/health",
-    "http_endpoint": "${AIGENTRY_API_URL}/health",
+    "command": "curl -sf http://localhost:8080/health",
+    "http_endpoint": "http://localhost:8080/health",
     "timeout_ms": 5000
   },
   "attach": {

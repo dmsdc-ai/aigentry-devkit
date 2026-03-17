@@ -1014,6 +1014,11 @@ function runSession(subcommand, args) {
     return;
   }
 
+  const sessionCfg = readAigentrYml();
+  const sessionRaw = sessionCfg ? sessionCfg.raw : null;
+  const sessionWorkspace = parseWorkspace(sessionRaw);
+  const aiCli = sessionWorkspace ? sessionWorkspace.aiCli : "claude";
+
   switch (subcommand) {
     case "create": {
       const projectName = args[0];
@@ -1023,7 +1028,7 @@ function runSession(subcommand, args) {
       }
 
       const projectDir = path.join(HOME, "projects", projectName);
-      const sessionId = `${projectName}-claude`;
+      const sessionId = `${projectName}-${aiCli}`;
 
       // 1. Create directory if not exists
       if (!fs.existsSync(projectDir)) {
@@ -1035,7 +1040,7 @@ function runSession(subcommand, args) {
       const kSock = findKittySocket();
       const useKitty = !!kSock;
       const teleptyPath = resolveFullPath("telepty");
-      const claudePath = resolveFullPath("claude");
+      const cliPath = resolveFullPath(aiCli);
       const nodeExec = process.execPath;
       const currentPath = process.env.PATH || "";
 
@@ -1049,7 +1054,7 @@ function runSession(subcommand, args) {
           "--cwd", projectDir,
           "--env", "TELEPTY_SESSION_ID=",
           "--env", `PATH=${currentPath}`,
-          "--", nodeExec, teleptyPath, "allow", "--id", sessionId, claudePath, "--dangerously-skip-permissions",
+          "--", nodeExec, teleptyPath, "allow", "--id", sessionId, cliPath, "--dangerously-skip-permissions",
         ], { stdio: "pipe" });
 
         if (result.status !== 0) {
@@ -1057,7 +1062,7 @@ function runSession(subcommand, args) {
           process.stdout.write("  Socket launch failed, spawning new kitty process...\n");
           const fallback = spawnSync("kitty", [
             "--directory", projectDir,
-            "-e", nodeExec, teleptyPath, "allow", "--id", sessionId, claudePath, "--dangerously-skip-permissions",
+            "-e", nodeExec, teleptyPath, "allow", "--id", sessionId, cliPath, "--dangerously-skip-permissions",
           ], { stdio: "pipe", detached: true, env: { ...process.env, TELEPTY_SESSION_ID: "" } });
           if (fallback.error) {
             process.stderr.write(`Failed to open kitty: ${fallback.error.message}\n`);
@@ -1070,7 +1075,7 @@ function runSession(subcommand, args) {
           "new-window", "-d",
           "-n", projectName,
           "-c", projectDir,
-          `${teleptyPath} allow --id ${sessionId} ${claudePath} --dangerously-skip-permissions`,
+          `${teleptyPath} allow --id ${sessionId} ${cliPath} --dangerously-skip-permissions`,
         ], { stdio: "pipe" });
       } else {
         process.stdout.write([
@@ -1078,7 +1083,7 @@ function runSession(subcommand, args) {
           "",
           "Run manually in a new terminal:",
           `  cd ${projectDir}`,
-          `  ${teleptyPath} allow --id ${sessionId} ${claudePath} --dangerously-skip-permissions`,
+          `  ${teleptyPath} allow --id ${sessionId} ${cliPath} --dangerously-skip-permissions`,
           "",
         ].join("\n"));
         return;
@@ -1112,7 +1117,7 @@ function runSession(subcommand, args) {
         process.stderr.write("Missing project/session name. Usage: aigentry session kill <name>\n");
         process.exit(1);
       }
-      const killId = target.includes("-claude") ? target : `${target}-claude`;
+      const killId = target.includes(`-${aiCli}`) ? target : `${target}-${aiCli}`;
 
       if (!commandExists("telepty")) {
         process.stderr.write("telepty not installed.\n");

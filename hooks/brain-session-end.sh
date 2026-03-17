@@ -29,7 +29,7 @@ if [ -z "$SESSION_CONTENT" ]; then
 fi
 
 # Save to brain as a session memory
-echo "$SESSION_CONTENT" | $BRAIN_CMD brain append \
+echo "$SESSION_CONTENT" | $BRAIN_CMD append \
   --category "session" \
   --source "$PROJECT_NAME" \
   --tags "auto-capture,session-end" \

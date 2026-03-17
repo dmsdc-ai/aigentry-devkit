@@ -70,7 +70,8 @@
         "wtm-experiment",
         "brain",
         "dustcraw",
-        "registry-wiring"
+        "registry-wiring",
+        "amplify"
       ]
     }
   },
@@ -198,6 +199,22 @@
       },
       "health_checks": [
         "amplify-cli"
+      ],
+      "failure_policy": "soft"
+    },
+    "bridge": {
+      "phase": 7,
+      "required": false,
+      "depends_on": [
+        "devkit-core",
+        "registry-wiring"
+      ],
+      "install": {
+        "kind": "npm-global",
+        "package": "@aigentry/bridge"
+      },
+      "health_checks": [
+        "bridge-cli"
       ],
       "failure_policy": "soft"
     }

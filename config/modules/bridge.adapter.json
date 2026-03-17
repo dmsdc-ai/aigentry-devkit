@@ -1,0 +1,25 @@
+{
+  "name": "bridge",
+  "version": "2026-03-18",
+  "capabilities": {
+    "cli": true,
+    "daemon": true,
+    "mcp_server": false,
+    "skill_provider": false,
+    "hook_provider": false,
+    "transport": true
+  },
+  "healthcheck": {
+    "command": "aigentry-bridge --version",
+    "timeout_ms": 5000
+  },
+  "attach": {
+    "install_command": "npm install -g @aigentry/bridge",
+    "post_install": [],
+    "env_vars": {
+      "AIGENTRY_BRIDGE_TOKEN": "",
+      "AIGENTRY_API_URL": ""
+    }
+  },
+  "depends_on": ["registry"]
+}
