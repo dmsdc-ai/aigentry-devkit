@@ -38,6 +38,12 @@ modules:
     # api_url: ""
     # api_key: ""
 
+  amplify:
+    enabled: false
+    # channels: [blog, twitter, discord, hn, geeknews]  # enabled channels
+    # blog_output_dir: "~/aigentry-blog/src/content"
+    # preset: devtool  # devtool | saas | open-source | creator
+
 # 권한 (Warp allowlist/denylist 패턴)
 permissions:
   allowlist: []
