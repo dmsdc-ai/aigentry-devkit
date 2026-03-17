@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "aigentry Module Adapter",
+  "description": "Standard interface that every aigentry module must implement",
+  "type": "object",
+  "required": ["name", "version", "capabilities", "healthcheck"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Module name (e.g. telepty, deliberation, brain, dustcraw, registry)"
+    },
+    "version": {
+      "type": "string",
+      "description": "Module version (semver)"
+    },
+    "capabilities": {
+      "type": "object",
+      "description": "Declared capabilities of this module",
+      "properties": {
+        "mcp_server": {
+          "type": "boolean",
+          "description": "Provides MCP server"
+        },
+        "cli": {
+          "type": "boolean",
+          "description": "Provides CLI command"
+        },
+        "daemon": {
+          "type": "boolean",
+          "description": "Runs as background daemon"
+        },
+        "skill_provider": {
+          "type": "boolean",
+          "description": "Provides skills"
+        },
+        "hook_provider": {
+          "type": "boolean",
+          "description": "Provides hooks"
+        },
+        "transport": {
+          "type": "boolean",
+          "description": "Provides session transport"
+        }
+      }
+    },
+    "healthcheck": {
+      "type": "object",
+      "description": "Health check specification",
+      "required": ["command"],
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "Shell command to check health (exit 0 = healthy)"
+        },
+        "http_endpoint": {
+          "type": "string",
+          "description": "Optional HTTP health endpoint (GET, expect 200)"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "default": 5000,
+          "description": "Health check timeout in milliseconds"
+        }
+      }
+    },
+    "attach": {
+      "type": "object",
+      "description": "How to attach/integrate this module with devkit",
+      "properties": {
+        "install_command": {
+          "type": "string",
+          "description": "npm install command for this module"
+        },
+        "post_install": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Commands to run after install"
+        },
+        "config_path": {
+          "type": "string",
+          "description": "Path to module config file"
+        },
+        "env_vars": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Environment variables this module reads"
+        }
+      }
+    },
+    "depends_on": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Other module names this module depends on"
+    }
+  }
+}

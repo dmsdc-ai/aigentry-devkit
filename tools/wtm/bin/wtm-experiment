@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# WTM experiment runner - initialize, run, inspect, and report experiment state
+
+source "${HOME}/.wtm/lib/common.sh"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  wtm experiment init <session-id> [--template name] [--metric-name name] [--score-label label] [--score-direction maximize|minimize] [--budget-seconds n] [--program-path path] [--goal text]
+  wtm experiment run <session-id> [--eval-cmd cmd] [--status pass|fail] [--decision keep|discard|modify] [--score n] [--score-label label] [--target-file path] [--notes text] [--next-status running|queued]
+  wtm experiment status <session-id>
+  wtm experiment report <session-id> [--json]
+EOF
+}
+
+cmd="${1:-}"
+shift || true
+
+case "${cmd}" in
+  init)
+    [[ $# -ge 1 ]] || { usage; exit 1; }
+    session_id="$1"
+    shift
+    init_experiment_state "${session_id}" "$@"
+    ;;
+  run)
+    [[ $# -ge 1 ]] || { usage; exit 1; }
+    session_id="$1"
+    shift
+    run_iteration "${session_id}" "$@"
+    ;;
+  status)
+    [[ $# -ge 1 ]] || { usage; exit 1; }
+    session_id="$1"
+    get_experiment_state "${session_id}" | python3 -m json.tool
+    ;;
+  report)
+    [[ $# -ge 1 ]] || { usage; exit 1; }
+    session_id="$1"
+    shift
+    if [[ "${1:-}" == "--json" ]]; then
+      python3 - "$(experiment_state_file "${session_id}")" "$(experiment_results_tsv "${session_id}")" <<'PYEOF'
+import csv, json, os, sys
+
+state_path, results_path = sys.argv[1:]
+if not os.path.exists(state_path):
+    raise SystemExit(1)
+
+with open(state_path) as f:
+    state = json.load(f)
+
+rows = []
+if os.path.exists(results_path):
+    with open(results_path, newline="") as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        rows = list(reader)
+
+report = {
+    "session_id": state.get("session_id"),
+    "project": state.get("project"),
+    "current_iteration": state.get("current_iteration"),
+    "best_iteration": state.get("best_iteration"),
+    "best_score": state.get("best_score"),
+    "last_decision": state.get("last_decision"),
+    "history_count": len(state.get("history", [])),
+    "results": rows[-10:],
+}
+print(json.dumps(report, indent=2))
+PYEOF
+    else
+      cat "$(experiment_results_tsv "${session_id}")"
+    fi
+    ;;
+  help|--help|-h|"")
+    usage
+    ;;
+  *)
+    log_error "Unknown experiment command: ${cmd}"
+    usage
+    exit 1
+    ;;
+esac

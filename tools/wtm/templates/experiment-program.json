@@ -1,0 +1,12 @@
+{
+  "name": "experiment-program",
+  "description": "program.md control-plane template for WTM experiment sessions",
+  "type": "experiment",
+  "ttl_hours": 168,
+  "tags": ["experiment", "autoresearch", "program-md"],
+  "metric_name": "score",
+  "score_label": "score",
+  "score_direction": "maximize",
+  "budget_seconds": 300,
+  "program_template": "experiment-program.md"
+}

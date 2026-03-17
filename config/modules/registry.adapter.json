@@ -1,0 +1,26 @@
+{
+  "name": "registry",
+  "version": "2026-03-14",
+  "capabilities": {
+    "cli": false,
+    "daemon": false,
+    "mcp_server": false,
+    "skill_provider": false,
+    "hook_provider": false,
+    "transport": false
+  },
+  "healthcheck": {
+    "command": "curl -sf ${AIGENTRY_API_URL:-http://localhost:8080}/health",
+    "http_endpoint": "${AIGENTRY_API_URL}/health",
+    "timeout_ms": 5000
+  },
+  "attach": {
+    "install_command": "",
+    "post_install": [],
+    "env_vars": {
+      "AIGENTRY_API_URL": "",
+      "AIGENTRY_API_KEY": ""
+    }
+  },
+  "depends_on": []
+}

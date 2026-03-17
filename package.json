@@ -1,6 +1,6 @@
 {
   "name": "@dmsdc-ai/aigentry-devkit",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "description": "Cross-platform installer and tooling bundle for aigentry-devkit",
   "license": "MIT",
   "repository": {
@@ -16,7 +16,8 @@
     "registry": "https://registry.npmjs.org/"
   },
   "bin": {
-    "aigentry-devkit": "bin/aigentry-devkit.js"
+    "aigentry-devkit": "bin/aigentry-devkit.js",
+    "aigentry": "bin/aigentry-devkit.js"
   },
   "engines": {
     "node": ">=18"
@@ -34,6 +35,10 @@
     "skills/env-manager/**",
     "skills/npm-release/**",
     "skills/project-ops/**",
+    "skills/telepty-deliberate/**",
+    "skills/auto-multi-llm-review/**",
+    "skills/orchestrator-response-style/**",
+    "skills/upsell-trigger/**",
     "skills/youtube-analyzer/**",
     "templates/aigentry/**",
     "templates/knowledge/**",

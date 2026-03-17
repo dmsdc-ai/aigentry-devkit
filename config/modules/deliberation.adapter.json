@@ -1,0 +1,23 @@
+{
+  "name": "deliberation",
+  "version": "managed-by-devkit",
+  "capabilities": {
+    "mcp_server": true,
+    "cli": true,
+    "daemon": false,
+    "skill_provider": true,
+    "hook_provider": false,
+    "transport": false
+  },
+  "healthcheck": {
+    "command": "npx --yes --package @dmsdc-ai/aigentry-deliberation deliberation-doctor",
+    "timeout_ms": 15000
+  },
+  "attach": {
+    "install_command": "npx --yes --package @dmsdc-ai/aigentry-deliberation deliberation-install",
+    "post_install": [],
+    "config_path": "~/.local/lib/mcp-deliberation/config.json",
+    "env_vars": {}
+  },
+  "depends_on": []
+}

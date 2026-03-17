@@ -1,0 +1,11 @@
+.git
+.github
+node_modules
+npm-debug.log*
+*.tgz
+dist
+.DS_Store
+coverage
+.claude
+.codex
+.gemini

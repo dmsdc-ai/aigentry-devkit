@@ -38,6 +38,7 @@ Usage:
   wtm share [export|import|handoff]     Session sharing & handoff
   wtm dashboard [--watch|--export]      Enhanced session overview
   wtm plugin [list|install|remove|info]  Plugin management
+  wtm experiment [init|run|status|report]  Experiment runner state & results
 
 Types: feature, fix, review, experiment
 EOF
@@ -135,6 +136,10 @@ case "${1:-help}" in
   plugin)
     shift
     bash "${SCRIPT_DIR}/wtm-plugin" "$@"
+    ;;
+  experiment)
+    shift
+    bash "${SCRIPT_DIR}/wtm-experiment" "$@"
     ;;
   help|--help|-h)
     usage

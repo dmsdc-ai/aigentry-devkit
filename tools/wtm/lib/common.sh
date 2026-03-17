@@ -6,6 +6,7 @@ set -euo pipefail
 export WTM_HOME="${WTM_HOME:-${HOME}/.wtm}"
 export WTM_PROJECTS="${WTM_PROJECTS:-${WTM_HOME}/projects.json}"
 export WTM_SESSIONS="${WTM_SESSIONS:-${WTM_HOME}/sessions.json}"
+export WTM_EXPERIMENTS="${WTM_EXPERIMENTS:-${WTM_HOME}/experiments}"
 WTM_WORKTREES="${WTM_WORKTREES:-${WTM_HOME}/worktrees}"
 WTM_LOGS="${WTM_LOGS:-${WTM_HOME}/logs}"
 WTM_WATCHERS="${WTM_WATCHERS:-${WTM_HOME}/watchers}"
@@ -30,7 +31,7 @@ log_error() { echo -e "${RED}[WTM]${NC} $*" >&2; }
 
 # Ensure WTM directories exist
 ensure_dirs() {
-  mkdir -p "${WTM_HOME}"/{bin,lib,logs,worktrees,watchers,locks,journals,backups,contexts,migrations,hooks,templates,plugins,tests,pids,tmp,pending-cd}
+  mkdir -p "${WTM_HOME}"/{bin,lib,logs,worktrees,watchers,locks,journals,backups,contexts,migrations,hooks,templates,plugins,tests,pids,tmp,pending-cd,experiments}
   [[ -f "${WTM_SESSIONS}" ]] || echo '{"version":1,"sessions":{}}' > "${WTM_SESSIONS}"
   [[ -f "${WTM_PROJECTS}" ]] || echo '{"aliases":{},"defaults":{}}' > "${WTM_PROJECTS}"
 }
@@ -161,6 +162,7 @@ source "${HOME}/.wtm/lib/api.sh"
 # Phase 5: Team & ROI
 source "${HOME}/.wtm/lib/template.sh"
 source "${HOME}/.wtm/lib/metrics.sh"
+source "${HOME}/.wtm/lib/experiment.sh"
 source "${HOME}/.wtm/lib/notify.sh"
 source "${HOME}/.wtm/lib/share.sh"
 

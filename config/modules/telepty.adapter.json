@@ -1,0 +1,25 @@
+{
+  "name": "telepty",
+  "version": "0.1.45",
+  "capabilities": {
+    "cli": true,
+    "daemon": true,
+    "transport": true,
+    "mcp_server": false,
+    "skill_provider": false,
+    "hook_provider": false
+  },
+  "healthcheck": {
+    "command": "telepty --version",
+    "http_endpoint": "http://localhost:3848/api/meta",
+    "timeout_ms": 5000
+  },
+  "attach": {
+    "install_command": "npm install -g @dmsdc-ai/aigentry-telepty@0.1.45",
+    "post_install": ["telepty daemon"],
+    "env_vars": {
+      "AIGENTRY_TELEPTY_URL": "http://localhost:3848"
+    }
+  },
+  "depends_on": []
+}

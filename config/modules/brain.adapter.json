@@ -1,0 +1,27 @@
+{
+  "name": "brain",
+  "version": "latest",
+  "capabilities": {
+    "mcp_server": true,
+    "cli": true,
+    "daemon": false,
+    "skill_provider": false,
+    "hook_provider": false,
+    "transport": false
+  },
+  "healthcheck": {
+    "command": "aigentry-brain health",
+    "timeout_ms": 10000
+  },
+  "attach": {
+    "install_command": "npm install -g @dmsdc-ai/aigentry-brain",
+    "post_install": ["aigentry-brain setup"],
+    "config_path": "~/.aigentry/brain.json",
+    "env_vars": {
+      "AIGENTRY_BRAIN_PROFILE_ROOT": "~/.aigentry",
+      "BRAIN_REMOTE_URL": "",
+      "BRAIN_PROJECT_ID": ""
+    }
+  },
+  "depends_on": []
+}

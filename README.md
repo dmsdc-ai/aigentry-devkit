@@ -10,12 +10,13 @@ A comprehensive development kit that bundles skills, hooks, MCP servers, HUD/sta
 
 ### Skills (Reusable AI Capabilities)
 
-Five production-ready skills that extend Claude Code, Codex CLI, and other MCP-compatible CLIs:
+Bundled skills that extend Claude Code, Codex CLI, and other MCP-compatible CLIs:
 
 - **Clipboard Image Viewer** - Capture and analyze clipboard images directly from your terminal
 - **AI Deliberation** - Multi-session parallel debates across arbitrary CLI participants with structured turn-taking and synthesis
 - **Deliberation Executor** - Convert deliberation synthesis into concrete implementation tasks and execute them
 - **Environment Manager** - direnv-based hierarchical environment variable management with global and project-scoped variables
+- **Telepty Deliberate** - Start bidirectional multi-session deliberation across active telepty sessions with session mapping and fallback routing
 - **YouTube Analyzer** - Extract and analyze YouTube video metadata, captions, and transcripts without downloading
 
 ### MCP Deliberation Server
@@ -55,13 +56,25 @@ Pre-configured settings with template substitution:
 
 ### Quick Start
 
-All OS (recommended):
+Recommended path:
 
 ```bash
 npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit install
 ```
 
-`git clone` is not required for this path. The npm package contains the full installer + runtime files.
+List profiles first:
+
+```bash
+npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit profiles
+```
+
+Install a specific profile:
+
+```bash
+npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit install --profile autoresearch-public
+```
+
+Use `curator-public` for `dustcraw + brain + registry wiring`, or `ecosystem-full` for the whole stack.
 
 Force reinstall:
 
@@ -90,17 +103,19 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 The installer will:
 
 1. Verify Node.js and optional dependencies (Claude Code CLI, tmux, direnv)
-2. Install skills to `~/.claude/skills/`
-3. Install HUD statusline to `~/.claude/hud/`
-4. Set up full MCP Deliberation runtime at `~/.local/lib/mcp-deliberation/` (server + browser adapters + selectors + monitor)
-5. Register MCP server in `~/.claude/.mcp.json`
-6. Create configuration templates from templates
-7. Attempt Codex CLI integration (if available)
-8. Print cross-platform browser scan/fallback notes
+2. Install devkit assets, skills, HUD, and templates
+3. Install and health-check local `telepty`
+4. Install canonical `deliberation` MCP runtime
+5. Optionally install `brain`
+6. Optionally install and bootstrap `dustcraw`
+7. Optionally wire registry credentials (`AIGENTRY_API_URL`, `AIGENTRY_API_KEY`)
+8. Write local install state and env fan-out
+
+Detailed walkthrough: [`docs/quickstart.md`](docs/quickstart.md)
 
 ### Post-Installation
 
-After installation, restart Claude/Codex for changes to take effect:
+After installation, restart Claude/Codex/Gemini so MCP changes are picked up:
 
 ```bash
 # Restart your CLI process to load new MCP settings
@@ -109,11 +124,18 @@ After installation, restart Claude/Codex for changes to take effect:
 To verify installation:
 
 ```bash
-ls -la ~/.claude/skills/      # Check skills are installed
-ls -la ~/.claude/hud/         # Check HUD is installed
-ls -la ~/.local/lib/mcp-deliberation/  # Check MCP server
-ls -la ~/.local/lib/mcp-deliberation/selectors/  # Check browser selector assets
-cat ~/.claude/.mcp.json       # Verify MCP registration
+npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit doctor
+telepty --version
+curl -sf http://localhost:3848/api/meta
+npx --yes --package @dmsdc-ai/aigentry-deliberation deliberation-doctor
+aigentry-brain health
+dustcraw demo --non-interactive
+```
+
+If Gemini local MCP registration drifts:
+
+```bash
+npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit repair-gemini-mcp
 ```
 
 ## Usage
@@ -141,6 +163,30 @@ Start a multi-perspective debate:
 ```
 
 Multiple sessions run in parallel. Use `deliberation_start` to get a session ID, then reference it in subsequent calls.
+
+#### Telepty Deliberate
+Triggers: "모든 세션이랑 토론해", "멀티세션 토론", "session deliberation", "telepty deliberate"
+
+Start a bidirectional discussion across active telepty-managed sessions:
+```
+"모든 세션이랑 토론해. 주제는 autoresearch 인터페이스 정렬"
+"멀티세션 토론 시작: 각 프로젝트가 제공/필요로 하는 인터페이스 정리"
+```
+
+The skill auto-detects the current `TELEPTY_SESSION_ID`, collects active sessions, builds a project map, injects routing rules + skill-matching hints + boundary enforcement, and prefers `telepty deliberate` when available. If that command is unavailable, it falls back to `telepty multicast` with the full protocol embedded in the kickoff prompt.
+
+### WTM Experiment Runner
+
+WTM now includes an experiment runner entrypoint with built-in `program.md` templating:
+
+```bash
+wtm experiment init myproj:experiment-latency --goal "Reduce p95 latency"
+wtm experiment run myproj:experiment-latency --eval-cmd "npm test" --decision keep --score 0.82
+wtm experiment status myproj:experiment-latency
+wtm experiment report myproj:experiment-latency --json
+```
+
+`wtm experiment init` uses the built-in `experiment-program` template to create `program.md`, plus `results.tsv`, `results.jsonl`, and `state.json` under `~/.wtm/experiments/<session>/`.
 
 #### Deliberation Executor
 Triggers: "합의안 구현", "토론 결과 구현", "deliberation 구현", "synthesis 구현", "executor"
@@ -264,6 +310,7 @@ aigentry-devkit/
 │   ├── deliberation/        # Debate management
 │   ├── deliberation-executor/ # Synthesis-to-implementation execution
 │   ├── env-manager/         # Environment variables
+│   ├── telepty-deliberate/  # Multi-session telepty deliberation kickoff
 │   └── youtube-analyzer/    # YouTube content analysis
 ├── install.sh               # Installation script (macOS/Linux)
 ├── install.ps1              # Installation script (Windows PowerShell)

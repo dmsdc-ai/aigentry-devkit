@@ -1,0 +1,25 @@
+{
+  "name": "dustcraw",
+  "version": "0.3.1",
+  "capabilities": {
+    "cli": true,
+    "daemon": true,
+    "mcp_server": false,
+    "skill_provider": false,
+    "hook_provider": false,
+    "transport": false
+  },
+  "healthcheck": {
+    "command": "dustcraw demo --non-interactive",
+    "timeout_ms": 30000
+  },
+  "attach": {
+    "install_command": "npm install -g @dmsdc-ai/aigentry-dustcraw@0.3.1",
+    "post_install": ["dustcraw init --non-interactive"],
+    "config_path": "~/.config/dustcraw/config.json",
+    "env_vars": {
+      "AIGENTRY_DUSTCRAW_PRESET": "tech-business"
+    }
+  },
+  "depends_on": ["telepty"]
+}
