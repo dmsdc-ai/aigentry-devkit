@@ -1,0 +1,22 @@
+# Feature entitlement reference (from ssot EntitlementContract v0.1.0)
+# Check your tier: aigentry tier
+
+tiers:
+  free:
+    sessions: 3
+    brain_entries: 10000
+    experiments_per_day: 10
+    deliberation_speakers: 3
+    cloud_sync: false
+  pro:
+    sessions: unlimited
+    brain_entries: unlimited
+    experiments_per_day: unlimited
+    cloud_sync: true
+    price: $19/month
+  team:
+    sessions: unlimited
+    team_features: true
+    shared_brain: true
+    sso: true
+    price: $39/seat/month

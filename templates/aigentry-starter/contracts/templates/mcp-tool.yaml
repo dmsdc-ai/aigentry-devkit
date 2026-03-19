@@ -1,0 +1,21 @@
+schema_version: "1.0"
+interface:
+  name: MyMcpTool
+  version: "0.1.0"
+  description: MCP tool definition template
+
+tools:
+  my_tool:
+    description: "What this tool does"
+    input:
+      type: object
+      required: [param1]
+      properties:
+        param1:
+          type: string
+          description: "Parameter description"
+    output:
+      type: object
+      properties:
+        result:
+          type: string

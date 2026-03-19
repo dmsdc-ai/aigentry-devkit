@@ -1,0 +1,15 @@
+schema_version: "1.0"
+interface:
+  name: MySubAgent
+  version: "0.1.0"
+  description: Sub-agent capability contract
+
+agent:
+  role: "What this agent specializes in"
+  capabilities:
+    - capability_1
+    - capability_2
+  communication:
+    protocol: telepty
+    parent_session: "parent-session-id"
+    report_on_complete: true

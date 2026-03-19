@@ -1,0 +1,16 @@
+# autoresearch-compatible experiment configuration
+experiment:
+  name: my-experiment
+  primary_metric: val_loss
+  direction: minimize
+  max_duration_minutes: 5
+  max_iterations: 100
+
+files:
+  prepare: prepare.py    # Fixed setup (do not modify)
+  train: train.py        # Agent modifies this
+  program: program.md    # Agent instructions
+
+output:
+  results: results.tsv
+  format: "iteration\tmetric\tstatus\tnotes"
