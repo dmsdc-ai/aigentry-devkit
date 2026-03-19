@@ -3,6 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
+const { loadLicense, generateFreeLicense, getCurrentTier, checkEntitlement, getTierInfo, LICENSE_PATH } = require("../lib/entitlement");
 
 const rootDir = path.resolve(__dirname, "..");
 const HOME = process.env.HOME || process.env.USERPROFILE || "";
@@ -49,6 +50,7 @@ function printHelp() {
     "  aigentry-devkit stop               Stop all workspace sessions",
     "  aigentry-devkit demo                Run 5-minute guided demo walkthrough",
     "  aigentry-devkit session <cmd>        Manage sessions (create/list/kill/inject)",
+    "  aigentry-devkit tier                Show current license tier and features",
     "  aigentry-devkit --help              Show this help",
     "",
     "Install Options:",
@@ -349,10 +351,22 @@ function runInstall(options = {}) {
   const args = [scriptPath];
   if (options.force) args.push("--force");
   run("bash", args, installerEnv);
+
+  // Generate free license if none exists
+  if (!loadLicense()) {
+    const license = generateFreeLicense();
+    process.stdout.write(`\n✅ License generated: ${getTierInfo(license.tier).display_name} tier\n`);
+    process.stdout.write(`   License: ${LICENSE_PATH}\n`);
+  }
 }
 
 function runDoctor() {
   const checks = [
+    {
+      name: "License file",
+      test: () => !!loadLicense(),
+      fix: "Run 'aigentry setup' to generate a license",
+    },
     {
       name: "Node.js 18+",
       test: () => {
@@ -1335,6 +1349,42 @@ function printDemoGuide(topic, speakers) {
   ].join("\n"));
 }
 
+function runTier() {
+  const tier = getCurrentTier();
+  const info = getTierInfo(tier);
+  const license = loadLicense();
+
+  process.stdout.write(`\n  Tier: ${info.display_name}\n`);
+  if (license) {
+    process.stdout.write(`  Licensed: ${license.issued_at}\n`);
+    if (license.expires_at) {
+      process.stdout.write(`  Expires: ${license.expires_at}\n`);
+    }
+  } else {
+    process.stdout.write(`  No license file. Run 'aigentry setup' to generate.\n`);
+  }
+
+  process.stdout.write(`\n  Features:\n`);
+  const features = require("../lib/entitlement").getFeaturesForTier(tier);
+  for (const f of features) {
+    process.stdout.write(`    ✅ ${f}\n`);
+  }
+
+  const allFeatures = Object.keys(require("../lib/entitlement").FEATURES);
+  const locked = allFeatures.filter(f => !features.includes(f));
+  if (locked.length > 0) {
+    process.stdout.write(`\n  Locked (upgrade to Pro):\n`);
+    for (const f of locked.slice(0, 10)) {
+      process.stdout.write(`    🔒 ${f}\n`);
+    }
+    if (locked.length > 10) {
+      process.stdout.write(`    ... and ${locked.length - 10} more\n`);
+    }
+    process.stdout.write(`\n  Upgrade: https://aigentry.dev/upgrade\n`);
+  }
+  process.stdout.write(`\n`);
+}
+
 // ── CLI Entry Point ──
 
 const argv = process.argv.slice(2);
@@ -1401,6 +1451,9 @@ try {
       break;
     case "session":
       runSession(extras[0], extras.slice(1));
+      break;
+    case "tier":
+      runTier();
       break;
     default:
       process.stderr.write(`Unknown command: ${command}\n\n`);

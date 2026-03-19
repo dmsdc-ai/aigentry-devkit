@@ -24,6 +24,7 @@
   },
   "files": [
     "bin/aigentry-devkit.js",
+    "lib/**",
     "config/**",
     "hooks/**",
     "hud/**",
