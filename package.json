@@ -1,6 +1,6 @@
 {
   "name": "@dmsdc-ai/aigentry-devkit",
-  "version": "0.0.5",
+  "version": "0.0.7",
   "description": "Cross-platform installer and tooling bundle for aigentry-devkit",
   "license": "MIT",
   "repository": {
@@ -17,14 +17,18 @@
   },
   "bin": {
     "aigentry-devkit": "bin/aigentry-devkit.js",
-    "aigentry": "bin/aigentry-devkit.js"
+    "aigentry": "bin/aigentry-devkit.js",
+    "aigentry-devkit-bootstrap": "bin/aigentry-devkit-bootstrap.js"
   },
   "engines": {
     "node": ">=18"
   },
   "files": [
     "bin/aigentry-devkit.js",
+    "bin/aigentry-devkit-bootstrap.js",
     "lib/**",
+    "lib/bootstrap.js",
+    "templates/CONSTITUTION.md",
     "config/**",
     "hooks/**",
     "hud/**",
@@ -41,6 +45,7 @@
     "skills/orchestrator-response-style/**",
     "skills/upsell-trigger/**",
     "skills/youtube-analyzer/**",
+    "templates/workspace/**",
     "templates/aigentry/**",
     "templates/knowledge/**",
     "tools/wtm/**",

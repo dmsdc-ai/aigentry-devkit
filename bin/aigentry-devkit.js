@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 const { loadLicense, generateFreeLicense, getCurrentTier, checkEntitlement, getTierInfo, LICENSE_PATH } = require("../lib/entitlement");
+const { workspaceInit } = require("../lib/workspace-init");
 
 const rootDir = path.resolve(__dirname, "..");
 const HOME = process.env.HOME || process.env.USERPROFILE || "";
@@ -45,12 +46,16 @@ function printHelp() {
     "  aigentry-devkit update [options]    Update to latest version",
     "  aigentry-devkit status              Show health status of all modules",
     "  aigentry-devkit init                Initialize ~/.config/aigentry/ config directory",
+    "  aigentry-devkit workspace-init      Initialize workspace for AI CLI session",
+    "    --cli <claude|codex|gemini>       Target CLI (required)",
+    "    --cwd <path>                      Workspace directory (required)",
     "  aigentry-devkit up                  Start enabled modules (telepty daemon, health checks)",
     "  aigentry-devkit start              Start all workspace sessions (kitty/tmux tabs)",
     "  aigentry-devkit stop               Stop all workspace sessions",
     "  aigentry-devkit demo                Run 5-minute guided demo walkthrough",
     "  aigentry-devkit session <cmd>        Manage sessions (create/list/kill/inject)",
     "  aigentry-devkit tier                Show current license tier and features",
+    "  aigentry-devkit bootstrap           Provision ~/.aigentry/ structure and MCP configs",
     "  aigentry-devkit --help              Show this help",
     "",
     "Install Options:",
@@ -1402,7 +1407,7 @@ try {
 }
 const { options, extras } = parsed;
 
-if (extras.length > 0 && command !== "session") {
+if (extras.length > 0 && command !== "session" && command !== "workspace-init") {
   process.stderr.write(`Unexpected arguments: ${extras.join(" ")}\n\n`);
   printHelp();
   process.exit(1);
@@ -1437,6 +1442,23 @@ try {
     case "init":
       runInit();
       break;
+    case "workspace-init": {
+      const wiArgs = {};
+      const allArgs = [...extras];
+      // Parse --cli and --cwd from extras
+      for (let i = 0; i < allArgs.length; i++) {
+        if (allArgs[i] === "--cli" && allArgs[i + 1]) {
+          wiArgs.cli = allArgs[++i];
+        } else if (allArgs[i] === "--cwd" && allArgs[i + 1]) {
+          wiArgs.cwd = allArgs[++i];
+        }
+      }
+      // Also check if they were parsed as options
+      if (options.cli) wiArgs.cli = options.cli;
+      if (options.cwd) wiArgs.cwd = options.cwd;
+      workspaceInit(wiArgs);
+      break;
+    }
     case "up":
       runUp();
       break;
@@ -1452,6 +1474,11 @@ try {
     case "session":
       runSession(extras[0], extras.slice(1));
       break;
+    case "bootstrap": {
+      const { bootstrap } = require("../lib/bootstrap");
+      bootstrap();
+      break;
+    }
     case "tier":
       runTier();
       break;
