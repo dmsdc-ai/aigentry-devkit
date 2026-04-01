@@ -11,6 +11,7 @@
 | Task list | `aterm tasks` |
 | Add task | `aterm tasks add 'description'` |
 | Complete task | `aterm tasks done <id>` |
+| Breakdown task | `aterm tasks breakdown <id>` |
 | Lessons | `aterm lessons` |
 | Help | `aterm help` |
 

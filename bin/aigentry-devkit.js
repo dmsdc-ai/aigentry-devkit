@@ -55,6 +55,9 @@ function printHelp() {
     "  aigentry-devkit demo                Run 5-minute guided demo walkthrough",
     "  aigentry-devkit session <cmd>        Manage sessions (create/list/kill/inject)",
     "  aigentry-devkit tier                Show current license tier and features",
+    "  aigentry-devkit breakdown            Decompose task into sub-tasks for parallel assignment",
+    "    --task-id <id>                     Task ID from task-queue.json (required)",
+    "    --cwd <path>                       Workspace directory (default: cwd)",
     "  aigentry-devkit bootstrap           Provision ~/.aigentry/ structure and MCP configs",
     "  aigentry-devkit --help              Show this help",
     "",
@@ -1407,7 +1410,7 @@ try {
 }
 const { options, extras } = parsed;
 
-if (extras.length > 0 && command !== "session" && command !== "workspace-init") {
+if (extras.length > 0 && command !== "session" && command !== "workspace-init" && command !== "breakdown") {
   process.stderr.write(`Unexpected arguments: ${extras.join(" ")}\n\n`);
   printHelp();
   process.exit(1);
@@ -1482,6 +1485,22 @@ try {
     case "tier":
       runTier();
       break;
+    case "breakdown": {
+      const { runBreakdown } = require("../lib/breakdown");
+      const bArgs = {};
+      const bAll = [...extras];
+      for (let i = 0; i < bAll.length; i++) {
+        if (bAll[i] === "--task-id" && bAll[i + 1]) {
+          bArgs.taskId = parseInt(bAll[++i], 10);
+        } else if (bAll[i] === "--cwd" && bAll[i + 1]) {
+          bArgs.cwd = bAll[++i];
+        }
+      }
+      if (options["task-id"]) bArgs.taskId = parseInt(options["task-id"], 10);
+      if (options.cwd) bArgs.cwd = options.cwd;
+      runBreakdown(bArgs);
+      break;
+    }
     default:
       process.stderr.write(`Unknown command: ${command}\n\n`);
       printHelp();
