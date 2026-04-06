@@ -2,6 +2,6 @@
 
 @AGENTS.md
 
-# Claude Code Settings
+# Claude Code Settings / Claude Code 설정
 
-- Session ID: {{WORKSPACE_NAME}}-claude
+- Session ID / 세션 ID: {{WORKSPACE_NAME}}-claude

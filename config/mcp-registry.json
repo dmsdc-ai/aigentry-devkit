@@ -20,6 +20,14 @@
       "category": "research",
       "codex_compatible": true
     },
+    "telepty": {
+      "command": "npx",
+      "args": ["-y", "-p", "@dmsdc-ai/aigentry-telepty@latest", "telepty-mcp"],
+      "description": "telepty 세션 관리 MCP 서버. AI CLI에서 세션 목록 조회, 메시지 주입, 상태 확인을 수행합니다.",
+      "default": false,
+      "category": "session-management",
+      "codex_compatible": true
+    },
     "sequential-thinking": {
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],

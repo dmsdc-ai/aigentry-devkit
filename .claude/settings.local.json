@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(telepty allow:*)",
+      "Bash(find:*)",
+      "Bash(grep:*)"
+    ]
+  }
+}

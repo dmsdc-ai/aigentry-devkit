@@ -218,6 +218,29 @@ Extract and analyze YouTube content:
 "유튜브 영상 요약: https://youtu.be/xxx"
 ```
 
+### Workspace Initialization
+
+Initialize a new workspace for an AI CLI session with templates, state files, and role-specific configuration:
+
+```bash
+aigentry-devkit workspace-init --cli claude --cwd ~/projects/my-project
+```
+
+**Supported CLIs:** `claude`, `codex`, `gemini`
+
+**What it creates:**
+
+| File | Purpose |
+|------|---------|
+| `AGENTS.md` | Session communication commands, configurable items, role-specific rules |
+| `CLAUDE.md` / `GEMINI.md` | CLI-specific instructions (with `{{WORKSPACE_NAME}}` substitution) |
+| `state/task-queue.json` | Task tracking for AI assistants |
+| `state/lessons.json` | Learnings and invariants store |
+
+**Role detection:** If the workspace name is `orchestrator`, AGENTS.md gets orchestrator-specific rules (delegate, don't code). Otherwise it gets worker rules (execute, report back).
+
+**Idempotent:** Existing files are never overwritten. Only missing files are created.
+
 ### MCP Deliberation Server
 
 The deliberation server provides these tools:

@@ -84,3 +84,27 @@
   - Free discussion / messaging / ACK between sessions → no reporting line. / 세션 간 자유 토론/메시징/ACK → 보고 라인 없음.
   - Mandatory reporting applies ONLY to orchestrator-delegated tasks. / mandatory reporting은 오케스트레이터 위임 시에만 적용.
   - If sender is specified by user, ACK goes to that sender. / 사용자가 sender를 지정한 경우 ACK는 해당 sender에게.
+
+## Task Execution Protocol (SAWP) / 태스크 실행 프로토콜
+
+When receiving a task, execute ALL phases without stopping: / 태스크를 받으면 모든 단계를 멈추지 않고 실행합니다:
+
+1. **Implement** — write the code / 코드를 작성합니다
+2. **Build** — run: `{{BUILD_CMD}}` (npm run build / cargo build / make) / 빌드 실행
+3. **Auto-fix** — if build fails, read error, fix, retry (max 3) / 빌드 실패 시 에러 읽고 수정 재시도 (최대 3회)
+4. **Test** — run: `{{TEST_CMD}}` (npm test / cargo test / pytest) / 테스트 실행
+5. **Auto-fix** — if tests fail, read error, fix, retry (max 3) / 테스트 실패 시 에러 읽고 수정 재시도 (최대 3회)
+6. **Report** — include build exit code + test results as evidence / 빌드 종료 코드 + 테스트 결과를 증거로 포함
+
+Rules / 규칙:
+- NEVER stop between phases. / 단계 사이에 멈추지 않습니다.
+- NEVER claim "done" without build+test evidence. / 빌드+테스트 증거 없이 "완료" 금지.
+- NEVER idle on error — auto-fix up to 3 attempts, then report failure. / 에러에 멈추지 않고 최대 3회 자동 수정 후 실패 보고.
+- 3 consecutive failures on same phase = circuit breaker → report STUCK with full error. / 같은 단계 3회 연속 실패 = 서킷 브레이커 → STUCK 보고.
+- No "should work" or "probably fixed" — evidence only. / "아마 됐을 것" 금지 — 증거만.
+
+Autonomy / 자율성:
+- NEVER pause for user interaction. NEVER ask questions. / 사용자 상호작용을 위해 멈추지 않습니다. 질문하지 않습니다.
+- Make ALL decisions autonomously. / 모든 결정을 자율적으로 내립니다.
+- Technical decisions are autonomous. Business decisions default to best judgment. / 기술 결정은 자율. 비즈니스 결정은 최선의 판단으로 기본 처리.
+- If truly stuck after 3 failures, report to orchestrator via inject — do NOT wait for user input. / 3회 실패 후 진짜 막히면 inject로 오케스트레이터에 보고 — 사용자 입력을 기다리지 않습니다.

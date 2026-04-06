@@ -5,6 +5,7 @@ const path = require("path");
 const { spawnSync } = require("child_process");
 const { loadLicense, generateFreeLicense, getCurrentTier, checkEntitlement, getTierInfo, LICENSE_PATH } = require("../lib/entitlement");
 const { workspaceInit } = require("../lib/workspace-init");
+const { updateMd } = require("../lib/update-md");
 
 const rootDir = path.resolve(__dirname, "..");
 const HOME = process.env.HOME || process.env.USERPROFILE || "";
@@ -58,6 +59,9 @@ function printHelp() {
     "  aigentry-devkit breakdown            Decompose task into sub-tasks for parallel assignment",
     "    --task-id <id>                     Task ID from task-queue.json (required)",
     "    --cwd <path>                       Workspace directory (default: cwd)",
+    "  aigentry-devkit update-md [path]     Update MD files (replace old patterns, add sections)",
+    "    --all                             Scan all ~/projects/aigentry-* projects",
+    "    --dry-run                         Show changes without writing",
     "  aigentry-devkit bootstrap           Provision ~/.aigentry/ structure and MCP configs",
     "  aigentry-devkit --help              Show this help",
     "",
@@ -1410,7 +1414,7 @@ try {
 }
 const { options, extras } = parsed;
 
-if (extras.length > 0 && command !== "session" && command !== "workspace-init" && command !== "breakdown") {
+if (extras.length > 0 && command !== "session" && command !== "workspace-init" && command !== "breakdown" && command !== "update-md") {
   process.stderr.write(`Unexpected arguments: ${extras.join(" ")}\n\n`);
   printHelp();
   process.exit(1);
@@ -1454,12 +1458,28 @@ try {
           wiArgs.cli = allArgs[++i];
         } else if (allArgs[i] === "--cwd" && allArgs[i + 1]) {
           wiArgs.cwd = allArgs[++i];
+        } else if ((allArgs[i] === "--orchestrator-session-id" || allArgs[i] === "--orchestrator-session") && allArgs[i + 1]) {
+          wiArgs.orchestratorSessionId = allArgs[++i];
+        } else if (allArgs[i] === "--no-error-hooks") {
+          wiArgs.autoReportErrors = false;
         }
       }
       // Also check if they were parsed as options
       if (options.cli) wiArgs.cli = options.cli;
       if (options.cwd) wiArgs.cwd = options.cwd;
       workspaceInit(wiArgs);
+      break;
+    }
+    case "update-md": {
+      const umArgs = { projectPath: null, all: false, dryRun: options.dryRun || false };
+      for (let i = 0; i < extras.length; i++) {
+        if (extras[i] === "--all") {
+          umArgs.all = true;
+        } else if (!extras[i].startsWith("-")) {
+          umArgs.projectPath = extras[i];
+        }
+      }
+      updateMd(umArgs);
       break;
     }
     case "up":
