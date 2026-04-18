@@ -1,0 +1,29 @@
+{
+  "_comment": "Optional user config for open-session.sh role shortcuts. Install at ~/.aigentry/config.json. This file is USER-SPECIFIC — edit paths to match your projects.",
+  "roles": {
+    "architect": {
+      "path": "/path/to/your/design-or-architecture-project",
+      "cli": "claude",
+      "cli_flags": "--permission-mode bypassPermissions"
+    },
+    "builder": {
+      "path": "/path/to/your/build-ci-project",
+      "cli": "codex",
+      "cli_flags": ""
+    },
+    "tester": {
+      "path": "/path/to/your/test-project",
+      "cli": "claude",
+      "cli_flags": "--permission-mode bypassPermissions"
+    },
+    "analyst": {
+      "path": "/path/to/your/analytics-project",
+      "cli": "claude",
+      "cli_flags": "--permission-mode bypassPermissions"
+    }
+  },
+  "defaults": {
+    "cli": "claude",
+    "cli_flags": "--permission-mode bypassPermissions"
+  }
+}
