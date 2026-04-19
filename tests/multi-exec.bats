@@ -148,3 +148,22 @@ EOF
   [[ "$output" == *"chunk=1 task=2"* ]]
   [[ "$output" == *"coder_session: MINI-coder-test"* ]]
 }
+
+@test "cleanup_on_success flag parses without error (full dispatch needs telepty shim — Task 11)" {
+  local tmp
+  tmp=$(mktemp)
+  cat > "$tmp" <<'EOF'
+---
+multi_exec:
+  enabled: true
+  coder_session: dummy-sid
+  cleanup_on_success: true
+---
+# plan
+EOF
+  # --dry-run short-circuits dispatch so telepty shim isn't required here.
+  run "$ME_BIN" "$tmp" --dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"coder_session: dummy-sid"* ]]
+  rm "$tmp"
+}

@@ -57,6 +57,10 @@ main() {
     exit 6
   fi
 
+  local cleanup_on_success preserve_on_error
+  cleanup_on_success=$(echo "$fm" | jq -r '.cleanup_on_success // false')
+  preserve_on_error=$(echo "$fm" | jq -r '.preserve_on_error // true')
+
   if [[ "$dry_run" -eq 1 ]]; then
     echo "=== Plan dispatch preview ==="
     while IFS=$'\t' read -r chunk task line; do
@@ -87,6 +91,23 @@ main() {
   fi
 
   emit_event "runner_end" "$(jq -n --arg plan "$plan" '{plan:$plan}')"
+
+  # Cleanup coder session if flag set AND no stuck events during this run.
+  if [[ "$cleanup_on_success" == "true" ]]; then
+    local had_error=0
+    local events_log="$HOME/.wtm/contexts/orchestrator/journal.jsonl"
+    if [[ -f "$events_log" ]]; then
+      tail -200 "$events_log" 2>/dev/null | grep -q '"event":"stuck"' && had_error=1
+    fi
+    if [[ "$had_error" -eq 1 && "$preserve_on_error" == "true" ]]; then
+      echo "[multi-exec] stuck detected — preserving $coder_session per preserve_on_error" >&2
+    else
+      echo "[multi-exec] cleanup_on_success → calling session-cleanup.sh $coder_session" >&2
+      "$SCRIPT_DIR/session-cleanup.sh" "$coder_session" \
+        || echo "[multi-exec] cleanup failed (non-fatal)" >&2
+      emit_event "session_cleanup_invoked" "$(jq -n --arg s "$coder_session" '{session:$s}')"
+    fi
+  fi
 }
 
 main "$@"
