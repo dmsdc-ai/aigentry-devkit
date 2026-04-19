@@ -262,7 +262,10 @@ except (FileNotFoundError, json.JSONDecodeError):
     print('No sessions file found.')
     sys.exit(1)
 
-session = data.get(session_id)
+# Schema-aware lookup: prefer nested {version, sessions:{sid:...}}; fall back
+# to flat top-level {sid:...} for legacy v1 stores. (#300)
+bucket = data.get('sessions') if isinstance(data.get('sessions'), dict) else data
+session = bucket.get(session_id)
 if not session:
     print(f'Session not found: {session_id}')
     sys.exit(1)
