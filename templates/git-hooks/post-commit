@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# aigentry git post-commit hook → ctx-router long-term milestone
+# Spec: docs/superpowers/specs/2026-04-19-context-compact-switching-design.md §5.3
+# MUST NOT block commit — any failure must exit 0.
+
+CTX_ROUTER="${CTX_ROUTER_PATH:-$HOME/projects/aigentry-devkit/bin/ctx-router.sh}"
+[[ -x "$CTX_ROUTER" ]] || exit 0
+
+# Safe project detection (bare repo / detached work tree fallback)
+TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null || echo '')"
+[[ -z "$TOPLEVEL" ]] && exit 0
+PROJECT="$(basename "$TOPLEVEL")"
+
+SHA="$(git rev-parse --short HEAD 2>/dev/null || echo '')"
+MSG="$(git log -1 --pretty=%s 2>/dev/null || echo '')"
+[[ -z "$SHA" ]] && exit 0
+
+"$CTX_ROUTER" on-git-commit "$PROJECT" "$SHA" "$MSG" >&2 2>/dev/null || true
+exit 0

@@ -119,8 +119,34 @@ cmd_on_session_start() {
   # Emit Claude Code hook JSON
   jq -n --arg c "$ctx" '{hookSpecificOutput: {additionalContext: $c}}'
 }
-cmd_on_git_commit()     { echo "TODO"; exit 1; }
-cmd_on_tq_transition()  { echo "TODO"; exit 1; }
+# on-git-commit(project, sha, msg) — Event 5.3
+cmd_on_git_commit() {
+  local project="${1:-}" sha="${2:-}" msg="${3:-}"
+  [[ -z "$project" || -z "$sha" ]] && { echo "on-git-commit: project and sha required" >&2; exit 2; }
+  call_brain_append "app:$project" "decision" "[$sha] $msg" || true
+  # Cross-reference in orchestrator session journal if present
+  local orch_sid="aigentry-orchestrator"
+  call_wtm_context log "$orch_sid" milestone "commit $sha $project: $msg" 2>/dev/null || true
+  echo "[ctx-router] git-commit handled: $project@$sha"
+}
+
+# on-tq-transition(sid, tid, old, new) — Event 5.4
+cmd_on_tq_transition() {
+  local sid="${1:-}" tid="${2:-}" old="${3:-}" new="${4:-}"
+  [[ -z "$sid" || -z "$tid" ]] && { echo "on-tq-transition: sid + tid required" >&2; exit 2; }
+  call_wtm_context log "$sid" milestone "task $tid: $old -> $new" || true
+  if [[ "$new" == "done" ]]; then
+    local desc=""
+    if [[ -f state/task-queue.json ]]; then
+      desc=$(jq -r --arg id "$tid" '
+        .tasks[] | select((.id|tostring)==$id) | .desc // empty
+      ' state/task-queue.json 2>/dev/null || echo "")
+    fi
+    call_brain_append "app:orchestrator" "summary" "task $tid done: $desc" || true
+  fi
+  echo "[ctx-router] tq-transition handled: $tid $old->$new"
+}
+
 cmd_on_session_end()    { echo "TODO"; exit 1; }
 # restore(session-id) — read wtm handoff + brain summary, emit merged markdown
 cmd_restore() {
