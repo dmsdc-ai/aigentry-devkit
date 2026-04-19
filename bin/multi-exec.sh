@@ -9,7 +9,7 @@ source "$SCRIPT_DIR/multi-exec-lib.sh"
 
 usage() {
   cat <<'EOF'
-Usage: multi-exec.sh <plan-file> [--strict] [--auto-trust]
+Usage: multi-exec.sh <plan-file> [--strict] [--auto-trust] [--dry-run]
 
 Orchestrator runner for plans with `multi_exec:` frontmatter.
 Phase 1: linear dispatch + chunk gate + event log ownership. No review loop.
@@ -17,6 +17,7 @@ Phase 1: linear dispatch + chunk gate + event log ownership. No review loop.
 Options:
   --strict       Reject plans without multi_exec: frontmatter.
   --auto-trust   Auto-run trust-path.sh on first inject (security: default off).
+  --dry-run      Print planned dispatch order and exit without injecting.
 EOF
 }
 
@@ -25,12 +26,12 @@ main() {
   [[ -z "$plan" || "$plan" == "-h" || "$plan" == "--help" ]] && { usage; exit 1; }
 
   shift
-  local strict=0 auto_trust=0
-  # shellcheck disable=SC2034  # auto_trust reserved for Task 4 dispatch loop
+  local strict=0 auto_trust=0 dry_run=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --strict)     strict=1; shift;;
       --auto-trust) auto_trust=1; shift;;
+      --dry-run)    dry_run=1; shift;;
       *) echo "unknown flag: $1" >&2; exit 2;;
     esac
   done
@@ -54,6 +55,18 @@ main() {
   if [[ -z "$coder_session" ]]; then
     echo "multi_exec.coder_session required" >&2
     exit 6
+  fi
+
+  if [[ "$dry_run" -eq 1 ]]; then
+    echo "=== Plan dispatch preview ==="
+    while IFS=$'\t' read -r chunk task line; do
+      echo "chunk=$chunk task=$task line=$line"
+    done < <(parse_tasks "$plan")
+    echo "=== coder_session: $coder_session ==="
+    echo "=== chunk_gates: $(echo "$fm" | jq -c '.chunk_gates // []') ==="
+    # auto_trust reserved for Task 4 — acknowledge value to silence lint.
+    [[ "$auto_trust" -eq 1 ]] && echo "=== auto_trust: on ==="
+    exit 0
   fi
 
   emit_event "runner_start" "$(jq -n --arg plan "$plan" '{plan:$plan}')"

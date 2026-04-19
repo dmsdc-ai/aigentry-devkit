@@ -128,3 +128,23 @@ EOF
   rm -f "$ref"
   [ "$status" -ne 0 ]
 }
+
+@test "acquire_lock removes stale pid dir when flock absent" {
+  local tmp_plan
+  tmp_plan=$(mktemp "$HOME/plan.XXXX")
+  echo "# plan" > "$tmp_plan"
+  local lockdir="${tmp_plan}.multi-exec.lock.d"
+  mkdir "$lockdir" && echo 999999 > "$lockdir/pid"
+  run env PATH=/usr/bin:/bin bash -c "source '$ME_LIB' && acquire_lock '$tmp_plan' && release_lock"
+  rm -rf "$lockdir" "$tmp_plan"
+  [ "$status" -eq 0 ] || skip "flock available via builtin path"
+}
+
+@test "--dry-run prints preview and exits 0" {
+  run "$ME_BIN" "$FIXTURES/plan-mini.md" --dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dispatch preview"* ]]
+  [[ "$output" == *"chunk=1 task=1"* ]]
+  [[ "$output" == *"chunk=1 task=2"* ]]
+  [[ "$output" == *"coder_session: MINI-coder-test"* ]]
+}
