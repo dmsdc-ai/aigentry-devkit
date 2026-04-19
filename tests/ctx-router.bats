@@ -119,3 +119,14 @@ setup() {
   run env PATH="/usr/bin:/bin" HOME="$BATS_TMPDIR" "$CTX_ROUTER" on-tq-transition "sid-1" "42" "in_progress" "done"
   [ "$status" -eq 0 ]
 }
+
+@test "on-session-end requires session-id" {
+  run "$CTX_ROUTER" on-session-end
+  [ "$status" -eq 2 ]
+}
+
+@test "on-session-end without wtm/brain: degraded ok" {
+  run env PATH="/usr/bin:/bin" HOME="$BATS_TMPDIR" "$CTX_ROUTER" on-session-end "cleanup-sid"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "session-end handled"
+}

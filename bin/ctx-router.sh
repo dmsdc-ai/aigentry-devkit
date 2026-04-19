@@ -147,7 +147,25 @@ cmd_on_tq_transition() {
   echo "[ctx-router] tq-transition handled: $tid $old->$new"
 }
 
-cmd_on_session_end()    { echo "TODO"; exit 1; }
+# on-session-end(sid) — Event 5.5
+# Writes final handoff and promotes journal LEARNING: markers to brain.
+cmd_on_session_end() {
+  local sid="${1:-}"
+  [[ -z "$sid" ]] && { echo "on-session-end: sid required" >&2; exit 2; }
+  call_wtm_context handoff "$sid" "session-end-auto" || true
+  # Promote LEARNING: markers from journal to brain (best-effort)
+  local journal app_scope
+  journal=$(call_wtm_context journal "$sid" --tail 500 2>/dev/null || true)
+  app_scope="app:$(basename "$(pwd)")"
+  if [[ -n "$journal" ]]; then
+    # Each matching line -> one brain entry; use process substitution to avoid subshell scope loss
+    while IFS= read -r line; do
+      [[ -z "$line" ]] && continue
+      call_brain_append "$app_scope" "learning" "$line" || true
+    done < <(printf '%s\n' "$journal" | grep -E "LEARNING:" || true)
+  fi
+  echo "[ctx-router] session-end handled: $sid"
+}
 # restore(session-id) — read wtm handoff + brain summary, emit merged markdown
 cmd_restore() {
   local sid="${1:-}"
