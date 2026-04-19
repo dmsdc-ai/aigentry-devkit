@@ -35,6 +35,7 @@ cli="claude"
 cwd_override=""
 extra_flags=""
 sid=""
+auto_cleanup=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -45,6 +46,7 @@ while [ $# -gt 0 ]; do
     --cli) cli="$2"; shift 2;;
     --cwd) cwd_override="$2"; shift 2;;
     --extra-flags) extra_flags="$2"; shift 2;;
+    --auto-cleanup-on-exit) auto_cleanup=1; shift;;
     -h|--help)
       sed -n '2,30p' "$0"
       exit 0;;
@@ -200,6 +202,13 @@ cleanup_on_exit() {
   local ctx_router="${CTX_ROUTER_PATH:-$HOME/projects/aigentry-devkit/bin/ctx-router.sh}"
   if [ -x "$ctx_router" ] && [ -n "${sid:-}" ]; then
     "$ctx_router" on-session-end "$sid" >/dev/null 2>&1 || true
+  fi
+  # Extended (#304): if --auto-cleanup-on-exit, also run session-cleanup.sh
+  # so PTY + cmux workspace + orchestrator pid mutex all get torn down.
+  if [ "${auto_cleanup:-0}" -eq 1 ] && [ -n "${sid:-}" ]; then
+    local sc
+    sc="$(dirname "${BASH_SOURCE[0]}")/session-cleanup.sh"
+    [ -x "$sc" ] && "$sc" "$sid" >/dev/null 2>&1 || true
   fi
   exit $ec
 }
