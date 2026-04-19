@@ -170,19 +170,103 @@ No ambiguous leaves. If none of the above fit, the use case is an anti-pattern �
 
 Each example shows the actual call and the expected outcome.
 
-1. **Record an ADR / decision** — `brain_append scope=app:{project} category=decision content="[abc123] <title>"`. Survives sessions; queryable by scope + tag. (Auto-emitted by the git post-commit template from #294.)
+### §4.1 Record an ADR / decision
 
-2. **Hand off file-edit state between sessions** — `wtm context handoff <sid> "<summary>" '["a.ts","b.ts"]' '["impl-x"]'`. The next session reads it with `wtm context resume <sid>`.
+Call:
 
-3. **Urgent cross-session message** — `telepty inject --submit --from <self> <target-sid> "REPORT: <blocker>"`. Delivered via kitty `send-text` → WS → PTY fallback. No state retained beyond the target's inbox.
+```
+brain_append scope=app:{project} category=decision content="[abc123] <title>"
+```
 
-4. **Check task-queue progress** — `bash aigentry-orchestrator/bin/tq-status.sh`. Reads `state/task-queue.json`; no mutation.
+Expected: entry persisted with scope + category; `brain_query scopes=['app:{project}'] category=decision` finds it across sessions. Auto-emitted by the git post-commit template from #294 (`ctx-router on-git-commit`).
 
-5. **Preserve context across `/compact`** — *depends on #294*. When the L1 ctx-router is installed (`bash aigentry-devkit/bin/ctx-install.sh`), Claude PreCompact + SessionStart hooks run `ctx-router on-precompact / on-session-start` automatically (wtm handoff + brain summary, then 16 KB JSON restore). Until installed, fall back to writing `.context-snapshot.md` manually before running `/compact`.
+### §4.2 Hand off file-edit state between sessions
 
-6. **Resume a session** — `wtm context resume <sid>` (handoff + last 10 journal entries) combined with `brain_query scopes=['session:<sid>'] slot=conversation_summary`. The ctx-router `restore` subcommand bundles both.
+Call:
 
-7. **Record an external research finding** — `brain_append scope=app:{project} category=learning content="upstream issue #485: <note>"`. Queryable later when the same problem resurfaces.
+```
+wtm context handoff <sid> "<summary>" '["a.ts","b.ts"]' '["impl-x"]'
+```
+
+Expected: `~/.wtm/sessions.json` gets `context.last_handoff.{timestamp,summary,open_files,pending_tasks}`. Next session reads via `wtm context resume <sid>` — prints handoff + last 10 journal entries.
+
+### §4.3 Urgent cross-session message
+
+Call:
+
+```
+telepty inject --submit --from <self-sid> <target-sid> "REPORT: <blocker>"
+```
+
+Expected: delivered via kitty `send-text` (primary) → WS → PTY fallback; `--submit` presses Return in the target. No state retained beyond the target's inbox; use `--ref` if the message body should be copied into the shared transcript.
+
+### §4.4 Check task-queue progress
+
+Call:
+
+```
+bash aigentry-orchestrator/bin/tq-status.sh
+```
+
+Expected: reads `state/task-queue.json` and prints status counts, pending/in_progress/blocked lists. Read-only — mutation happens via direct jq edits in the orchestrator session.
+
+### §4.5 Preserve context across `/compact`
+
+**Depends on #294 (ctx-router).** After `bash aigentry-devkit/bin/ctx-install.sh`, Claude's PreCompact + SessionStart hooks run `ctx-router on-precompact` / `on-session-start` automatically: the precompact step writes a wtm handoff + brain summary; the session-start step emits `hookSpecificOutput.additionalContext` JSON (capped at 16 KB) so the compacted session boots with the prior handoff already in context.
+
+Fallback (ctx-router not installed): write `.context-snapshot.md` by hand before running `/compact`, then read it back in the new session. Brittle — install ctx-router once.
+
+### §4.6 Resume a session
+
+Call:
+
+```
+wtm context resume <sid>
+# or, via ctx-router bundled form:
+ctx-router.sh restore <sid>
+```
+
+Expected: handoff + last 10 journal entries (`wtm`) plus `brain_query scopes=['session:<sid>'] slot=conversation_summary` (`ctx-router`). The `ctx-router restore` subcommand merges both into a single markdown payload.
+
+### §4.7 Record an external research finding
+
+Call:
+
+```
+brain_append scope=app:{project} category=learning content="upstream issue #485: <note>"
+```
+
+Expected: queryable later by scope + category when the same problem resurfaces. Use `category=learning` for lessons, `category=fact` for pinned knowledge.
+
+### §4.8 Cross-role research → analysis handoff
+
+Orchestrator dispatches `aigentry-dustcraw-*` to gather upstream material, then dispatches `aigentry-analyst-*` with the dustcraw report + runtime logs attached.
+
+Transport (each leg):
+
+```
+telepty inject --ref --from aigentry-orchestrator-claude <target-sid> "[SPEC FIRST] …"
+```
+
+Expected: analyst closes the loop with a `REPORT:` back to orchestrator. No direct session-to-session chatter — if ≥3 sessions need to converge, route through `deliberation_start` instead.
+
+### §4.9 Recover a session after an orphaned crash
+
+A session dies before writing a handoff; a new one spawns with a different sid.
+
+```
+wtm-context orphan-check [cwd]
+wtm-context rebind <cwd> <new-sid>
+wtm context resume <new-sid>
+```
+
+Expected: `orphan-check` surfaces the most-recent session whose cwd matches (exact, prefix, or parent). `rebind` is fail-loud (exit 1 if no orphan matches) and creates a new sessions.json entry under `<new-sid>` with `rebound_from` + `rebound_at`. Resume then sees the old handoff.
+
+### §4.10 Parallel-task decomposition
+
+Orchestrator splits a feature into N file-disjoint parcels (rule 9: different files → different sessions) and dispatches each to a separate `aigentry-{project}-*` session. Each session `telepty inject`s a `REPORT:` on completion; orchestrator merges.
+
+For ≥3 concurrent parcels with risk of contention (e.g. shared APIs), route through `deliberation_start` — let it track conflicts + route turns instead of hand-coordinating with raw `telepty inject`.
 
 ---
 
