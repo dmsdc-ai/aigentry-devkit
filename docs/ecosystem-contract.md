@@ -39,3 +39,95 @@ Role sessions are dispatch targets, not separate services. A CLI session (claude
 Role → workflow routing: see §3 Decision Tree and `aigentry-orchestrator/AGENTS.md` "전담 세션 역할" table.
 
 ---
+
+## §2 Contract per Component
+
+Each block: **Invocation · State · Lifecycle · Examples · When to use / NOT**.
+Missing facts are tagged `⚠️ 확인 필요` rather than guessed.
+
+### §2.1 brain
+
+- **Invocation**: MCP tool call from LLM session (`brain_append`, `brain_query`, …). CLI fallback: `aigentry-brain` / `brain` (npm). See `aigentry-brain/AGENTS.md`.
+- **State**: per-user brain store (Entry records with `scope`, `category`, `content`, `tags`). ⚠️ 확인 필요 — exact store path.
+- **Lifecycle**: long-term. Entries survive sessions, compacts, reinstalls. Immutable append-only.
+- **Examples**:
+  - `brain_append scope=app:orchestrator category=learning content="…"` — promote journal LEARNING: line.
+  - `brain_append scope=app:{project} category=decision content="[abc123] feat: …"` — commit milestone (ctx-router §5.3).
+  - `brain_query scopes=['app:{project}'] tags=['orch-migration-2026-04-15']` — orchestrator rule 7-1 lessons lookup.
+- **When to use**: anything that should survive a session (learnings, decisions, summaries, facts).
+- **When NOT**: session-scoped state (use wtm-context); real-time inter-session signalling (use telepty); task board (use task-queue).
+
+### §2.2 deliberation
+
+- **Invocation**: MCP tool call (`deliberation_start`, `deliberation_speaker_candidates`, `deliberation_route_turn`, `deliberation_respond`, `deliberation_synthesize`, …). 28 tools total; session & decision families.
+- **State**: deliberation server per-session (`session_id`) — turn history, speakers, transport state. Synthesis can emit an `ExecutionContractV2` for implementation handoff.
+- **Lifecycle**: session (active → awaiting_synthesis → completed). Archived sessions persist; active is memory-resident.
+- **Examples**:
+  - `deliberation_start topic="…" rounds=3 first_speaker=claude` → returns `session_id`.
+  - `deliberation_route_turn session_id=… speaker=codex` — dispatch next turn (cli/browser/clipboard/telepty transports).
+  - `deliberation_synthesize session_id=…` — close session with contract-shaped summary.
+- **When to use**: ≥3 parallel sessions need to converge; trade-off decisions with disagreement; formal decision recording needed.
+- **When NOT**: 1–2 sessions (direct `telepty inject` is cheaper); simple status polls; anything requiring no history.
+
+### §2.3 wtm (wtm-context, wtm-create, …)
+
+- **Invocation**: bash CLI (`wtm context <sub>`, `wtm create`, `wtm list`, `wtm-context orphan-check`, `wtm-context rebind`). Sourced by shell hooks and by orchestrator.
+- **State**: `~/.wtm/` — `sessions.json` (`{version, sessions:{sid:{cwd, last_active, context:{…}}}}`), `contexts/<project>/<type-name>/journal.jsonl`, handoff fields on sessions.
+- **Lifecycle**: ephemeral per session; handoff survives until overwritten, journal rotates at N=500.
+- **Examples**:
+  - `wtm context log <sid> note "…"` — append journal entry.
+  - `wtm context handoff <sid> "summary"` — save handoff before session ends.
+  - `wtm context resume <sid>` — print last handoff + recent journal (what the new session reads).
+  - `wtm-context orphan-check [cwd]` — find the most-recent session matching cwd after a crash.
+- **When to use**: session-scoped state (open files, pending tasks, activity trail); short handoffs between successive sessions in the same tree.
+- **When NOT**: cross-session knowledge to keep forever (use brain); task board (use task-queue); real-time messaging (use telepty).
+
+### §2.4 task-queue
+
+- **Invocation**: direct JSON read/write by orchestrator; bash helpers `bin/tq-status.sh`, `bin/tq-focus.sh`, `bin/tq-track.sh` (all read-only); orchestrator edits the file directly or via plan-specific scripts.
+- **State**: per-project `state/task-queue.json` (schema v2: `{schema_version, tracks, tasks[], resume_context, blocks}`).
+- **Lifecycle**: per-project, persistent across sessions. Committed to git.
+- **Examples**:
+  - `bash bin/tq-status.sh` — global status overview.
+  - `bash bin/tq-focus.sh <track>` — show pending tasks on a track.
+  - Direct jq edit to flip `.tasks[].status = "done"` (no generic mutator script).
+- **When to use**: project-level task board, track decomposition, dependency/blocks tracking, resume context for orchestrator.
+- **When NOT**: cross-project work (each project keeps its own); session-lifetime todos (use `TaskCreate` / conversation state).
+
+### §2.5 telepty
+
+- **Invocation**: `telepty` CLI → HTTP/WS against daemon on `:3848`. Key commands: `telepty daemon`, `telepty allow --id <name> <cli>`, `telepty list`, `telepty inject [--ref] [--submit] --from <from> <to> "<msg>"`, `telepty broadcast`, `telepty tui`.
+- **State**: daemon in-memory (session table, event bus, allow-bridges); auth UUID token; session log files. Inject routes via kitty `send-text` → WS → PTY fallback.
+- **Lifecycle**: per-session (session exists while the underlying CLI PTY lives). Daemon persists until killed.
+- **Examples**:
+  - `telepty inject --ref --from E22-coder-294 aigentry-orchestrator "REPORT: …"` — report on task completion.
+  - `telepty allow --id aigentry-builder-claude claude` — register a wrapped session.
+  - `telepty broadcast "merge-freeze until 18:00"` — notify all sessions.
+- **When to use**: real-time signalling between live sessions; orchestrator delegation; ACKs and reports.
+- **When NOT**: persistent state (use brain / wtm / task-queue); intra-aterm IPC (use `aterm inject` instead); archival of a decision (use brain).
+
+### §2.6 aterm
+
+- **Invocation**: inside an aterm window — `aterm list`, `aterm inject <workspace> "<msg>"`, `aterm status <workspace>`, `aterm tasks …`, `aterm lessons …`, `aterm dispatch …`. Detected via `$ATERM_IPC_SOCKET`.
+- **State**: aterm process owns IPC socket; per-workspace session tables; task/lesson state held by the enclosing aterm app (see `aigentry-aterm/AGENTS.md`).
+- **Lifecycle**: per-session (per aterm window). State lost when app quits.
+- **Examples**:
+  - `aterm list` — enumerate sessions in the current aterm.
+  - `aterm inject ghostty 'make build'` — inject into a sibling workspace.
+  - `aterm dispatch <task-id>` — auto-decompose + spawn subsessions + collect.
+- **When to use**: only when `$ATERM_IPC_SOCKET` is set (inside aterm). Short-path local IPC without going through the telepty daemon.
+- **When NOT**: cross-machine (use telepty); when `$ATERM_IPC_SOCKET` is unset (fall back to `telepty`).
+
+### §2.7 auto-memory
+
+- **Invocation**: none — Claude reads/writes it autonomously per system prompt rules. Explicit `remember` / `forget` requests from the user trigger it.
+- **State**: markdown files under `~/.claude/projects/<proj-slug>/memory/` with `MEMORY.md` index + individual typed entries (user / feedback / project / reference).
+- **Lifecycle**: long-term. Survives across Claude Code conversations indefinitely.
+- **Examples**:
+  - User says "remember I'm a Go dev new to React" → Claude writes `user_role.md`.
+  - User says "don't mock the DB" → Claude writes a `feedback_*.md` with Why / How-to-apply.
+  - User says "forget that preference" → Claude removes the entry.
+- **When to use**: stable user facts, durable preferences, pointers to external systems. Claude-facing only.
+- **When NOT**: code patterns / architecture / file layout (derive from source); in-flight conversation state (use plans / TaskCreate); anything `git log` already answers.
+
+---
