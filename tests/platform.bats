@@ -66,3 +66,14 @@ teardown() { rm -rf "$HOME"; }
   wait "$bg_pid" 2>/dev/null || true
   [ "$status" -eq 0 ]
 }
+
+@test "windows stub kill_pid returns exit 3 with tracking message" {
+  run bash -c "PLATFORM_OVERRIDE=windows; source '$PLATFORM_LIB' 2>/dev/null; platform::kill_pid 123 2>&1"
+  [ "$status" -eq 3 ]
+  [[ "$output" == *"not yet implemented"* ]]
+}
+
+@test "windows stub event_wait returns exit 3" {
+  run bash -c "PLATFORM_OVERRIDE=windows; source '$PLATFORM_LIB' 2>/dev/null; platform::event_wait /tmp 1"
+  [ "$status" -eq 3 ]
+}
