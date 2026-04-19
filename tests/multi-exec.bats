@@ -83,3 +83,25 @@ teardown() {
   run env PATH=/usr/bin:/bin HOME="$HOME" bash -c "source '$ME_LIB' && emit_event dispatch '{\"task\":1}'"
   [ "$status" -eq 0 ]
 }
+
+@test "parse_tasks extracts 2 tasks from mini plan" {
+  run bash -c "source '$ME_LIB' && parse_tasks '$FIXTURES/plan-mini.md'"
+  [ "$status" -eq 0 ]
+  line_count=$(printf '%s\n' "$output" | grep -c '^')
+  [ "$line_count" -eq 2 ]
+}
+
+@test "runner rejects plan missing coder_session" {
+  local tmp
+  tmp=$(mktemp)
+  cat > "$tmp" <<'EOF'
+---
+multi_exec:
+  enabled: true
+---
+# plan
+EOF
+  run "$ME_BIN" "$tmp"
+  [ "$status" -eq 6 ]
+  rm "$tmp"
+}

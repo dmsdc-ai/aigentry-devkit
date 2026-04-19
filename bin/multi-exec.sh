@@ -49,9 +49,31 @@ main() {
     exit 0
   fi
 
-  # TODO(Task 4): actual dispatch loop
-  echo "parsed frontmatter OK: $fm"
-  echo "(Task 4 will add dispatch loop)"
+  local coder_session
+  coder_session=$(echo "$fm" | jq -r '.coder_session // empty')
+  if [[ -z "$coder_session" ]]; then
+    echo "multi_exec.coder_session required" >&2
+    exit 6
+  fi
+
+  emit_event "runner_start" "$(jq -n --arg plan "$plan" '{plan:$plan}')"
+
+  local prev_chunk=0
+  while IFS=$'\t' read -r chunk task line; do
+    if [[ "$chunk" != "$prev_chunk" && "$prev_chunk" != 0 ]]; then
+      handle_chunk_gate "$fm" "$prev_chunk"
+    fi
+    prev_chunk="$chunk"
+
+    dispatch_task "$coder_session" "$plan" "$chunk" "$task" "$line" "$auto_trust"
+    await_task_report "$coder_session" "$task" || exit $?
+  done < <(parse_tasks "$plan")
+
+  if [[ "$prev_chunk" != 0 ]]; then
+    handle_chunk_gate "$fm" "$prev_chunk"
+  fi
+
+  emit_event "runner_end" "$(jq -n --arg plan "$plan" '{plan:$plan}')"
 }
 
 main "$@"

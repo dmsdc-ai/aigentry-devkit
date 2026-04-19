@@ -205,6 +205,127 @@ release_pid_mutex() {
   rm -f "$pf" 2>/dev/null || true
 }
 
+# ---------------------------------------------------------------------------
+# Dispatch helpers
+# ---------------------------------------------------------------------------
+
+# dispatch_task(coder_sid, plan, chunk, task, line, auto_trust) — inject SAWP
+# envelope into coder session via telepty.
+dispatch_task() {
+  local sid="$1" plan="$2" chunk="$3" task="$4" line="$5" auto_trust="$6"
+  emit_event "dispatch" "$(jq -n --argjson c "$chunk" --argjson t "$task" '{chunk:$c, task:$t}')"
+
+  if [[ "$auto_trust" -eq 1 ]]; then
+    echo "[multi-exec] --auto-trust enabled (informational)" >&2
+  fi
+
+  # FULL SAWP envelope per aigentry-orchestrator/AGENTS.md Rule 17 (verbatim, 7 bullets).
+  local sawp_block='[SAWP] After completing this task:
+- Code + compile check (cargo check / swift build), do NOT run app (builder handles app execution)
+- Do NOT run tests (tester handles tests)
+- If compile error → fix immediately, do NOT report "ready for builder" with broken code
+- If stuck after 3 attempts → report STUCK with full error
+- Never idle — report immediately when done
+- Evidence only — no "should work" or "probably fixed"
+- Preserve ALL existing fixes in modified files (check file invariants before reporting)'
+
+  local msg
+  msg="[IMPLEMENT APPROVED] ${sawp_block}
+
+Plan file: $plan. Execute Chunk $chunk Task $task (starts line $line). Follow plan verbatim. INVARIANTS per plan §INVARIANTS section.
+
+REPORT format (strict, key:value per line):
+REPORT: Task $task complete
+files: <comma-separated>
+tests: <pass>/<total>
+commits: <sha>
+issues: <text or none>
+next: <Task N+1 | AWAIT <gate>>
+
+Send via: telepty inject --ref --from $sid aigentry-orchestrator
+
+⚠️ MANDATORY: Do NOT idle after completing. Report IS required before orchestrator continues to next task."
+
+  if command -v telepty >/dev/null 2>&1; then
+    telepty inject --ref <(echo "$msg") --from aigentry-orchestrator "$sid" "" >&2 || true
+    telepty enter "$sid" >&2 || true
+  else
+    echo "[multi-exec] telepty CLI missing — dispatch inject skipped (dry mode)" >&2
+  fi
+}
+
+# _find_new_ref(shared_dir, seen_file) — emit single newest ref path present
+# in shared_dir but absent in seen_file. Uses mtime (ls -t) ordering.
+_find_new_ref() {
+  local shared_dir="$1" seen="$2"
+  local now_list
+  now_list=$(ls -t "$shared_dir"/*.md 2>/dev/null || true)
+  diff <(printf '%s\n' "$now_list") "$seen" 2>/dev/null \
+    | awk '/^< / {sub(/^< /, ""); print; exit}'
+}
+
+# await_task_report(coder_sid, task) — block (event-driven via fswatch if
+# available, else sleep-poll) until a new .md ref in $HOME/.telepty/shared
+# parses as this task's REPORT. Emits impl_done + review_skipped events.
+# Timeout via MULTI_EXEC_TIMEOUT (default 600s). Exits 7 on timeout.
+await_task_report() {
+  local sid="$1" task="$2"
+  local timeout="${MULTI_EXEC_TIMEOUT:-600}"
+  local deadline=$(( $(date +%s) + timeout ))
+  local shared_dir="$HOME/.telepty/shared"
+  mkdir -p "$shared_dir"
+  local seen_file
+  seen_file=$(mktemp)
+  ls -t "$shared_dir"/*.md 2>/dev/null > "$seen_file" || true
+
+  while [[ $(date +%s) -lt $deadline ]]; do
+    if command -v fswatch >/dev/null 2>&1; then
+      local remaining=$(( deadline - $(date +%s) ))
+      [[ $remaining -le 0 ]] && break
+      fswatch -1 --event Created --event Updated --latency 0.5 \
+        --timeout "${remaining}000" "$shared_dir" >/dev/null 2>&1 || true
+    else
+      sleep 5
+    fi
+    local newest
+    newest=$(_find_new_ref "$shared_dir" "$seen_file")
+    if [[ -n "$newest" && -f "$newest" ]]; then
+      local rep rep_task
+      rep=$(parse_report < "$newest" 2>/dev/null || echo '{}')
+      rep_task=$(echo "$rep" | jq -r '.task // empty' 2>/dev/null)
+      if [[ "$rep_task" == "$task" ]]; then
+        emit_event "impl_done" "$rep"
+        emit_event "review_skipped" "$(jq -n --argjson t "$task" '{task:$t, reason:"phase1-no-reviewer-bridge"}')"
+        rm -f "$seen_file"
+        return 0
+      fi
+      ls -t "$shared_dir"/*.md 2>/dev/null > "$seen_file" || true
+    fi
+  done
+
+  rm -f "$seen_file"
+  emit_event "stuck" "$(jq -n --argjson t "$task" --arg r "timeout" '{task:$t, reason:$r}')"
+  echo "TIMEOUT waiting for Task $task REPORT" >&2
+  return 7
+}
+
+# handle_chunk_gate(fm_json, chunk) — route to auto_approved (no-op) or
+# user_approval (Task 5 stubs to auto-approve for now).
+handle_chunk_gate() {
+  local fm="$1" chunk="$2"
+  local gate_type
+  gate_type=$(echo "$fm" | jq -r --argjson c "$chunk" '.chunk_gates[] | select(.after_chunk == $c) | .type // empty')
+  if [[ "$gate_type" == "auto_approved" || -z "$gate_type" ]]; then
+    emit_event "chunk_complete" "$(jq -n --argjson c "$chunk" --arg g auto '{chunk:$c, gate:$g}')"
+    return 0
+  fi
+  # user_approval real implementation lands in Task 5. Stub: auto-close.
+  emit_event "chunk_gate_waiting" "$(jq -n --argjson c "$chunk" '{chunk:$c}')"
+  echo "[multi-exec] Awaiting [CHUNK $chunk APPROVED] inject from orchestrator..." >&2
+  emit_event "chunk_complete" "$(jq -n --argjson c "$chunk" --arg g user '{chunk:$c, gate:$g}')"
+  return 0
+}
+
 # emit_event(event, meta_json) — log through wtm-context if available.
 # Degrades silently when wtm-context is missing.
 emit_event() {
