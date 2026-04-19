@@ -4,6 +4,7 @@
 set -euo pipefail
 
 CTX_ROUTER_VERSION="0.1.0"
+# shellcheck disable=SC2034
 CTX_DEFAULT_SCOPE_PREFIX="session"
 
 usage() {
@@ -99,10 +100,46 @@ cmd_on_precompact() {
   call_brain_append "session:$sid" "summary" "$summary" || true
   echo "[ctx-router] precompact handled: sid=$sid"
 }
-cmd_on_session_start()  { echo "TODO"; exit 1; }
+# on-session-start(session-id) — Event 5.2
+# Emits JSON for Claude Code hookSpecificOutput.additionalContext
+cmd_on_session_start() {
+  local sid="${1:-}"
+  [[ -z "$sid" ]] && { echo "on-session-start: session-id required" >&2; exit 2; }
+  local ctx
+  ctx="$(cmd_restore "$sid")"
+  # Truncate if > 16KB (hookSpecificOutput limit heuristic)
+  local max_bytes=16000
+  if (( ${#ctx} > max_bytes )); then
+    ctx="${ctx:0:$max_bytes}
+
+---
+⚠️ truncated. Run 'wtm-context resume $sid' for full history.
+"
+  fi
+  # Emit Claude Code hook JSON
+  jq -n --arg c "$ctx" '{hookSpecificOutput: {additionalContext: $c}}'
+}
 cmd_on_git_commit()     { echo "TODO"; exit 1; }
 cmd_on_tq_transition()  { echo "TODO"; exit 1; }
 cmd_on_session_end()    { echo "TODO"; exit 1; }
-cmd_restore()           { echo "TODO"; exit 1; }
+# restore(session-id) — read wtm handoff + brain summary, emit merged markdown
+cmd_restore() {
+  local sid="${1:-}"
+  [[ -z "$sid" ]] && { echo "restore: session-id required" >&2; exit 2; }
+  local wtm_output="" brain_output=""
+  wtm_output="$(call_wtm_context resume "$sid" 2>/dev/null || true)"
+  if command -v brain >/dev/null 2>&1; then
+    brain_output="$(brain query --scope "session:$sid" --slot conversation_summary 2>/dev/null || true)"
+  fi
+  cat <<EOF
+## Context Restore for $sid
+
+### Session handoff (wtm-context)
+$wtm_output
+
+### Session summary (brain)
+$brain_output
+EOF
+}
 
 main "$@"

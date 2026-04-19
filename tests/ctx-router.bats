@@ -2,11 +2,7 @@
 # Tests for ctx-router.sh
 
 setup() {
-  CTX_ROUTER="$(pwd)/aigentry-devkit/bin/ctx-router.sh"
-  # Support running from devkit root or parent projects dir
-  if [[ ! -x "$CTX_ROUTER" ]]; then
-    CTX_ROUTER="$(pwd)/bin/ctx-router.sh"
-  fi
+  CTX_ROUTER="$BATS_TEST_DIRNAME/../bin/ctx-router.sh"
 }
 
 @test "version returns 0.1.0" {
