@@ -105,3 +105,26 @@ EOF
   [ "$status" -eq 6 ]
   rm "$tmp"
 }
+
+@test "gate user_approval detects [CHUNK N APPROVED] bracketed marker" {
+  local ref_dir="$HOME/.telepty/shared"
+  mkdir -p "$ref_dir"
+  local ref="$ref_dir/fake-approval-$$.md"
+  echo "[CHUNK 1 APPROVED] from user inject" > "$ref"
+  MULTI_EXEC_GATE_TIMEOUT=5 run bash -c "source '$ME_LIB' && handle_chunk_gate '{\"chunk_gates\":[{\"after_chunk\":1,\"type\":\"user_approval\"}]}' 1"
+  rm -f "$ref"
+  [ "$status" -eq 0 ]
+}
+
+@test "gate user_approval ignores REPORT containing CHUNK N APPROVED text" {
+  local ref_dir="$HOME/.telepty/shared"
+  mkdir -p "$ref_dir"
+  local ref="$ref_dir/fake-report-$$.md"
+  cat > "$ref" <<'EOF'
+REPORT: Task 1 complete
+notes: CHUNK 1 APPROVED was mentioned in discussion but this is NOT approval
+EOF
+  MULTI_EXEC_GATE_TIMEOUT=3 run bash -c "source '$ME_LIB' && handle_chunk_gate '{\"chunk_gates\":[{\"after_chunk\":1,\"type\":\"user_approval\"}]}' 1"
+  rm -f "$ref"
+  [ "$status" -ne 0 ]
+}

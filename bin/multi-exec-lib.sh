@@ -319,11 +319,63 @@ handle_chunk_gate() {
     emit_event "chunk_complete" "$(jq -n --argjson c "$chunk" --arg g auto '{chunk:$c, gate:$g}')"
     return 0
   fi
-  # user_approval real implementation lands in Task 5. Stub: auto-close.
+  # user_approval: wait for orchestrator to inject a ref whose first non-blank
+  # line matches /^[[:space:]]*\[CHUNK <chunk> APPROVED\]/ AND the ref does not
+  # start with "REPORT:" (prevents a coder session's report from triggering
+  # approval if the report text happens to include the marker phrase).
   emit_event "chunk_gate_waiting" "$(jq -n --argjson c "$chunk" '{chunk:$c}')"
   echo "[multi-exec] Awaiting [CHUNK $chunk APPROVED] inject from orchestrator..." >&2
-  emit_event "chunk_complete" "$(jq -n --argjson c "$chunk" --arg g user '{chunk:$c, gate:$g}')"
-  return 0
+  local timeout="${MULTI_EXEC_GATE_TIMEOUT:-3600}"
+  local deadline=$(( $(date +%s) + timeout ))
+  local shared_dir="$HOME/.telepty/shared"
+  mkdir -p "$shared_dir"
+  local seen
+  seen=$(mktemp)
+  : > "$seen"  # empty so initial scan treats existing refs as candidates
+
+  # Initial pass: scan already-present refs before entering the wait loop.
+  local initial_list r
+  initial_list=$(ls -t "$shared_dir"/*.md 2>/dev/null || true)
+  while IFS= read -r r; do
+    [[ -z "$r" || ! -f "$r" ]] && continue
+    if grep -qE "^[[:space:]]*\[CHUNK[[:space:]]+${chunk}[[:space:]]+APPROVED\]" "$r" \
+       && ! grep -q '^REPORT:' "$r"; then
+      rm -f "$seen"
+      emit_event "chunk_approved" "$(jq -n --argjson c "$chunk" --arg ref "$r" '{chunk:$c, ref:$ref}')"
+      emit_event "chunk_complete" "$(jq -n --argjson c "$chunk" --arg g user '{chunk:$c, gate:$g}')"
+      return 0
+    fi
+  done <<< "$initial_list"
+  printf '%s\n' "$initial_list" > "$seen"
+
+  while [[ $(date +%s) -lt $deadline ]]; do
+    if command -v fswatch >/dev/null 2>&1; then
+      local rem=$(( deadline - $(date +%s) ))
+      [[ $rem -le 0 ]] && break
+      fswatch -1 --event Created --event Updated --latency 0.5 --timeout "${rem}000" "$shared_dir" >/dev/null 2>&1 || true
+    else
+      sleep 10
+    fi
+    local now_list newrefs
+    now_list=$(ls -t "$shared_dir"/*.md 2>/dev/null || true)
+    newrefs=$(diff <(printf '%s\n' "$now_list") "$seen" 2>/dev/null | awk '/^< /{sub(/^< /,""); print}')
+    local r
+    while IFS= read -r r; do
+      [[ -z "$r" || ! -f "$r" ]] && continue
+      if grep -qE "^[[:space:]]*\[CHUNK[[:space:]]+${chunk}[[:space:]]+APPROVED\]" "$r" \
+         && ! grep -q '^REPORT:' "$r"; then
+        rm -f "$seen"
+        emit_event "chunk_approved" "$(jq -n --argjson c "$chunk" --arg ref "$r" '{chunk:$c, ref:$ref}')"
+        emit_event "chunk_complete" "$(jq -n --argjson c "$chunk" --arg g user '{chunk:$c, gate:$g}')"
+        return 0
+      fi
+    done <<< "$newrefs"
+    printf '%s\n' "$now_list" > "$seen"
+  done
+  rm -f "$seen"
+  echo "[multi-exec] gate TIMEOUT for chunk $chunk" >&2
+  emit_event "stuck" "$(jq -n --argjson c "$chunk" --arg r gate-timeout '{chunk:$c, reason:$r}')"
+  return 8
 }
 
 # emit_event(event, meta_json) — log through wtm-context if available.

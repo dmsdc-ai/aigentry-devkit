@@ -61,7 +61,7 @@ main() {
   local prev_chunk=0
   while IFS=$'\t' read -r chunk task line; do
     if [[ "$chunk" != "$prev_chunk" && "$prev_chunk" != 0 ]]; then
-      handle_chunk_gate "$fm" "$prev_chunk"
+      handle_chunk_gate "$fm" "$prev_chunk" || exit $?
     fi
     prev_chunk="$chunk"
 
@@ -70,7 +70,7 @@ main() {
   done < <(parse_tasks "$plan")
 
   if [[ "$prev_chunk" != 0 ]]; then
-    handle_chunk_gate "$fm" "$prev_chunk"
+    handle_chunk_gate "$fm" "$prev_chunk" || exit $?
   fi
 
   emit_event "runner_end" "$(jq -n --arg plan "$plan" '{plan:$plan}')"
