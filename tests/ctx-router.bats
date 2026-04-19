@@ -60,3 +60,25 @@ setup() {
   run "$CTX_ROUTER" on-precompact
   [ "$status" -eq 2 ]
 }
+
+@test "restore without state: emits template without error" {
+  run env HOME="$BATS_TMPDIR" "$CTX_ROUTER" restore "empty-sid"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "Context Restore for empty-sid"
+}
+
+@test "restore requires session-id" {
+  run "$CTX_ROUTER" restore
+  [ "$status" -eq 2 ]
+}
+
+@test "on-session-start emits valid JSON" {
+  run env HOME="$BATS_TMPDIR" "$CTX_ROUTER" on-session-start "test-sid"
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.hookSpecificOutput.additionalContext' >/dev/null
+}
+
+@test "on-session-start requires session-id" {
+  run "$CTX_ROUTER" on-session-start
+  [ "$status" -eq 2 ]
+}
