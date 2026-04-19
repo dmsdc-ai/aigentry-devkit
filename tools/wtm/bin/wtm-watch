@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
 # WTM File Watcher - Monitor other sessions' changes and notify
-# Runs as a background process per session
+# Runs as a background process per session.
+# Rule 26: all event-waiting goes through platform::event_wait (if available).
 
 source "${HOME}/.wtm/lib/common.sh"
+
+# Source platform abstraction if the devkit tree is discoverable.
+WATCH_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)/bin"
+if [[ -r "$WATCH_SCRIPT_DIR/lib/platform.sh" ]]; then
+  # shellcheck source=../../../bin/lib/platform.sh disable=SC1091
+  source "$WATCH_SCRIPT_DIR/lib/platform.sh"
+fi
 
 if [[ $# -lt 1 ]]; then
   echo "Usage: wtm-watch <session-id>"
@@ -55,75 +63,45 @@ notify_change() {
   fi
 }
 
-# Check if fswatch is available
-if ! command -v fswatch &>/dev/null; then
-  log_warn "fswatch not installed. Using polling fallback (30s interval)."
-
-  # Polling fallback
-  while true; do
-    while IFS='|' read -r other_sid other_worktree; do
-      if [[ -d "${other_worktree}" ]]; then
-        # Check for recent changes via git
-        changes=$(cd "${other_worktree}" && git diff --name-only 2>/dev/null)
-        if [[ -n "${changes}" ]]; then
-          while IFS= read -r file; do
-            notify_change "${other_sid}" "${file}"
-          done <<< "${changes}"
-        fi
-      fi
-    done < <(get_other_worktrees)
-
-    sleep 30
-  done
-else
-  # fswatch-based real-time monitoring
-  log_info "Starting fswatch for session ${SESSION_ID}..."
-
-  # Build list of worktrees to watch
-  WATCH_DIRS=()
+# Rescan every sibling worktree and notify on any `git diff` hits.
+_rescan_worktrees() {
   while IFS='|' read -r other_sid other_worktree; do
+    [[ -d "${other_worktree}" ]] || continue
+    local changes
+    changes=$(cd "${other_worktree}" && git diff --name-only 2>/dev/null)
+    if [[ -n "${changes}" ]]; then
+      while IFS= read -r file; do
+        notify_change "${other_sid}" "${file}"
+      done <<< "${changes}"
+    fi
+  done < <(get_other_worktrees)
+}
+
+log_info "Starting wtm-watch for session ${SESSION_ID} (Rule 26 migration — platform::event_wait)"
+
+# Main loop: pick the first sibling worktree as the event-wait trigger,
+# rescan everyone on wakeup or a 60s-tick liveness pulse. On "no siblings",
+# poll for new ones every 60s.
+while true; do
+  WATCH_TRIGGER=""
+  while IFS='|' read -r _other_sid other_worktree; do
     if [[ -d "${other_worktree}" ]]; then
-      WATCH_DIRS+=("${other_worktree}")
-      log_info "Watching: ${other_sid} -> ${other_worktree}"
+      WATCH_TRIGGER="${other_worktree}"
+      break
     fi
   done < <(get_other_worktrees)
 
-  if [[ ${#WATCH_DIRS[@]} -eq 0 ]]; then
-    log_info "No other sessions to watch. Waiting for new sessions..."
-    # Re-check every 60s for new sessions
-    while true; do
-      sleep 60
-      NEW_DIRS=()
-      while IFS='|' read -r other_sid other_worktree; do
-        if [[ -d "${other_worktree}" ]]; then
-          NEW_DIRS+=("${other_worktree}")
-        fi
-      done < <(get_other_worktrees)
-
-      if [[ ${#NEW_DIRS[@]} -gt 0 ]]; then
-        # Restart with new targets
-        exec bash "${HOME}/.wtm/bin/wtm-watch" "${SESSION_ID}"
-      fi
-    done
+  if [[ -z "${WATCH_TRIGGER}" ]]; then
+    sleep 60
+    continue
   fi
 
-  # Watch with fswatch
-  fswatch -r \
-    --exclude '\.git' \
-    --exclude 'node_modules' \
-    --exclude '\.next' \
-    --exclude '\.psm-' \
-    --exclude '__pycache__' \
-    "${WATCH_DIRS[@]}" | while read -r changed_path; do
+  # Prefer platform::event_wait for event-driven wakeups; fall back to 30s poll.
+  if declare -f platform::event_wait >/dev/null 2>&1; then
+    platform::event_wait "${WATCH_TRIGGER}" 60 || true
+  else
+    sleep 30
+  fi
 
-    # Determine which session owns this change
-    for other_entry in $(get_other_worktrees); do
-      IFS='|' read -r other_sid other_worktree <<< "${other_entry}"
-      if [[ "${changed_path}" == "${other_worktree}"* ]]; then
-        rel_path="${changed_path#${other_worktree}/}"
-        notify_change "${other_sid}" "${rel_path}"
-        break
-      fi
-    done
-  done
-fi
+  _rescan_worktrees
+done
