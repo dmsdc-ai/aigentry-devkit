@@ -24,3 +24,32 @@ setup() {
   run "$CTX_ROUTER" bogus
   [ "$status" -eq 1 ]
 }
+
+@test "classify precompact returns both" {
+  run "$CTX_ROUTER" classify precompact '{}'
+  [ "$status" -eq 0 ]
+  [ "$output" = "both" ]
+}
+
+@test "classify git-commit returns long-term" {
+  run "$CTX_ROUTER" classify git-commit '{}'
+  [ "$status" -eq 0 ]
+  [ "$output" = "long-term" ]
+}
+
+@test "classify tq-transition done returns both" {
+  run "$CTX_ROUTER" classify tq-transition '{"new":"done"}'
+  [ "$status" -eq 0 ]
+  [ "$output" = "both" ]
+}
+
+@test "classify tq-transition in_progress returns ephemeral" {
+  run "$CTX_ROUTER" classify tq-transition '{"new":"in_progress"}'
+  [ "$status" -eq 0 ]
+  [ "$output" = "ephemeral" ]
+}
+
+@test "classify unknown event exits 2" {
+  run "$CTX_ROUTER" classify bogus '{}'
+  [ "$status" -eq 2 ]
+}
