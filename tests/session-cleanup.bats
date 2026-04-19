@@ -23,6 +23,21 @@ case "$1" in
 esac
 STUB
   chmod +x "$HOME/.wtm/bin/telepty"
+  # Stub curl so DELETE /api/sessions/<id> returns 200 for test-exists.
+  cat > "$HOME/.wtm/bin/curl" <<'CURL'
+#!/usr/bin/env bash
+# args arrive like: -sX DELETE http://host:port/api/sessions/<id> -w '\n%{http_code}'
+for a in "$@"; do
+  case "$a" in
+    */api/sessions/test-exists)
+      echo '{"ok":true}'; echo '200'; exit 0 ;;
+    */api/sessions/*)
+      echo '{"error":"Session not found"}'; echo '404'; exit 0 ;;
+  esac
+done
+exit 0
+CURL
+  chmod +x "$HOME/.wtm/bin/curl"
   export PATH="$HOME/.wtm/bin:$PATH"
 }
 teardown() { rm -rf "$HOME"; }
