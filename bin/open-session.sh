@@ -25,6 +25,10 @@
 set -euo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./lib/platform.sh
+source "$SCRIPT_DIR/lib/platform.sh"
+
 CONFIG_FILE="${AIGENTRY_CONFIG:-$HOME/.aigentry/config.json}"
 
 track=""
@@ -121,11 +125,13 @@ detect_terminal() {
   esac
 }
 
-# Fallback chain when a preferred terminal CLI is unavailable
+# Fallback chain when a preferred terminal CLI is unavailable.
+# Goes through the platform abstraction (Rule 26) so a future Windows backend
+# can satisfy the tmux branch natively (WSL tmux / wt.exe etc.).
 fallback_spawn() {
   local _sid="$1" _cwd="$2" _cli_cmd="$3"
-  if command -v tmux >/dev/null 2>&1 && [ -n "${TMUX:-}" ]; then
-    tmux new-window -c "$_cwd" "telepty allow --id '$_sid' $_cli_cmd"
+  if command -v tmux >/dev/null 2>&1 && platform::has_tmux_session; then
+    platform::spawn_tmux_window "$_sid" "$_cwd" "telepty allow --id '$_sid' $_cli_cmd"
     echo "$_sid"
   else
     telepty spawn --id "$_sid" -- bash -c "cd '$_cwd' && exec $_cli_cmd" >/dev/null
@@ -159,7 +165,7 @@ open_in_terminal() {
       fi
       ;;
     tmux)
-      tmux new-window -c "$cwd" -n "$title" "telepty allow --id '$sid' $cli_cmd"
+      platform::spawn_tmux_window "$title" "$cwd" "telepty allow --id '$sid' $cli_cmd"
       echo "$sid"
       ;;
     wezterm)
@@ -171,17 +177,8 @@ open_in_terminal() {
       fi
       ;;
     iterm)
-      # AppleScript: open new tab in current iTerm window and run command
-      osascript >/dev/null 2>&1 <<APPLESCRIPT || { echo "ERR iTerm AppleScript failed" >&2; exit 2; }
-tell application "iTerm"
-  tell current window
-    create tab with default profile
-    tell current session
-      write text "cd ${cwd} && telepty allow --id ${sid} ${cli_cmd}"
-    end tell
-  end tell
-end tell
-APPLESCRIPT
+      platform::spawn_iterm_tab "$cwd" "telepty allow --id $sid $cli_cmd" \
+        || { echo "ERR iTerm spawn failed" >&2; exit 2; }
       echo "$sid"
       ;;
     ghostty|generic|*)
