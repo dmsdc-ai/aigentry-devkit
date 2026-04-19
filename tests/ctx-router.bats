@@ -53,3 +53,14 @@ setup() {
   run "$CTX_ROUTER" classify bogus '{}'
   [ "$status" -eq 2 ]
 }
+
+@test "on-precompact without wtm/brain: degraded ok" {
+  # Isolate PATH so wtm-context/brain not found
+  run env PATH="/usr/bin:/bin" HOME="$BATS_TMPDIR" "$CTX_ROUTER" on-precompact "test-sid"
+  [ "$status" -eq 0 ]
+}
+
+@test "on-precompact requires session-id" {
+  run "$CTX_ROUTER" on-precompact
+  [ "$status" -eq 2 ]
+}

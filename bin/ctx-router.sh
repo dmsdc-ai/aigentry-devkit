@@ -60,7 +60,45 @@ cmd_classify() {
     *)                   echo "classify: unknown event '$event'" >&2; exit 2 ;;
   esac
 }
-cmd_on_precompact()     { echo "TODO"; exit 1; }
+# call_wtm_context(args...) — wtm-context CLI wrapper with fallback
+call_wtm_context() {
+  if command -v wtm-context >/dev/null 2>&1; then
+    wtm-context "$@"
+  elif [[ -x "$HOME/.wtm/bin/wtm-context" ]]; then
+    "$HOME/.wtm/bin/wtm-context" "$@"
+  else
+    echo "[ctx-router] wtm-context not found; skipping wtm call" >&2
+    return 0  # fail soft per §8 Error Handling
+  fi
+}
+
+# call_brain_append(scope, category, content) — brain MCP append wrapper
+call_brain_append() {
+  local scope="$1" category="$2" content="$3"
+  # Check if brain CLI available; MCP-only deployments may use different entry point
+  if command -v brain >/dev/null 2>&1; then
+    brain append --scope "$scope" --category "$category" --content "$content" 2>&1 || {
+      echo "[ctx-router] brain append failed; continuing" >&2
+      return 0
+    }
+  else
+    echo "[ctx-router] brain CLI not found; skipping long-term persist" >&2
+    return 0
+  fi
+}
+
+# on-precompact(session-id) — Event 5.1
+cmd_on_precompact() {
+  local sid="${1:-}"
+  [[ -z "$sid" ]] && { echo "on-precompact: session-id required" >&2; exit 2; }
+  local cwd summary
+  cwd="$(pwd)"
+  summary="auto-compact snapshot @ $(date -Iseconds) cwd=$cwd"
+  call_wtm_context handoff "$sid" "$summary" || true
+  call_wtm_context log "$sid" milestone "precompact event" || true
+  call_brain_append "session:$sid" "summary" "$summary" || true
+  echo "[ctx-router] precompact handled: sid=$sid"
+}
 cmd_on_session_start()  { echo "TODO"; exit 1; }
 cmd_on_git_commit()     { echo "TODO"; exit 1; }
 cmd_on_tq_transition()  { echo "TODO"; exit 1; }
