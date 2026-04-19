@@ -131,3 +131,69 @@ Missing facts are tagged `⚠️ 확인 필요` rather than guessed.
 - **When NOT**: code patterns / architecture / file layout (derive from source); in-flight conversation state (use plans / TaskCreate); anything `git log` already answers.
 
 ---
+
+## §3 Decision Tree
+
+### §3.1 Which component?
+
+```
+Q: LLM session calling directly?
+├─ YES → Q: Structured Entry (scope + category) needed?
+│         ├─ YES → brain  (learning / decision / summary / fact)
+│         └─ NO  → Q: Multi-agent deliberation required?
+│                   ├─ YES → deliberation (deliberation_start + …)
+│                   └─ NO  → bash CLI is enough — call via Bash tool:
+│                           wtm context resume, tq-status, telepty inject, …
+│
+└─ NO (hook / orchestrator / human calling) →
+        Q: Real-time cross-session signal?
+        ├─ YES → telepty (inject / broadcast)   — or aterm inject (inside aterm)
+        └─ NO  → Q: Persistent state?
+                  ├─ YES → task-queue (work board) or wtm-context (journal/handoff)
+                  └─ NO  → plain bash script (trust-path.sh, open-session.sh, …)
+```
+
+### §3.2 Ephemeral vs long-term
+
+```
+Q: Data lifespan?
+├─ Must survive session end → brain Entry  /  git commit  /  auto-memory
+├─ Session-scoped (open files, pending tasks) → wtm-context (journal + handoff)
+└─ Project-wide work tracking → task-queue (state/task-queue.json)
+```
+
+No ambiguous leaves. If none of the above fit, the use case is an anti-pattern — see §5.
+
+---
+
+## §4 Examples
+
+Each example shows the actual call and the expected outcome.
+
+1. **Record an ADR / decision** — `brain_append scope=app:{project} category=decision content="[abc123] <title>"`. Survives sessions; queryable by scope + tag. (Auto-emitted by the git post-commit template from #294.)
+
+2. **Hand off file-edit state between sessions** — `wtm context handoff <sid> "<summary>" '["a.ts","b.ts"]' '["impl-x"]'`. The next session reads it with `wtm context resume <sid>`.
+
+3. **Urgent cross-session message** — `telepty inject --submit --from <self> <target-sid> "REPORT: <blocker>"`. Delivered via kitty `send-text` → WS → PTY fallback. No state retained beyond the target's inbox.
+
+4. **Check task-queue progress** — `bash aigentry-orchestrator/bin/tq-status.sh`. Reads `state/task-queue.json`; no mutation.
+
+5. **Preserve context across `/compact`** — *depends on #294*. When the L1 ctx-router is installed (`bash aigentry-devkit/bin/ctx-install.sh`), Claude PreCompact + SessionStart hooks run `ctx-router on-precompact / on-session-start` automatically (wtm handoff + brain summary, then 16 KB JSON restore). Until installed, fall back to writing `.context-snapshot.md` manually before running `/compact`.
+
+6. **Resume a session** — `wtm context resume <sid>` (handoff + last 10 journal entries) combined with `brain_query scopes=['session:<sid>'] slot=conversation_summary`. The ctx-router `restore` subcommand bundles both.
+
+7. **Record an external research finding** — `brain_append scope=app:{project} category=learning content="upstream issue #485: <note>"`. Queryable later when the same problem resurfaces.
+
+---
+
+## §5 Anti-Patterns
+
+1. **Storing ephemeral state in brain** — e.g. `brain_append category=learning content="just restarted daemon"`. Pollutes long-term memory, dilutes real learnings. Use `wtm context log` instead.
+
+2. **Storing long-term knowledge in wtm-context** — journal bloats, no scoped/tagged search, gets rotated/archived. Promote to brain on session-end (ctx-router does this automatically for lines tagged `LEARNING:`).
+
+3. **Spinning up a new MCP server to "unify" contracts** — more context tax on every session, solves nothing structural. Plan #295 was cancelled for this reason. Use the existing services + decision tree.
+
+4. **Manual context snapshots instead of ctx-router hooks** — writing `.context-snapshot.md` by hand before every compact is brittle and forgetful. Install ctx-router (#294) once; the PreCompact hook handles it.
+
+---
