@@ -85,3 +85,7 @@ telepty inject --ref --from aigentry-devkit-{cli} aigentry-orchestrator-claude "
 - **Evidence-Based**: 추측 금지. 데이터/로그/테스트 결과 기반 판단.
 - **Fail Fast**: 에러 즉시 보고. 숨기지 않음.
 - **Constitution**: ~/projects/aigentry/docs/CONSTITUTION.md 준수.
+
+## References
+
+- Ecosystem contracts: `docs/ecosystem-contract.md` — 컴포넌트별 contract/호출/decision tree
