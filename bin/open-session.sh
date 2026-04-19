@@ -150,27 +150,32 @@ open_in_terminal() {
   case "$term" in
     cmux)
       # cmux --command sends text+Enter; telepty allow runs as the workspace's foreground process.
-      out=$(cmux new-workspace --cwd "$cwd" --command "telepty allow --id '$sid' $cli_cmd" 2>&1)
+      # bash -c 'cd ... && exec ...' wrapper: cmux --cwd only affects workspace shell, not the
+      # telepty-allow-wrapped CLI. Explicit cd inside wrapper guarantees claude inherits cwd (#311).
+      out=$(cmux new-workspace --cwd "$cwd" --command "bash -c 'cd $cwd && exec telepty allow --id $sid $cli_cmd'" 2>&1)
       ref=$(echo "$out" | grep -oE 'workspace:[0-9]+' | head -1)
       [ -z "$ref" ] && { echo "ERR cmux new-workspace failed: $out" >&2; exit 2; }
       cmux rename-workspace --workspace "$ref" "$title" >/dev/null 2>&1 || true
       echo "$ref"
       ;;
     aterm)
+      # bash -c wrapper for cwd propagation into claude (#311).
       if command -v aterm >/dev/null 2>&1 \
-        && aterm new-session --cwd "$cwd" --cmd "telepty allow --id '$sid' $cli_cmd" 2>/dev/null; then
+        && aterm new-session --cwd "$cwd" --cmd "bash -c 'cd $cwd && exec telepty allow --id $sid $cli_cmd'" 2>/dev/null; then
         echo "$sid"
       else
         fallback_spawn "$sid" "$cwd" "$cli_cmd"
       fi
       ;;
     tmux)
+      # tmux new-window -c propagates cwd correctly via platform::spawn_tmux_window.
       platform::spawn_tmux_window "$title" "$cwd" "telepty allow --id '$sid' $cli_cmd"
       echo "$sid"
       ;;
     wezterm)
       if command -v wezterm >/dev/null 2>&1; then
-        wezterm cli spawn --cwd "$cwd" -- bash -c "telepty allow --id '$sid' $cli_cmd" >/dev/null
+        # Explicit cd inside bash -c guarantees cwd propagation into claude (#311).
+        wezterm cli spawn --cwd "$cwd" -- bash -c "cd '$cwd' && exec telepty allow --id $sid $cli_cmd" >/dev/null
         echo "$sid"
       else
         fallback_spawn "$sid" "$cwd" "$cli_cmd"
