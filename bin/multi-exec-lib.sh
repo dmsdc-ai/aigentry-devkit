@@ -2,6 +2,12 @@
 # multi-exec-lib.sh — shared library (source'd by multi-exec.sh and bats tests)
 # Spec: docs/superpowers/specs/2026-04-19-multi-exec-automation-design.md
 # Rule 17: bash 4+ / jq / awk / sed / flock only. No python/yaml/yq.
+# Rule 26: process liveness + event-waits go through platform::* (see lib/platform.sh).
+#         Runner-lifetime flock stays direct (allowlisted in check-platform-usage.sh).
+
+SCRIPT_DIR_ME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./lib/platform.sh
+source "$SCRIPT_DIR_ME/lib/platform.sh"
 
 # shellcheck disable=SC2034  # consumed by sourcing scripts + bats
 MULTI_EXEC_VERSION="0.1.0"
@@ -163,7 +169,7 @@ acquire_lock() {
   fi
   local holder
   holder=$(cat "$lockdir/pid" 2>/dev/null || echo 0)
-  if ! kill -0 "$holder" 2>/dev/null; then
+  if ! platform::is_alive "$holder"; then
     rm -rf "$lockdir"
     mkdir "$lockdir" && echo $$ > "$lockdir/pid" && return 0
   fi
@@ -190,7 +196,7 @@ acquire_pid_mutex() {
   if [[ -f "$pf" ]]; then
     local holder
     holder=$(cat "$pf" 2>/dev/null || echo 0)
-    if kill -0 "$holder" 2>/dev/null; then
+    if platform::is_alive "$holder"; then
       echo "another multi-exec running (pid $holder)" >&2
       return 1
     fi
@@ -264,9 +270,9 @@ _find_new_ref() {
     | awk '/^< / {sub(/^< /, ""); print; exit}'
 }
 
-# await_task_report(coder_sid, task) — block (event-driven via fswatch if
-# available, else sleep-poll) until a new .md ref in $HOME/.telepty/shared
-# parses as this task's REPORT. Emits impl_done + review_skipped events.
+# await_task_report(coder_sid, task) — block via platform::event_wait
+# until a new .md ref in $HOME/.telepty/shared parses as this task's REPORT.
+# Emits impl_done + review_skipped events.
 # Timeout via MULTI_EXEC_TIMEOUT (default 600s). Exits 7 on timeout.
 await_task_report() {
   local sid="$1" task="$2"
@@ -279,14 +285,9 @@ await_task_report() {
   ls -t "$shared_dir"/*.md 2>/dev/null > "$seen_file" || true
 
   while [[ $(date +%s) -lt $deadline ]]; do
-    if command -v fswatch >/dev/null 2>&1; then
-      local remaining=$(( deadline - $(date +%s) ))
-      [[ $remaining -le 0 ]] && break
-      fswatch -1 --event Created --event Updated --latency 0.5 \
-        --timeout "${remaining}000" "$shared_dir" >/dev/null 2>&1 || true
-    else
-      sleep 5
-    fi
+    local remaining=$(( deadline - $(date +%s) ))
+    [[ $remaining -le 0 ]] && break
+    platform::event_wait "$shared_dir" "$remaining" || true
     local newest
     newest=$(_find_new_ref "$shared_dir" "$seen_file")
     if [[ -n "$newest" && -f "$newest" ]]; then
@@ -349,13 +350,9 @@ handle_chunk_gate() {
   printf '%s\n' "$initial_list" > "$seen"
 
   while [[ $(date +%s) -lt $deadline ]]; do
-    if command -v fswatch >/dev/null 2>&1; then
-      local rem=$(( deadline - $(date +%s) ))
-      [[ $rem -le 0 ]] && break
-      fswatch -1 --event Created --event Updated --latency 0.5 --timeout "${rem}000" "$shared_dir" >/dev/null 2>&1 || true
-    else
-      sleep 10
-    fi
+    local rem=$(( deadline - $(date +%s) ))
+    [[ $rem -le 0 ]] && break
+    platform::event_wait "$shared_dir" "$rem" || true
     local now_list newrefs
     now_list=$(ls -t "$shared_dir"/*.md 2>/dev/null || true)
     newrefs=$(diff <(printf '%s\n' "$now_list") "$seen" 2>/dev/null | awk '/^< /{sub(/^< /,""); print}')
