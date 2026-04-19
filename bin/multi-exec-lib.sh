@@ -134,3 +134,86 @@ parse_tasks() {
     }
   ' "$plan"
 }
+
+# ---------------------------------------------------------------------------
+# Concurrency guards
+# ---------------------------------------------------------------------------
+
+LOCKFILE_PATH=""
+
+_pidfile_path() {
+  printf '%s\n' "${HOME}/.wtm/contexts/orchestrator/multi-exec.pid"
+}
+
+# acquire_lock(plan) — per-plan exclusive lock. Prefers flock, falls back
+# to atomic mkdir + pid-liveness.
+# fd 9 is RESERVED by this library for the lockfile; callers must not reuse.
+acquire_lock() {
+  local plan="$1"
+  LOCKFILE_PATH="${plan}.multi-exec.lock"
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>"$LOCKFILE_PATH" || return 1
+    flock -n 9 || { echo "lock held by another runner: $LOCKFILE_PATH" >&2; return 1; }
+    return 0
+  fi
+  local lockdir="${LOCKFILE_PATH}.d"
+  if mkdir "$lockdir" 2>/dev/null; then
+    echo $$ > "$lockdir/pid"
+    return 0
+  fi
+  local holder
+  holder=$(cat "$lockdir/pid" 2>/dev/null || echo 0)
+  if ! kill -0 "$holder" 2>/dev/null; then
+    rm -rf "$lockdir"
+    mkdir "$lockdir" && echo $$ > "$lockdir/pid" && return 0
+  fi
+  echo "lock held by live pid $holder" >&2
+  return 1
+}
+
+release_lock() {
+  if [[ -n "$LOCKFILE_PATH" ]]; then
+    if command -v flock >/dev/null 2>&1; then
+      exec 9>&- 2>/dev/null || true
+    else
+      rm -rf "${LOCKFILE_PATH}.d" 2>/dev/null || true
+    fi
+  fi
+}
+
+# acquire_pid_mutex — per-orchestrator single-runner guard.
+# Skips the manual log write when another live runner owns the pidfile.
+acquire_pid_mutex() {
+  local pf
+  pf=$(_pidfile_path)
+  mkdir -p "$(dirname "$pf")"
+  if [[ -f "$pf" ]]; then
+    local holder
+    holder=$(cat "$pf" 2>/dev/null || echo 0)
+    if kill -0 "$holder" 2>/dev/null; then
+      echo "another multi-exec running (pid $holder)" >&2
+      return 1
+    fi
+    rm -f "$pf"
+  fi
+  echo $$ > "$pf"
+}
+
+release_pid_mutex() {
+  local pf
+  pf=$(_pidfile_path)
+  rm -f "$pf" 2>/dev/null || true
+}
+
+# emit_event(event, meta_json) — log through wtm-context if available.
+# Degrades silently when wtm-context is missing.
+emit_event() {
+  local event="${1:-}"
+  local meta="${2:-}"
+  [[ -z "$meta" ]] && meta='{}'
+  if command -v wtm-context >/dev/null 2>&1; then
+    wtm-context log orchestrator exec-event "$event" "$meta" 2>/dev/null || true
+  elif [[ -x "$HOME/.wtm/bin/wtm-context" ]]; then
+    "$HOME/.wtm/bin/wtm-context" log orchestrator exec-event "$event" "$meta" 2>/dev/null || true
+  fi
+}

@@ -61,3 +61,25 @@ teardown() {
   [ "$status" -eq 1 ]
   echo "$output" | jq -e '.error'
 }
+
+@test "acquire_lock creates lockfile and releases on exit" {
+  local tmp_plan
+  tmp_plan=$(mktemp "$HOME/plan.XXXX")
+  echo "# plan" > "$tmp_plan"
+  run bash -c "source '$ME_LIB' && acquire_lock '$tmp_plan' && release_lock"
+  [ "$status" -eq 0 ]
+  rm "$tmp_plan"
+}
+
+@test "acquire_pid_mutex refuses when pid file has live process" {
+  mkdir -p "$HOME/.wtm/contexts/orchestrator"
+  echo $$ > "$HOME/.wtm/contexts/orchestrator/multi-exec.pid"
+  run bash -c "source '$ME_LIB' && acquire_pid_mutex"
+  [ "$status" -ne 0 ]
+  rm -f "$HOME/.wtm/contexts/orchestrator/multi-exec.pid"
+}
+
+@test "emit_event does not error when wtm-context absent" {
+  run env PATH=/usr/bin:/bin HOME="$HOME" bash -c "source '$ME_LIB' && emit_event dispatch '{\"task\":1}'"
+  [ "$status" -eq 0 ]
+}

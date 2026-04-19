@@ -35,6 +35,10 @@ main() {
     esac
   done
 
+  acquire_pid_mutex || exit 4
+  acquire_lock "$plan" || { release_pid_mutex; exit 5; }
+  trap 'release_lock; release_pid_mutex' EXIT
+
   local fm
   if ! fm=$(parse_frontmatter "$plan"); then
     if [[ $strict -eq 1 ]]; then
