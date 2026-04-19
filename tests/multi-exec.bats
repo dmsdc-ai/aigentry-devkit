@@ -43,3 +43,21 @@ teardown() {
   [ "$status" -eq 3 ]
   rm "$tmp"
 }
+
+@test "parse_report strict → JSON with task=4" {
+  run bash -c "source '$ME_LIB' && parse_report < '$FIXTURES/report-strict.txt'"
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.task == 4 and .commit == "3325b5b" and .tests == "14/14"'
+}
+
+@test "parse_report legacy → JSON with task=4" {
+  run bash -c "source '$ME_LIB' && parse_report < '$FIXTURES/report-legacy.txt'"
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.task == 4 and .commit == "3325b5b" and .tests == "14/14"'
+}
+
+@test "parse_report missing task number → error JSON" {
+  run bash -c "source '$ME_LIB' && echo 'no task here' | parse_report"
+  [ "$status" -eq 1 ]
+  echo "$output" | jq -e '.error'
+}

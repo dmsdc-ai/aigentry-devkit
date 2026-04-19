@@ -80,6 +80,45 @@ _me_lines_to_json() {
   printf '%s\n' "$raw" | jq -c . 2>/dev/null || return 1
 }
 
+# parse_report(stdin) → emits JSON to stdout
+# Supports two grammars:
+#   strict: one "key: value" per line (files/tests/commits/issues/next + REPORT: Task N header)
+#   legacy: "REPORT: Task N complete | files: ... | tests: ... | commits: ... | ..."
+parse_report() {
+  local text
+  text="$(cat)"
+  local task commit files tests issues next
+
+  task=$(printf '%s\n' "$text" | head -1 | grep -oE 'Task[[:space:]]+[0-9]+' | head -1 | grep -oE '[0-9]+')
+  if [[ -z "$task" ]]; then
+    jq -n '{error: "no task number in REPORT"}'
+    return 1
+  fi
+
+  if printf '%s\n' "$text" | grep -qE '^(files|tests|commits?|issues|next):'; then
+    files=$(printf '%s\n' "$text"  | awk '/^files:/   {sub(/^files:[[:space:]]*/,"");    print; exit}')
+    tests=$(printf '%s\n' "$text"  | awk '/^tests:/   {sub(/^tests:[[:space:]]*/,"");    print; exit}')
+    commit=$(printf '%s\n' "$text" | awk '/^commits?:/ {sub(/^commits?:[[:space:]]*/,""); print; exit}')
+    issues=$(printf '%s\n' "$text" | awk '/^issues:/  {sub(/^issues:[[:space:]]*/,"");   print; exit}')
+    next=$(printf '%s\n' "$text"   | awk '/^next:/    {sub(/^next:[[:space:]]*/,"");     print; exit}')
+  else
+    files=$(printf '%s\n' "$text"  | grep -oE 'files: [^|]+'    | sed -E 's/^files: //; s/[[:space:]]+$//')
+    tests=$(printf '%s\n' "$text"  | grep -oE 'tests: [^|]+'    | sed -E 's/^tests: //; s/[[:space:]]+$//')
+    commit=$(printf '%s\n' "$text" | grep -oE 'commits?: [^|]+' | sed -E 's/^commits?: //; s/[[:space:]]+$//')
+    issues=$(printf '%s\n' "$text" | grep -oE 'issues: [^|]+'   | sed -E 's/^issues: //; s/[[:space:]]+$//')
+    next=$(printf '%s\n' "$text"   | grep -oE 'next: [^|]+'     | sed -E 's/^next: //; s/[[:space:]]+$//')
+  fi
+
+  jq -n \
+    --arg task   "$task" \
+    --arg files  "${files:-}" \
+    --arg tests  "${tests:-}" \
+    --arg commit "${commit:-}" \
+    --arg issues "${issues:-none}" \
+    --arg next   "${next:-}" \
+    '{task: ($task|tonumber), files: $files, tests: $tests, commit: $commit, issues: $issues, next: $next}'
+}
+
 # parse_tasks(plan-file) → stdout: lines of "chunk_n<TAB>task_n<TAB>line_nr"
 # Portable awk: no 3-arg match(), sub() only.
 parse_tasks() {
