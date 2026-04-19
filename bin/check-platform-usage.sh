@@ -8,20 +8,36 @@
 set -euo pipefail
 
 BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEVKIT_ROOT="$(cd "$BIN_DIR/.." && pwd)"
+
+# Scan the full devkit shell surface, not just bin/.
+SCAN_TARGETS=(
+  "$BIN_DIR"
+  "$DEVKIT_ROOT/tools/wtm/bin"
+  "$DEVKIT_ROOT/tools/wtm/lib"
+)
 
 # Extended regex patterns that violate Rule 26.
 PATTERNS='kill -(TERM|KILL|HUP|9|15)([[:space:]]|$)|\bflock\b|\bfswatch\b'
 
 # Search, exclude the backends themselves, any .md, and this script.
-# Documented exceptions:
+# Documented exceptions (pre-existing wtm low-level libraries that the platform
+# abstraction itself depends on — migrating them would create a cycle):
 #   - multi-exec-lib.sh flock: runner-lifetime lock (fd 9 held across the
 #     entire runner), which does not fit platform::file_lock's wrap-fn model.
 #     Migration tracked when platform::file_lock_persistent lands (see #307).
-VIOLATIONS=$(grep -rnE "$PATTERNS" "$BIN_DIR" 2>/dev/null \
+#   - tools/wtm/lib/atomic.sh: low-level flock / Perl-Fcntl / mkdir-spinlock
+#     primitive that platform::file_lock's Unix backend builds on conceptually.
+#     Migration tracked at #307.
+#   - tools/wtm/lib/terminal.sh: pre-#304 session-teardown logic using
+#     kill -0 / kill / kill -9. Migration tracked at #307.
+VIOLATIONS=$(grep -rnE "$PATTERNS" "${SCAN_TARGETS[@]}" 2>/dev/null \
   | grep -vE '/lib/platform-(unix|windows)\.sh:' \
   | grep -vE '\.md:' \
   | grep -vE '^[^:]+/check-platform-usage\.sh:' \
   | grep -vE '^[^:]+/multi-exec-lib\.sh:.*\bflock\b' \
+  | grep -vE '^[^:]+/tools/wtm/lib/atomic\.sh:' \
+  | grep -vE '^[^:]+/tools/wtm/lib/terminal\.sh:' \
   || true)
 
 if [[ -n "$VIOLATIONS" ]]; then
