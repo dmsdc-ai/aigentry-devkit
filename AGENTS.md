@@ -86,6 +86,20 @@ telepty inject --ref --from aigentry-devkit-{cli} aigentry-orchestrator-claude "
 - **Fail Fast**: 에러 즉시 보고. 숨기지 않음.
 - **Constitution**: ~/projects/aigentry/docs/CONSTITUTION.md 준수.
 
+## Rules
+
+### Rule 26 — Cross-OS abstraction 준수 (HARD RULE)
+
+신규 bash 코드는 `bin/lib/platform.sh` abstract API 경유한다. 직접 `flock` / `fswatch` / `kill -TERM|-KILL|-9|-15|-HUP` 등 OS-specific 호출 금지.
+
+- 위반 예: `kill -TERM $pid`
+- 준수 예: `platform::kill_pid $pid`
+
+기존 코드는 refactor-on-touch (#307). 새 파일/기능은 예외 없이 준수.
+간이 검증: `bin/check-platform-usage.sh` (CI에서 수동 호출, pre-commit hook 전환 예정).
+
+문서화된 예외: `multi-exec-lib.sh` 의 runner-lifetime flock (fd 9) — `platform::file_lock_persistent` API 도입 후 migration 예정.
+
 ## References
 
 - Ecosystem contracts: `docs/ecosystem-contract.md` — 컴포넌트별 contract/호출/decision tree
