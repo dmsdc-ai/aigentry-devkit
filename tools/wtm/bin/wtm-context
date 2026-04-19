@@ -28,7 +28,7 @@ case "${1:-help}" in
       echo "Types: file_edit, command_run, decision, note, error, milestone"
       exit 1
     fi
-    local _meta="${4-}"
+    _meta="${4-}"
     : "${_meta:="{}"}"
     journal_append "$1" "$2" "$3" "${_meta}"
     log_ok "Journal entry added."
