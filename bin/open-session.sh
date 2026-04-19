@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
-# open-session.sh — Open a cmux workspace following aigentry session conventions
+# open-session.sh — Open an aigentry session in the user's current terminal environment
 #
-# Two-layer design (Rule 14 generic/multi-cross):
+# Cross-terminal universality (헌법 Rule 2 크로스 + Rule 14 범용 블로킹 금지 + Rule 17 무의존):
+#   Detects host terminal (cmux / aterm / tmux / wezterm / iTerm / ghostty / generic)
+#   and spawns a visible UI container that wraps the CLI in `telepty allow --id <sid>`.
+#   This guarantees BOTH:
+#     1. Backend: telepty daemon registers the session (`telepty list`, inject targets work)
+#     2. Frontend: user sees the session in their actual terminal
+#
+# Two-layer flag design (Rule 14 generic/multi-cross):
 #   Layer 1 (generic): --cwd always works. No project-name assumptions.
 #   Layer 2 (optional): --role looks up ~/.aigentry/config.json for user-specific shortcut
 #
-# Workspace title convention: {track}-{name}  (name = short identifier, e.g. "architect-264")
+# Session id (SID) convention: {track}-{name}  (e.g. "B-architect-264")
 #
 # Usage:
 #   open-session.sh --track B --name architect-264 --cwd ~/repos/my-design --cli claude
@@ -13,9 +20,8 @@
 #
 #   # With ~/.aigentry/config.json configured:
 #   open-session.sh --track B --role architect --task 264
-#   # ↑ looks up config.roles.architect.path → resolves cwd
 #
-# Output: workspace ref on stdout (e.g., "workspace:37")
+# Output: session ref on stdout (cmux: "workspace:N", others: SID)
 set -euo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
@@ -28,6 +34,7 @@ task=""
 cli="claude"
 cwd_override=""
 extra_flags=""
+sid=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -39,7 +46,7 @@ while [ $# -gt 0 ]; do
     --cwd) cwd_override="$2"; shift 2;;
     --extra-flags) extra_flags="$2"; shift 2;;
     -h|--help)
-      sed -n '2,20p' "$0"
+      sed -n '2,30p' "$0"
       exit 0;;
     *) echo "ERR unknown arg: $1" >&2; exit 1;;
   esac
@@ -56,7 +63,7 @@ if [ -z "$name" ]; then
   fi
 fi
 
-# Resolve cwd: explicit --cwd wins, else lookup ~/.aigentry/config.json by --role, else error
+# Resolve cwd: explicit --cwd wins, else lookup ~/.aigentry/config.json by --role
 cwd=""
 cli_flags_from_config=""
 if [ -n "$cwd_override" ]; then
@@ -79,7 +86,7 @@ fi
 eval cwd="$cwd"
 [ -d "$cwd" ] || mkdir -p "$cwd"
 
-# Trust check warning
+# Trust check warning (claude only)
 trust_status=$(jq -r --arg p "$cwd" '.projects[$p].hasTrustDialogAccepted // false' "$HOME/.claude.json" 2>/dev/null || echo "false")
 if [ "$trust_status" != "true" ] && [ "$cli" = "claude" ]; then
   echo "WARN: $cwd not in ~/.claude.json trust list — claude will show trust prompt" >&2
@@ -87,38 +94,123 @@ if [ "$trust_status" != "true" ] && [ "$cli" = "claude" ]; then
 fi
 
 title="${track}-${name}"
+sid="$title"  # SID convention = title (track-name)
 
-# CLI flags: config > --extra-flags arg > defaults
+# CLI flags: --extra-flags arg > config > defaults
 if [ -z "$extra_flags" ] && [ -n "$cli_flags_from_config" ]; then
   extra_flags="$cli_flags_from_config"
 fi
 case "$cli" in
   claude) [ -z "$extra_flags" ] && extra_flags="--permission-mode bypassPermissions";;
+  codex)  [ -z "$extra_flags" ] && extra_flags="--dangerously-bypass-approvals-and-sandbox";;
+  gemini) [ -z "$extra_flags" ] && extra_flags="--approval-mode yolo";;
 esac
 
-# Open workspace — NOTE: --command is unreliable due to shell init prompts (oh-my-zsh etc).
-# Two-step: open shell-only, then send command via cmux send after shell ready.
-out=$(cmux new-workspace --cwd "$cwd" 2>&1)
-ref=$(echo "$out" | grep -oE 'workspace:[0-9]+' | head -1)
-[ -z "$ref" ] && { echo "ERR new-workspace failed: $out" >&2; exit 2; }
+# Detect host terminal environment
+detect_terminal() {
+  [ -n "${CMUX_WORKSPACE_ID:-}" ] && { echo cmux; return; }
+  [ -n "${ATERM_IPC_SOCKET:-}" ] && { echo aterm; return; }
+  [ -n "${TMUX:-}" ] && { echo tmux; return; }
+  case "${TERM_PROGRAM:-}" in
+    WezTerm)   echo wezterm ;;
+    iTerm.app) echo iterm ;;
+    ghostty)   echo ghostty ;;
+    *)         echo generic ;;
+  esac
+}
 
-cmux rename-workspace --workspace "$ref" "$title" >/dev/null 2>&1 || true
+# Fallback chain when a preferred terminal CLI is unavailable
+fallback_spawn() {
+  local _sid="$1" _cwd="$2" _cli_cmd="$3"
+  if command -v tmux >/dev/null 2>&1 && [ -n "${TMUX:-}" ]; then
+    tmux new-window -c "$_cwd" "telepty allow --id '$_sid' $_cli_cmd"
+    echo "$_sid"
+  else
+    telepty spawn --id "$_sid" -- bash -c "cd '$_cwd' && exec $_cli_cmd" >/dev/null
+    echo "⚠️  Session spawned as daemon (no visible terminal). Attach: telepty attach $_sid" >&2
+    echo "$_sid"
+  fi
+}
 
-# Wait for shell ready (3s is usually enough for zsh + oh-my-zsh)
-sleep 3
+# Open session in detected terminal. Always wraps in `telepty allow --id <sid>`
+# so the daemon registers it (visible to `telepty list` + inject targets).
+open_in_terminal() {
+  local term cli_cmd ref out
+  term=$(detect_terminal)
+  cli_cmd="$cli $extra_flags"
 
-# Send "N" to decline oh-my-zsh update prompt if any, then boot CLI
-cmux send --workspace "$ref" "N" >/dev/null 2>&1 || true
-cmux send-key --workspace "$ref" enter >/dev/null 2>&1 || true
-sleep 1
+  case "$term" in
+    cmux)
+      # cmux --command sends text+Enter; telepty allow runs as the workspace's foreground process.
+      out=$(cmux new-workspace --cwd "$cwd" --command "telepty allow --id '$sid' $cli_cmd" 2>&1)
+      ref=$(echo "$out" | grep -oE 'workspace:[0-9]+' | head -1)
+      [ -z "$ref" ] && { echo "ERR cmux new-workspace failed: $out" >&2; exit 2; }
+      cmux rename-workspace --workspace "$ref" "$title" >/dev/null 2>&1 || true
+      echo "$ref"
+      ;;
+    aterm)
+      if command -v aterm >/dev/null 2>&1 \
+        && aterm new-session --cwd "$cwd" --cmd "telepty allow --id '$sid' $cli_cmd" 2>/dev/null; then
+        echo "$sid"
+      else
+        fallback_spawn "$sid" "$cwd" "$cli_cmd"
+      fi
+      ;;
+    tmux)
+      tmux new-window -c "$cwd" -n "$title" "telepty allow --id '$sid' $cli_cmd"
+      echo "$sid"
+      ;;
+    wezterm)
+      if command -v wezterm >/dev/null 2>&1; then
+        wezterm cli spawn --cwd "$cwd" -- bash -c "telepty allow --id '$sid' $cli_cmd" >/dev/null
+        echo "$sid"
+      else
+        fallback_spawn "$sid" "$cwd" "$cli_cmd"
+      fi
+      ;;
+    iterm)
+      # AppleScript: open new tab in current iTerm window and run command
+      osascript >/dev/null 2>&1 <<APPLESCRIPT || { echo "ERR iTerm AppleScript failed" >&2; exit 2; }
+tell application "iTerm"
+  tell current window
+    create tab with default profile
+    tell current session
+      write text "cd ${cwd} && telepty allow --id ${sid} ${cli_cmd}"
+    end tell
+  end tell
+end tell
+APPLESCRIPT
+      echo "$sid"
+      ;;
+    ghostty|generic|*)
+      # No clean spawn-tab CLI — fall back to daemon PTY with attach instructions.
+      telepty spawn --id "$sid" -- bash -c "cd '$cwd' && exec $cli_cmd" >/dev/null
+      echo "⚠️  Session spawned as daemon ($term has no spawn-tab CLI)." >&2
+      echo "    Attach via: telepty attach $sid" >&2
+      echo "$sid"
+      ;;
+  esac
+}
 
-# Now send the real command: cd to cwd, exec CLI
-boot_cmd="cd '$cwd' && exec $cli $extra_flags"
-cmux send --workspace "$ref" "$boot_cmd" >/dev/null
-cmux send-key --workspace "$ref" enter >/dev/null
+# EXIT trap — best-effort session-lifecycle hook (Plan A Task 8 integration).
+# Calls ctx-router on-session-end so journal/handoff state is flushed if this script
+# itself terminates abnormally before the spawn completes.
+cleanup_on_exit() {
+  local ec=$?
+  local ctx_router="${CTX_ROUTER_PATH:-$HOME/projects/aigentry-devkit/bin/ctx-router.sh}"
+  if [ -x "$ctx_router" ] && [ -n "${sid:-}" ]; then
+    "$ctx_router" on-session-end "$sid" >/dev/null 2>&1 || true
+  fi
+  exit $ec
+}
+trap cleanup_on_exit EXIT
+
+# Spawn the session (output the ref/sid on stdout)
+ref=$(open_in_terminal)
 
 # Log
 log_file="$HOME/.aigentry/open-session.log"
 mkdir -p "$(dirname "$log_file")"
-echo "$(date -u +%FT%TZ) ref=$ref title=$title cwd=$cwd cli=$cli flags=$extra_flags" >> "$log_file"
+echo "$(date -u +%FT%TZ) term=$(detect_terminal) ref=$ref sid=$sid title=$title cwd=$cwd cli=$cli flags=$extra_flags" >> "$log_file"
+
 echo "$ref"
