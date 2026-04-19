@@ -77,6 +77,18 @@ case "${1:-help}" in
     add_conversation_ref "$1" "$2"
     log_ok "Conversation reference added."
     ;;
+  orphan-check)
+    shift
+    orphan_check "${1:-$(pwd)}"
+    ;;
+  rebind)
+    shift
+    if [[ $# -lt 2 ]]; then
+      echo "Usage: wtm context rebind <cwd> <new-session-id>"
+      exit 2
+    fi
+    rebind_session "$1" "$2"
+    ;;
   help|--help|-h)
     cat <<'EOF'
 Usage:
@@ -86,6 +98,8 @@ Usage:
   wtm context resume <sid>                   Show handoff + recent journal
   wtm context rotate <sid> [--keep N]        Rotate journal
   wtm context ref <sid> <conversation-ref>   Add conversation reference
+  wtm context orphan-check [cwd]             Find orphan session for cwd
+  wtm context rebind <cwd> <new-sid>         Alias orphan session to new sid
 EOF
     ;;
   *)

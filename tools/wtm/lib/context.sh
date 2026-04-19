@@ -293,6 +293,81 @@ if pending:
 }
 
 # ---------------------------------------------------------------------------
+# orphan_check(cwd)
+# Thin wrapper: find most recent session whose stored cwd matches (or is a
+# prefix of) the given cwd, then emit last handoff + recent journal. No new
+# storage — reads sessions.json + existing journal.jsonl.
+# Schema: {"version":N,"sessions":{"sid":{"cwd":"/path","last_active":"...",...}}}
+# ---------------------------------------------------------------------------
+orphan_check() {
+  local target_cwd="${1:-$(pwd)}"
+  local sessions_file="${WTM_SESSIONS}"
+  [[ -f "$sessions_file" ]] || { echo "no sessions file"; return 1; }
+  local sid
+  sid=$(jq -r --arg cwd "$target_cwd" '
+    (.sessions // {})
+    | to_entries
+    | map(
+        (.value.cwd // "") as $scwd
+        | select(
+            ($scwd == $cwd)
+            or ($scwd != "" and ($scwd | startswith($cwd)))
+            or ($scwd != "" and ($cwd | startswith($scwd)))
+          )
+      )
+    | sort_by(.value.last_active // "")
+    | reverse
+    | (.[0].key // empty)
+  ' "$sessions_file")
+  [[ -z "$sid" ]] && { echo "no orphaned session for $target_cwd"; return 1; }
+  echo "## Orphan session candidate: $sid"
+  echo "### Last handoff"
+  restore_handoff "$sid" 2>/dev/null || echo "(no handoff)"
+  echo ""
+  echo "### Recent journal (last 10)"
+  journal_tail "$sid" 10 2>/dev/null || echo "(empty journal)"
+}
+
+# ---------------------------------------------------------------------------
+# rebind_session(cwd, new_sid)
+# Alias the most-recent orphan session matching cwd to new_sid. Copies the old
+# entry under new_sid and records rebound_from + rebound_at. Uses with_lock.
+# Schema-aware: operates on data["sessions"][sid] if present, else top-level.
+# ---------------------------------------------------------------------------
+rebind_session() {
+  local target_cwd="${1:-}" new_sid="${2:-}"
+  [[ -z "$target_cwd" || -z "$new_sid" ]] && { echo "rebind: cwd and new-sid required" >&2; return 2; }
+  [[ -f "$WTM_SESSIONS" ]] || { echo "rebind: no sessions file at $WTM_SESSIONS" >&2; return 1; }
+  local old_sid
+  old_sid=$(jq -r --arg cwd "$target_cwd" '
+    (.sessions // {})
+    | to_entries
+    | map(select((.value.cwd // "") == $cwd))
+    | sort_by(.value.last_active // "")
+    | reverse
+    | (.[0].key // empty)
+  ' "$WTM_SESSIONS")
+  [[ -z "$old_sid" ]] && { echo "rebind: no orphan found for $target_cwd" >&2; return 1; }
+  echo "Rebinding $old_sid -> $new_sid (cwd=$target_cwd)"
+  with_lock "sessions" python3 -c "
+import json, sys, datetime
+f, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
+now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+with open(f) as fh:
+    data = json.load(fh)
+bucket = data['sessions'] if 'sessions' in data and isinstance(data['sessions'], dict) else data
+if old not in bucket:
+    print(f'rebind: old sid {old} missing post-lock; aborting', file=sys.stderr)
+    sys.exit(1)
+bucket[new] = dict(bucket[old])
+bucket[new]['rebound_from'] = old
+bucket[new]['rebound_at'] = now
+with open(f, 'w') as fh:
+    json.dump(data, fh, indent=2, ensure_ascii=False)
+" "$WTM_SESSIONS" "$old_sid" "$new_sid"
+}
+
+# ---------------------------------------------------------------------------
 # add_conversation_ref(session_id, ref)
 # Append to context.conversation_refs[] without duplicates.
 # ---------------------------------------------------------------------------
