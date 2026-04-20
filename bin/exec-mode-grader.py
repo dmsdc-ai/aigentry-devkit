@@ -1231,10 +1231,18 @@ def score_f5_citations(agent_output: str, ground_truth: dict) -> dict:
 
 
 def score_f6_build_turns(agent_output: str, ground_truth: dict) -> dict:
-    """Fix-loop — binary build pass proxy + turns-to-success estimate."""
+    """Fix-loop — binary build pass proxy + turns-to-success estimate.
+
+    G8 (F6 RCA R1): diff_format_regex uses `^` anchor; agents wrap unified
+    diffs in the ```diff fence that task_prompt.md itself demonstrates, so
+    the `---` header sits mid-string. Pass re.MULTILINE so `^` matches line
+    start, not string start. Plain (unfenced) diffs still match.
+    """
     text = agent_output or ""
     checks = ground_truth.get("stage1_fix_3_checks") or {}
-    diff_format_ok = bool(_regex_any_hit(text, [checks.get("diff_format_regex", "")]))
+    diff_format_ok = bool(_regex_any_hit(
+        text, [checks.get("diff_format_regex", "")], extra_flags=re.MULTILINE
+    ))
     added_lines = "\n".join(
         line[1:] for line in text.splitlines()
         if line.startswith("+") and not line.startswith("+++")
@@ -1565,9 +1573,19 @@ def score_f10_checklist(agent_output: str, ground_truth: dict) -> dict:
 
 
 # ─── T9: Fa primary grader + dispatch ───────────────────────────────────────
-def _regex_any_hit(text: str, patterns: Sequence[str], case_insensitive: bool = True) -> list[str]:
-    """Return list of patterns that match anywhere in `text`."""
-    flags = re.IGNORECASE if case_insensitive else 0
+def _regex_any_hit(
+    text: str,
+    patterns: Sequence[str],
+    case_insensitive: bool = True,
+    extra_flags: int = 0,
+) -> list[str]:
+    """Return list of patterns that match anywhere in `text`.
+
+    `extra_flags` is OR-ed with the default case-insensitive flag. Used by
+    F6 diff_format_regex to opt into re.MULTILINE so `^` anchors work on
+    fenced diffs (G8 / F6 RCA R1).
+    """
+    flags = (re.IGNORECASE if case_insensitive else 0) | extra_flags
     hits: list[str] = []
     for pat in patterns:
         try:

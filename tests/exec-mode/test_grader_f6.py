@@ -28,6 +28,18 @@ The next error should be the remaining type-normalization failure, not this keyw
 """
 
 
+FENCED_OUTPUT = """```diff
+--- a/aigentry_config/loader.py
++++ b/aigentry_config/loader.py
+@@ -9,2 +9,2 @@
+-    return cfg.get('timeout', default=30)
++    return cfg.get('timeout', 30)
+```
+
+The next error should be the remaining type-normalization failure.
+"""
+
+
 BAD_OUTPUT = """--- a/aigentry_config/loader.py
 +++ b/aigentry_config/loader.py
 @@
@@ -55,3 +67,16 @@ def test_score_f6_empty_output_degrades_gracefully():
     score = g.score_f6_build_turns("", TRUTH)
     assert score["diff_format_ok"] is False
     assert score["primary_score"] == 0.0
+
+
+def test_score_f6_fenced_diff_matches_format_regex():
+    """G8/R1: diff wrapped in ```diff fence (as task_prompt.md demonstrates) must match.
+
+    Regression for F6 RCA — ^ anchor without re.MULTILINE caused semantically
+    correct agent outputs to score 0.0 when wrapped in the fence the fixture
+    itself uses.
+    """
+    score = g.score_f6_build_turns(FENCED_OUTPUT, TRUTH)
+    assert score["diff_format_ok"] is True
+    assert score["build_pass_binary"] == 1.0
+    assert score["primary_score"] >= 0.9
