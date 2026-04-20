@@ -189,3 +189,80 @@ PY
   [ "$status" -eq 5 ]
   [[ "$output" == *"only supports --dry-run"* ]]
 }
+
+# ─── T6: Pacc chain state + crash-discard ───────────────────────────────────
+
+@test "T6 Pacc dry-run writes chain_sessN.json with position tracked" {
+  run "$HARNESS" --fixture Fa --mode Pacc --seed-idx 0 --run-idx 1 \
+    --session-idx 7 --position-in-chain 1 --dry-run --state-root "$STATE"
+  [ "$status" -eq 0 ]
+
+  local chain="$STATE/1/Pacc/Fa/chain_sess7.json"
+  [ -f "$chain" ]
+
+  "$VENV_PY" - <<PY
+import json, sys
+c = json.load(open("$chain"))
+assert c["session_idx"] == 7, c
+assert c["fixture_id"] == "Fa", c
+assert c["run_idx"] == 1, c
+assert c["status"] == "active", c
+entries = c["fixtures_completed"]
+assert len(entries) == 1, entries
+e = entries[0]
+assert e["position_in_chain"] == 1, e
+assert e["seed_idx"] == 0, e
+assert e["trial_id"] == "1/Pacc/Fa/seed00_pos1_sess7", e
+PY
+}
+
+@test "T6 Pacc dry-run appends positions across trials" {
+  "$HARNESS" --fixture Fa --mode Pacc --seed-idx 0 --run-idx 1 \
+    --session-idx 7 --position-in-chain 1 --dry-run --state-root "$STATE" >/dev/null
+  "$HARNESS" --fixture Fa --mode Pacc --seed-idx 0 --run-idx 1 \
+    --session-idx 7 --position-in-chain 2 --dry-run --state-root "$STATE" >/dev/null
+
+  local chain="$STATE/1/Pacc/Fa/chain_sess7.json"
+  local n; n=$("$VENV_PY" -c "import json; print(len(json.load(open('$chain'))['fixtures_completed']))")
+  [ "$n" = "2" ]
+}
+
+@test "T6 Pacc refuses new trials when chain marked crashed (R8)" {
+  local chain_dir="$STATE/1/Pacc/Fa"
+  mkdir -p "$chain_dir"
+  cat >"$chain_dir/chain_sess7.json" <<JSON
+{"session_idx":7,"fixture_id":"Fa","run_idx":1,"status":"crashed","fixtures_completed":[]}
+JSON
+
+  run "$HARNESS" --fixture Fa --mode Pacc --seed-idx 0 --run-idx 1 \
+    --session-idx 7 --position-in-chain 3 --dry-run --state-root "$STATE"
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"crashed"* ]]
+}
+
+@test "T6 Pacc --resume short-circuits when position already completed" {
+  "$HARNESS" --fixture Fa --mode Pacc --seed-idx 0 --run-idx 1 \
+    --session-idx 7 --position-in-chain 1 --dry-run --state-root "$STATE" >/dev/null
+
+  local trial="$STATE/1/Pacc/Fa/seed00_pos1_sess7"
+  local before; before=$(stat -f %m "$trial/metrics.json" 2>/dev/null || stat -c %Y "$trial/metrics.json")
+
+  sleep 1
+  run "$HARNESS" --fixture Fa --mode Pacc --seed-idx 0 --run-idx 1 \
+    --session-idx 7 --position-in-chain 1 --dry-run --resume --state-root "$STATE"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"resume hit"* ]]
+
+  local after; after=$(stat -f %m "$trial/metrics.json" 2>/dev/null || stat -c %Y "$trial/metrics.json")
+  [ "$before" = "$after" ]
+}
+
+@test "T6 non-Pacc modes never write chain_sess*.json" {
+  "$HARNESS" --fixture Fa --mode D      --seed-idx 0 --run-idx 1 --dry-run --state-root "$STATE" >/dev/null
+  "$HARNESS" --fixture Fa --mode Pfresh --seed-idx 0 --run-idx 1 --dry-run --state-root "$STATE" >/dev/null
+  "$HARNESS" --fixture Fa --mode S      --seed-idx 0 --run-idx 1 --dry-run --state-root "$STATE" >/dev/null
+
+  run find "$STATE" -name 'chain_sess*.json'
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}

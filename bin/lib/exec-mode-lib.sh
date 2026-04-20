@@ -222,3 +222,87 @@ execmode::compact_detect() {
   fi
   "$py" "$grader" --detect-compact "$jsonl"
 }
+
+# ─── T6: Pacc chain state (.chain_state.json) ──────────────────────────────
+# Path convention: <state_root>/<run_idx>/Pacc/<fixture>/chain_sess<S>.json
+# Schema (informal):
+#   {"session_idx":N, "fixture_id":"Fa", "run_idx":1,
+#    "status":"active"|"completed"|"crashed",
+#    "fixtures_completed":[{"position_in_chain":P,"seed_idx":N,"trial_id":"...","at":"iso"} ...]}
+# R8 (build spec §5): on Pacc session crash → discard session, rerun cheap.
+
+execmode::chain_state_path() {
+  # Usage: execmode::chain_state_path <state_root> <run_idx> <fixture> <session_idx>
+  local sr=$1 run=$2 fix=$3 sess=$4
+  echo "$sr/$run/Pacc/$fix/chain_sess${sess}.json"
+}
+
+# Exit 0 if path exists AND parses AND status=="crashed". Nonzero otherwise.
+execmode::chain_state_is_crashed() {
+  local path="${1:-}"
+  [[ -n "$path" && -f "$path" ]] || return 1
+  local py="${EXECMODE_PY:-$EXECMODE_REPO_ROOT/.venv-exec-mode/bin/python}"
+  if [[ ! -x "$py" ]]; then
+    py="$(command -v python3 || true)"
+  fi
+  [[ -n "$py" ]] || return 1
+  "$py" - "$path" <<'PY'
+import json, sys
+try:
+    c = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+sys.exit(0 if c.get("status") == "crashed" else 1)
+PY
+}
+
+# Usage: execmode::chain_state_append <path> <run_idx> <fixture> <session_idx> <position> <seed_idx> <trial_id> <at_iso>
+# Creates file with status=active if missing; appends entry (dedup on (position,seed)); atomic via tempfile.
+execmode::chain_state_append() {
+  local path=$1 run=$2 fix=$3 sess=$4 pos=$5 seed=$6 tid=$7 at=$8
+  local dir; dir="$(dirname "$path")"
+  mkdir -p "$dir"
+  local py="${EXECMODE_PY:-$EXECMODE_REPO_ROOT/.venv-exec-mode/bin/python}"
+  if [[ ! -x "$py" ]]; then
+    py="$(command -v python3 || true)"
+  fi
+  [[ -n "$py" ]] || { echo "chain_state_append: no python interpreter available" >&2; return 3; }
+
+  "$py" - "$path" "$run" "$fix" "$sess" "$pos" "$seed" "$tid" "$at" <<'PY'
+import json, os, sys, tempfile
+path, run, fix, sess, pos, seed, tid, at = sys.argv[1:9]
+state = None
+if os.path.exists(path):
+    try:
+        state = json.load(open(path))
+    except Exception:
+        state = None
+if not isinstance(state, dict):
+    state = {
+        "session_idx": int(sess),
+        "fixture_id": fix,
+        "run_idx": int(run),
+        "status": "active",
+        "fixtures_completed": [],
+    }
+entries = state.setdefault("fixtures_completed", [])
+key = (int(pos), int(seed))
+if not any((e.get("position_in_chain"), e.get("seed_idx")) == key for e in entries):
+    entries.append({
+        "position_in_chain": int(pos),
+        "seed_idx":          int(seed),
+        "trial_id":          tid,
+        "at":                at,
+    })
+tmp = tempfile.NamedTemporaryFile(
+    "w",
+    dir=os.path.dirname(path) or ".",
+    delete=False,
+    prefix=os.path.basename(path) + ".tmp.",
+)
+json.dump(state, tmp, sort_keys=True)
+tmp.flush()
+tmp.close()
+os.replace(tmp.name, path)
+PY
+}

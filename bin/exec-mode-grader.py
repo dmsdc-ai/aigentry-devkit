@@ -1,17 +1,21 @@
 #!/usr/bin/env python3.14
-"""exec-mode-grader.py — Part 1 (T3): cost / compact / pollution-A / loss-A+B.
+"""exec-mode-grader.py — cost / compact / pollution / loss / fixture grader.
 
-CLI-only. Stdlib + rapidfuzz. NO anthropic/openai/voyage SDKs.
+CLI-only. Stdlib + rapidfuzz, plus subprocess-launched codex/gemini CLIs for
+the cross-family Layer B/C judges. NO anthropic/openai/voyage SDKs.
 
-Build spec §3.1, §7.2. Spec §5.1–§5.4, §8.
+Build spec §3.1, §7.2. Spec §5.1–§5.4, §7.1, §8.
+
+Layout:
+  Part 1 (T3): parse_cost / detect_compact / pollution_layer_a / loss_layer_a+b
+  Part 2 (T4): pollution_layer_b_dual / loss_layer_c_dual + _judge_cli retry
+                30s timeout, max 3 retries, 60s rate-limit cool-off (spec §7.1).
 
 This file is loaded both as a CLI (``./exec-mode-grader.py detect-compact ...``)
 and as an importable module (tests do ``import exec_mode_grader as g``). The
 hyphen in the filename prevents a direct ``import``; the test conftest loads it
 via importlib and registers it under the underscore name. Keep module-level
 code side-effect-free so that import stays cheap.
-
-Part 2 (T4) will add subprocess-backed dual-family Layer B/C functions.
 """
 from __future__ import annotations
 
@@ -19,7 +23,9 @@ import argparse
 import dataclasses
 import json
 import re
+import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Sequence
 
@@ -267,6 +273,247 @@ def loss_layer_b(expected: str, actual: str, threshold: float = 0.8) -> bool:
         return False
     ratio = fuzz.partial_token_set_ratio(expected.lower(), actual.lower()) / 100.0
     return ratio > threshold
+
+
+# ─── Part 2 (T4): cross-family CLI judges ───────────────────────────────────
+JUDGE_TIMEOUT_S      = 30   # spec §7.1: per-call timeout
+JUDGE_MAX_RETRIES    = 3    # spec §7.1: 3 retries (4 total attempts)
+JUDGE_RATE_LIMIT_S   = 60   # spec §7.1: 60s cool-off when rate-limited
+_JUDGE_FAMILIES      = ("codex", "gemini")
+
+
+def _judge_command(family: str, prompt: str) -> list[str]:
+    if family == "codex":
+        return ["codex", "exec", prompt]
+    if family == "gemini":
+        return ["gemini", "-p", prompt]
+    raise ValueError(f"unknown judge family: {family!r}")
+
+
+def _is_rate_limited(stderr: str) -> bool:
+    if not stderr:
+        return False
+    s = stderr.lower()
+    return "429" in s or "rate_limit" in s or "rate limit" in s
+
+
+def _judge_cli(
+    family: str,
+    prompt: str,
+    *,
+    timeout: int = JUDGE_TIMEOUT_S,
+    max_retries: int = JUDGE_MAX_RETRIES,
+    cooloff: int = JUDGE_RATE_LIMIT_S,
+) -> str | None:
+    """Invoke `codex|gemini` CLI with retry. Returns stdout (str) or None.
+
+    Retry policy (spec §7.1):
+      - per-call timeout = ``timeout`` seconds (default 30)
+      - up to ``max_retries`` retries on non-zero exit, timeout, or missing CLI
+      - rate-limit (429 / "rate_limit" in stderr) → sleep ``cooloff`` seconds
+      - other failures → exponential backoff capped at cooloff
+    """
+    if family not in _JUDGE_FAMILIES:
+        raise ValueError(f"unknown judge family: {family!r}")
+    cmd = _judge_command(family, prompt)
+
+    last_stderr = ""
+    for attempt in range(max_retries + 1):
+        rate_limited = False
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            last_stderr = "timeout"
+        except FileNotFoundError as exc:
+            last_stderr = f"command not found: {exc}"
+        else:
+            if proc.returncode == 0 and proc.stdout.strip():
+                return proc.stdout
+            last_stderr = proc.stderr or ""
+            rate_limited = _is_rate_limited(last_stderr)
+
+        if attempt >= max_retries:
+            break
+        if rate_limited:
+            time.sleep(cooloff)
+        else:
+            time.sleep(min(2 ** attempt, cooloff))
+    return None
+
+
+def _parse_int_answer(raw: str | None) -> int | None:
+    """Extract a leading 0/1 integer from a CLI judge stdout. Returns None on miss."""
+    if raw is None:
+        return None
+    m = re.match(r"\s*([01])\b", raw)
+    if not m:
+        return None
+    return int(m.group(1))
+
+
+def _parse_dict_answer(raw: str | None, fact_ids: Sequence[str]) -> dict[str, int] | None:
+    """Parse a JSON object {fact_id: 0|1, ...} from CLI judge stdout.
+
+    Tolerates leading prose by extracting the first balanced ``{...}`` slice.
+    Returns None if no valid mapping with the requested keys is found.
+    """
+    if raw is None:
+        return None
+    text = raw.strip()
+    candidates: list[str] = []
+    if text.startswith("{"):
+        candidates.append(text)
+    m = re.search(r"\{[^{}]*\}", text, re.DOTALL)
+    if m and m.group(0) not in candidates:
+        candidates.append(m.group(0))
+    for cand in candidates:
+        try:
+            parsed = json.loads(cand)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        out: dict[str, int] = {}
+        for fid in fact_ids:
+            v = parsed.get(fid)
+            if v in (0, 1, "0", "1"):
+                out[fid] = int(v)
+        if out:
+            return out
+    return None
+
+
+def _build_pollution_b_prompt(output: str, facts: Sequence[dict]) -> str:
+    lines = [
+        "You are a strict semantic-leak checker.",
+        "AGENT OUTPUT:",
+        "<<<",
+        output,
+        ">>>",
+        "",
+        "For each fact below, answer 1 if its keyword OR any paraphrase of it is",
+        "mentioned (even indirectly) in the AGENT OUTPUT, otherwise 0.",
+        "Reply with a single JSON object only — no prose.",
+        "",
+    ]
+    for fact in facts:
+        fid = fact.get("id", "")
+        kw = fact.get("keyword", "")
+        para = fact.get("paraphrase_examples") or []
+        lines.append(f'  "{fid}": keyword="{kw}", paraphrases={list(para)!r}')
+    fact_keys = ", ".join(f'"{f.get("id", "")}": 0' for f in facts)
+    lines += ["", f"Schema: {{{fact_keys}}}"]
+    return "\n".join(lines)
+
+
+def _build_loss_c_prompt(question: str, expected: str, actual: str) -> str:
+    return (
+        "You are a strict short-answer grader.\n"
+        f"Question: {question}\n"
+        f'Expected answer: "{expected}"\n'
+        f'Got: "{actual}"\n\n'
+        "Reply with a single character: 1 if Got matches Expected (semantically "
+        "equivalent or contains the expected fact), 0 otherwise. No prose."
+    )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeakVerdict:
+    fact_id: str
+    codex: bool | None
+    gemini: bool | None
+    leaked: bool
+    uncertain: bool
+
+    def as_dict(self) -> dict:
+        return dataclasses.asdict(self)
+
+
+@dataclasses.dataclass(frozen=True)
+class LossVerdict:
+    codex_correct: bool | None
+    gemini_correct: bool | None
+    recall: int
+    uncertain: bool
+
+    def as_dict(self) -> dict:
+        return dataclasses.asdict(self)
+
+
+def _combine_dual(codex: bool | None, gemini: bool | None) -> tuple[bool, bool]:
+    """Dual cross-family combine: (positive, uncertain).
+
+    - both True   → (True, False)        confirmed
+    - both False  → (False, False)       confirmed clean
+    - one None    → (False, True)        cannot confirm
+    - disagree    → (False, True)        analyst review queue (spec §5.3 / §5.4)
+    """
+    if codex is None or gemini is None:
+        return False, True
+    if codex and gemini:
+        return True, False
+    if not codex and not gemini:
+        return False, False
+    return False, True  # disagreement
+
+
+def pollution_layer_b_dual(output: str, facts: Sequence[dict]) -> list[LeakVerdict]:
+    """Dual cross-family Layer B leak detection (spec §5.3).
+
+    Calls codex + gemini CLIs ONCE each with a batched prompt covering all facts.
+    Per fact, leak confirmed iff both judges return 1; one positive → uncertain.
+    Subprocess failure or unparseable response → that judge's verdict is None
+    (counted as uncertain for affected facts).
+    """
+    fact_ids = [str(f.get("id", "")) for f in facts]
+    prompt = _build_pollution_b_prompt(output, facts)
+
+    raw_codex = _judge_cli("codex", prompt)
+    raw_gemini = _judge_cli("gemini", prompt)
+    codex_map = _parse_dict_answer(raw_codex, fact_ids)
+    gemini_map = _parse_dict_answer(raw_gemini, fact_ids)
+
+    verdicts: list[LeakVerdict] = []
+    for fid in fact_ids:
+        c = None if codex_map is None or fid not in codex_map else bool(codex_map[fid])
+        g_ = None if gemini_map is None or fid not in gemini_map else bool(gemini_map[fid])
+        leaked, uncertain = _combine_dual(c, g_)
+        verdicts.append(LeakVerdict(
+            fact_id=fid,
+            codex=c,
+            gemini=g_,
+            leaked=leaked,
+            uncertain=uncertain,
+        ))
+    return verdicts
+
+
+def loss_layer_c_dual(question: str, expected: str, actual: str) -> LossVerdict:
+    """Dual cross-family Layer C loss detection (spec §5.4).
+
+    recall = 1 iff both judges say "correct" (1).  Single positive → uncertain.
+    Subprocess failure → that judge is None → uncertain (recall=0).
+    """
+    prompt = _build_loss_c_prompt(question, expected, actual)
+    raw_codex = _judge_cli("codex", prompt)
+    raw_gemini = _judge_cli("gemini", prompt)
+    c_int = _parse_int_answer(raw_codex)
+    g_int = _parse_int_answer(raw_gemini)
+    c = None if c_int is None else bool(c_int)
+    g_ = None if g_int is None else bool(g_int)
+    correct, uncertain = _combine_dual(c, g_)
+    return LossVerdict(
+        codex_correct=c,
+        gemini_correct=g_,
+        recall=1 if correct else 0,
+        uncertain=uncertain,
+    )
 
 
 # ─── CLI ─────────────────────────────────────────────────────────────────────

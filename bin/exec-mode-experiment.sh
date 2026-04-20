@@ -126,6 +126,14 @@ trial_id="${run_idx}/${mode}/${fixture}/${trial_id_tail}"
 venv_py="$REPO_ROOT/.venv-exec-mode/bin/python"
 [ -x "$venv_py" ] || die 5 "venv python not found at $venv_py; run: python3.14 -m venv .venv-exec-mode && .venv-exec-mode/bin/pip install -r requirements-exec-mode.txt"
 
+# ─── Pacc chain-state: discard session if crashed (R8) ──────────────────────
+if [ "$mode" = "Pacc" ]; then
+  chain_path="$(execmode::chain_state_path "$state_root" "$run_idx" "$fixture" "$session_idx")"
+  if execmode::chain_state_is_crashed "$chain_path"; then
+    die 5 "Pacc session $session_idx (fixture=$fixture, run=$run_idx) marked crashed in $chain_path — discarded per R8; re-queue at the session level, not this trial"
+  fi
+fi
+
 # ─── resume short-circuit ────────────────────────────────────────────────────
 if [ "$resume" -eq 1 ] && [ -f "$metrics_path" ]; then
   if "$venv_py" -c 'import json,sys; json.load(open(sys.argv[1]))' "$metrics_path" 2>/dev/null; then
@@ -341,6 +349,13 @@ if errs:
 
 json.dump(metrics, sys.stdout, sort_keys=True)
 PY
+
+# ─── T6: record Pacc chain-state entry for this position ────────────────────
+if [ "$mode" = "Pacc" ]; then
+  execmode::chain_state_append \
+    "$chain_path" "$run_idx" "$fixture" "$session_idx" \
+    "$position_in_chain" "$seed_idx" "$trial_id" "$stage1_end"
+fi
 
 echo "$trial_id ok metrics=$metrics_path"
 exit 0
