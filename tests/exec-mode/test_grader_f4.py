@@ -99,3 +99,43 @@ def test_score_f4_empty_output_returns_zero():
     assert score["node_match_rate"] == 0.0
     assert score["edge_match_rate"] == 0.0
     assert score["primary_score"] == 0.0
+
+
+SHORT_NAME_OUTPUT = """
+(a) File inventory
+1. crates/core/src/lib.rs
+2. crates/core/src/analyze.rs
+3. crates/ffi/src/lib.rs
+4. python/pkg/_bindings.py
+
+Also note: analyze.rs is re-exported by lib.rs and _bindings.py calls into lib.rs via FFI.
+
+```mermaid
+graph TD
+crates/core/src/lib.rs -->|re-exports| crates/core/src/analyze.rs
+```
+
+```mermaid
+graph TD
+python/pkg/_bindings.py -->|ffi| crates/ffi/src/lib.rs
+```
+
+```mermaid
+graph TD
+crates/ffi/src/lib.rs -->|boundary| python/pkg/_bindings.py
+```
+
+(c) FFI boundary note: crates/ffi/src/lib.rs ↔ python/pkg/_bindings.py
+"""
+
+
+def test_score_f4_bare_basenames_in_oracle_not_flagged_as_hallucinations():
+    """H4: bare filename refs whose basename IS in the oracle graph must
+    not count as hallucinated. Short form (`analyze.rs`) is a legitimate
+    citation when the full-path form is also present.
+    """
+    score = g.score_f4_oracle_graph(SHORT_NAME_OUTPUT, TRUTH)
+    # "analyze.rs" and "lib.rs" appear bare but their basenames are in oracle nodes
+    assert "analyze.rs" not in score["hallucinated_nodes"]
+    assert "lib.rs" not in score["hallucinated_nodes"]
+    assert score["hallucination_penalty"] == 0.0

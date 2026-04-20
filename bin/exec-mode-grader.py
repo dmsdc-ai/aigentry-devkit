@@ -1055,8 +1055,15 @@ def score_f4_oracle_graph(agent_output: str, ground_truth: dict) -> dict:
         if any(name in text for name in names):
             matched_nodes.append(node)
 
+    # H4: bare basenames (e.g., `loader.py`) may be legitimate shorthand
+    # citations of oracle nodes held as full paths. Only flag as hallucinated
+    # when neither the literal ref nor its basename is present in the oracle.
     file_like_refs = sorted(set(re.findall(r"[\w./-]+\.(?:rs|py|toml|udl|md)", text)))
-    hallucinated_nodes = [ref for ref in file_like_refs if ref not in nodes]
+    node_basenames = {Path(n).name for n in nodes}
+    hallucinated_nodes = [
+        ref for ref in file_like_refs
+        if ref not in nodes and Path(ref).name not in node_basenames
+    ]
     node_match_rate = _safe_div(len(matched_nodes), len(nodes))
 
     kind_keywords = {
