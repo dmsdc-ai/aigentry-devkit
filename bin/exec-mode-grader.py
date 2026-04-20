@@ -820,15 +820,37 @@ def _parse_markdown_table_rows(text: str) -> list[list[str]]:
     return rows
 
 
+def _label_marker_regex(label: str) -> re.Pattern[str]:
+    """H8: tolerate the label surface real agents emit.
+
+    Accepted forms (MULTILINE-anchored at line start):
+      - `(a)`                      — plain parens (pre-H8 baseline)
+      - `**(a)**`, `*(a)*`         — bold/italic-wrapped parens
+      - `a)` `a.` `a:`             — half-paren or trailing punctuation
+      - `**a.**` `**a:**` `**a)**` — bold-wrapped letter + punctuation
+
+    The trailing-punctuation branch requires a `)`, `.`, or `:` after the
+    label (with optional bold markers) so prose lines that simply start
+    with "a …" do not false-match as section labels.
+    """
+    esc = re.escape(label)
+    return re.compile(
+        rf"(?im)^\s*(?:"
+        rf"\*{{0,2}}\(\s*{esc}\s*\)\*{{0,2}}"     # (a), *(a)*, **(a)**
+        rf"|\*{{0,2}}{esc}\*{{0,2}}[\)\.\:]"      # a) a. a: **a.** **a:** **a)**
+        rf")"
+    )
+
+
 def _extract_labeled_section(text: str, label: str, next_labels: Sequence[str]) -> str:
     body = text or ""
-    start_pat = re.compile(rf"(?is)\(\s*{re.escape(label)}\s*\)")
+    start_pat = _label_marker_regex(label)
     start = start_pat.search(body)
     if not start:
         return ""
     end_pos = len(body)
     for nxt in next_labels:
-        nxt_pat = re.compile(rf"(?is)\(\s*{re.escape(nxt)}\s*\)")
+        nxt_pat = _label_marker_regex(nxt)
         nxt_match = nxt_pat.search(body, start.end())
         if nxt_match:
             end_pos = min(end_pos, nxt_match.start())
