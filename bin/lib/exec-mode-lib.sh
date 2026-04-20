@@ -307,6 +307,78 @@ os.replace(tmp.name, path)
 PY
 }
 
+# ─── T10-followup: Pacc session_id persistence for --resume chains ─────────
+# Pacc pos > 1 must resume the claude session opened at pos = 1. The claude
+# CLI returns its session_id in stream-json `system`/`result` records; we
+# stash it on the chain_state file so subsequent positions can look it up.
+
+execmode::chain_state_set_session_id() {
+  # Usage: execmode::chain_state_set_session_id <path> <run_idx> <fixture> <session_idx> <session_id>
+  # Creates the file if absent (status=active) and sets top-level session_id.
+  local path=$1 run=$2 fix=$3 sess=$4 sid=$5
+  [[ -n "$path" && -n "$sid" ]] || { echo "chain_state_set_session_id: path + session_id required" >&2; return 2; }
+  local dir; dir="$(dirname "$path")"
+  mkdir -p "$dir"
+  local py="${EXECMODE_PY:-$EXECMODE_REPO_ROOT/.venv-exec-mode/bin/python}"
+  if [[ ! -x "$py" ]]; then
+    py="$(command -v python3 || true)"
+  fi
+  [[ -n "$py" ]] || { echo "chain_state_set_session_id: no python interpreter" >&2; return 3; }
+
+  "$py" - "$path" "$run" "$fix" "$sess" "$sid" <<'PY'
+import json, os, sys, tempfile
+path, run, fix, sess, sid = sys.argv[1:6]
+state = None
+if os.path.exists(path):
+    try:
+        state = json.load(open(path))
+    except Exception:
+        state = None
+if not isinstance(state, dict):
+    state = {
+        "session_idx": int(sess),
+        "fixture_id": fix,
+        "run_idx": int(run),
+        "status": "active",
+        "fixtures_completed": [],
+    }
+state["session_id"] = sid
+tmp = tempfile.NamedTemporaryFile(
+    "w",
+    dir=os.path.dirname(path) or ".",
+    delete=False,
+    prefix=os.path.basename(path) + ".tmp.",
+)
+json.dump(state, tmp, sort_keys=True)
+tmp.flush(); tmp.close()
+os.replace(tmp.name, path)
+PY
+}
+
+execmode::chain_state_get_session_id() {
+  # Usage: execmode::chain_state_get_session_id <path>
+  # Echoes session_id to stdout; exits 1 if the field is missing/empty.
+  local path=$1
+  [[ -n "$path" && -f "$path" ]] || return 1
+  local py="${EXECMODE_PY:-$EXECMODE_REPO_ROOT/.venv-exec-mode/bin/python}"
+  if [[ ! -x "$py" ]]; then
+    py="$(command -v python3 || true)"
+  fi
+  [[ -n "$py" ]] || return 1
+  "$py" - "$path" <<'PY'
+import json, sys
+try:
+    state = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+sid = state.get("session_id") if isinstance(state, dict) else None
+if isinstance(sid, str) and sid:
+    print(sid)
+    sys.exit(0)
+sys.exit(1)
+PY
+}
+
 # ─── T7: Stage 2 probe-replay subprocess ───────────────────────────────────
 # Isolation invariants (spec §5.4, §7.1; build spec §3.1):
 #   (1) No CLAUDE_* env vars propagate into the subprocess (env -i scrub).
