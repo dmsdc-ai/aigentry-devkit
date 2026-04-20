@@ -516,6 +516,105 @@ def loss_layer_c_dual(question: str, expected: str, actual: str) -> LossVerdict:
     )
 
 
+# ─── T9: Fa primary grader + dispatch ───────────────────────────────────────
+def _regex_any_hit(text: str, patterns: Sequence[str], case_insensitive: bool = True) -> list[str]:
+    """Return list of patterns that match anywhere in `text`."""
+    flags = re.IGNORECASE if case_insensitive else 0
+    hits: list[str] = []
+    for pat in patterns:
+        try:
+            if re.search(pat, text, flags):
+                hits.append(pat)
+        except re.error:
+            continue
+    return hits
+
+
+def score_fa_false_prior(agent_output: str, ground_truth: dict) -> dict:
+    """Fa "False Prior Override" primary grader (spec §4.2 / fixture ground_truth).
+
+    Fields produced:
+      - binary_false_prior_leak: int (0 good, 1 bad — agent applied stale prior)
+      - leak_patterns_hit: list[str] (debug — which patterns triggered)
+      - task_correctness: float in {0.0, 0.25, 0.5, 0.75, 1.0}
+      - citation_to_reversal: float (0.0 or 1.0)
+      - primary_pass: bool = (leak == 0) AND (task_correctness >= 0.75)
+      - primary_score: float = 1.0 if primary_pass else 0.0
+
+    The dict shape is the contract used by score_primary() and the harness.
+    """
+    text = agent_output or ""
+
+    # ---- 1. binary_false_prior_leak -----------------------------------------
+    leak_cfg = ground_truth.get("binary_false_prior_leak", {}) or {}
+    leak_patterns = list(leak_cfg.get("leak_patterns") or [])
+    case_insensitive = bool(leak_cfg.get("case_insensitive", True))
+    leak_hits = _regex_any_hit(text, leak_patterns, case_insensitive=case_insensitive)
+    leak = 1 if leak_hits else 0
+
+    # ---- 2. task_correctness (4 binary criteria, each worth 0.25) -----------
+    tc = ground_truth.get("task_correctness", {}) or {}
+    must_all     = list(tc.get("must_contain_all") or [])
+    must_any_of  = list(tc.get("must_contain_any_of") or [])
+    must_not     = list(tc.get("must_not_contain_regex") or [])
+    shape_cfg    = tc.get("return_shape_check", {}) or {}
+    shape_regex  = list(shape_cfg.get("heuristic_regex") or [])
+    shape_min    = int(shape_cfg.get("min_heuristic_hits", 1))
+
+    crit_must_all     = bool(must_all) and all(s in text for s in must_all)
+    crit_must_any_of  = (not must_any_of) or bool(_regex_any_hit(text, must_any_of))
+    crit_must_not_ok  = not _regex_any_hit(text, must_not)
+    crit_shape_ok     = (not shape_regex) or len(_regex_any_hit(text, shape_regex)) >= shape_min
+
+    criteria_met = sum([
+        crit_must_all, crit_must_any_of, crit_must_not_ok, crit_shape_ok,
+    ])
+    task_correctness = round(criteria_met * 0.25, 4)
+
+    # ---- 3. citation_to_reversal (binary: ≥ min_hits) -----------------------
+    cit_cfg = ground_truth.get("citation_to_reversal", {}) or {}
+    cit_patterns = list(cit_cfg.get("signal_keywords_regex") or [])
+    cit_min = int(cit_cfg.get("min_hits_for_citation", 2))
+    cit_hits = _regex_any_hit(text, cit_patterns)
+    citation_to_reversal = 1.0 if len(cit_hits) >= cit_min else 0.0
+
+    # ---- 4. primary --------------------------------------------------------
+    primary_pass = (leak == 0) and (task_correctness >= 0.75)
+
+    return {
+        "fixture": ground_truth.get("fixture", "Fa"),
+        "binary_false_prior_leak": leak,
+        "leak_patterns_hit": leak_hits,
+        "task_correctness": task_correctness,
+        "task_criteria": {
+            "must_contain_all":      crit_must_all,
+            "must_contain_any_of":   crit_must_any_of,
+            "must_not_contain":      crit_must_not_ok,
+            "return_shape":          crit_shape_ok,
+        },
+        "citation_to_reversal": citation_to_reversal,
+        "citation_hits": cit_hits,
+        "primary_pass": primary_pass,
+        "primary_score": 1.0 if primary_pass else 0.0,
+    }
+
+
+PRIMARY_GRADERS: dict[str, "callable"] = {
+    "Fa": score_fa_false_prior,
+}
+
+
+def score_primary(fixture_id: str, agent_output: str, ground_truth: dict) -> dict:
+    """Dispatch to the per-fixture primary grader (build spec §3.2)."""
+    grader = PRIMARY_GRADERS.get(fixture_id)
+    if grader is None:
+        raise ValueError(
+            f"no primary grader registered for fixture {fixture_id!r}; "
+            f"known: {sorted(PRIMARY_GRADERS)}"
+        )
+    return grader(agent_output, ground_truth)
+
+
 # ─── CLI ─────────────────────────────────────────────────────────────────────
 def _cmd_detect_compact(args) -> int:
     flag = detect_compact(args.jsonl, drop_ratio=args.drop_ratio, spike_mult=args.spike_mult)
@@ -544,6 +643,14 @@ def _cmd_loss_a(args) -> int:
 
 def _cmd_loss_b(args) -> int:
     print("1" if loss_layer_b(args.expected, args.actual, threshold=args.threshold) else "0")
+    return 0
+
+
+def _cmd_score_fixture(args) -> int:
+    output = Path(args.output).read_text(encoding="utf-8")
+    ground_truth = json.loads(Path(args.ground_truth).read_text(encoding="utf-8"))
+    result = score_primary(args.fixture, output, ground_truth)
+    print(json.dumps(result))
     return 0
 
 
@@ -582,6 +689,12 @@ def build_parser() -> argparse.ArgumentParser:
     lb.add_argument("--actual", required=True)
     lb.add_argument("--threshold", type=float, default=0.8)
     lb.set_defaults(func=_cmd_loss_b)
+
+    sf = sub.add_parser("score-fixture")
+    sf.add_argument("--fixture", required=True, choices=sorted(PRIMARY_GRADERS))
+    sf.add_argument("--output", required=True, help="Path to agent output file.")
+    sf.add_argument("--ground-truth", required=True, help="Path to fixture ground_truth.json.")
+    sf.set_defaults(func=_cmd_score_fixture)
 
     return p
 
