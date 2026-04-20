@@ -99,3 +99,21 @@ def test_score_f10_empty_output_returns_zero():
     assert score["unresolved_application_rate"] == 0.0
     assert score["stale_rejection_rate"] == 0.0
     assert score["primary_score"] == 0.0
+
+
+def test_unresolved_content_hit_without_turn_counts():
+    output = """
+(a) Status summary: A is complete, B is complete, and D retry work is still in progress.
+
+(b) Next actions
+- Implement email validation with validator.js for the bulk import path.
+
+(c) Stale items rejected
+| # | Item | Status | Reason |
+| 1 | POST /api/import/bulk route | stale | already done; B complete |
+| 2 | body schema | stale | already done; A complete |
+| 4 | bulk handler | stale | already done; handler complete in B |
+"""
+    score = g.score_f10_checklist(output, TRUTH)
+    assert score["unresolved_hits"] == ["U1"]
+    assert score["unresolved_application_rate"] == 0.5

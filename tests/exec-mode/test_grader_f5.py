@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import random
 
 import pytest
 
@@ -16,6 +17,7 @@ class _FakeProc:
 
 TRUTH = {
     "fixture": "F5",
+    "trial_seed": 7,
     "word_count_bounds": {"min": 1000, "max": 1500},
     "section_requirements": {
         "required_heading_regex_any_of": [
@@ -51,6 +53,14 @@ GOOD_QUOTES = {
     "https://python.org/downloads": "The downloads page lists active branch availability.",
     "https://peps.python.org/pep-2000": "Accepted PEPs define interpreter-facing compatibility changes.",
 }
+
+CITATION_BLOCKS = [
+    {"quote": GOOD_QUOTES["https://python.org/3.14"], "url": "https://python.org/3.14"},
+    {"quote": GOOD_QUOTES["https://peps.python.org/pep-1000"], "url": "https://peps.python.org/pep-1000"},
+    {"quote": GOOD_QUOTES["https://github.com/python/cpython/releases"], "url": "https://github.com/python/cpython/releases"},
+    {"quote": GOOD_QUOTES["https://python.org/downloads"], "url": "https://python.org/downloads"},
+    {"quote": GOOD_QUOTES["https://peps.python.org/pep-2000"], "url": "https://peps.python.org/pep-2000"},
+]
 
 
 def _fake_curl_factory(quotes: dict[str, str], *, dead: set[str] | None = None):
@@ -125,12 +135,92 @@ Too short.
 
 def test_score_f5_known_good_is_high(monkeypatch):
     monkeypatch.setattr(g.subprocess, "run", _fake_curl_factory(GOOD_QUOTES))
+    prompts: list[str] = []
+
+    def fake_judge(_family: str, prompt: str, **_kwargs):
+        prompts.append(prompt)
+        return "yes"
+
+    monkeypatch.setattr(g, "_judge_cli", fake_judge)
     score = g.score_f5_citations(GOOD_OUTPUT, TRUTH)
+    expected = random.Random(TRUTH["trial_seed"]).sample(CITATION_BLOCKS, 3)
     assert score["word_count_within_bounds"] is True
     assert score["primary_citation_count"] == 5
     assert score["liveness_rate"] == 1.0
+    assert score["spot_check_sample_size"] == 3
     assert score["spot_check_rate"] == 1.0
     assert score["primary_score"] == 1.0
+    assert len(prompts) == 3
+    for prompt, item in zip(prompts, expected):
+        assert f'QUOTE: "{item["quote"]}"' in prompt
+
+
+def test_score_f5_spot_check_no_from_judge_reduces_rate(monkeypatch):
+    monkeypatch.setattr(g.subprocess, "run", _fake_curl_factory(GOOD_QUOTES))
+    monkeypatch.setattr(g, "_judge_cli", lambda *_args, **_kwargs: "no")
+    score = g.score_f5_citations(GOOD_OUTPUT, TRUTH)
+    assert score["spot_check_sample_size"] == 3
+    assert score["spot_check_hits"] == 0
+    assert score["spot_check_rate"] == 0.0
+
+
+def test_score_f5_spot_check_sample_uses_min_of_primary_citations(monkeypatch):
+    partial_truth = dict(TRUTH)
+    partial_truth["citation_quota"] = {"min_primary_citations": 2}
+    partial_output = """
+## Executive Summary
+Summary sentence.
+analysis analysis analysis analysis analysis analysis analysis analysis analysis analysis
+
+> "Python 3.14 remains on the published release cadence." - [Python Status](https://python.org/3.14)
+
+## Release Timeline
+Summary sentence.
+timeline timeline timeline timeline timeline timeline timeline timeline timeline timeline
+
+> "The release manager tracks beta and release candidate milestones." - [PEP 1000](https://peps.python.org/pep-1000)
+
+## PEP Highlights
+Summary sentence.
+pep pep pep pep pep pep pep pep pep pep
+
+## Breaking Change Review
+Summary sentence.
+compat compat compat compat compat compat compat compat compat compat
+
+## Ecosystem Support
+Summary sentence.
+ecosystem ecosystem ecosystem ecosystem ecosystem ecosystem ecosystem ecosystem ecosystem ecosystem
+
+## Recommendation
+Summary sentence.
+recommend recommend recommend recommend recommend recommend recommend recommend recommend recommend
+
+## Sources
+- https://python.org/3.14
+- https://peps.python.org/pep-1000
+"""
+    monkeypatch.setattr(
+        g.subprocess,
+        "run",
+        _fake_curl_factory(
+            {
+                "https://python.org/3.14": GOOD_QUOTES["https://python.org/3.14"],
+                "https://peps.python.org/pep-1000": GOOD_QUOTES["https://peps.python.org/pep-1000"],
+            }
+        ),
+    )
+    prompts: list[str] = []
+
+    def fake_judge(_family: str, prompt: str, **_kwargs):
+        prompts.append(prompt)
+        return "yes"
+
+    monkeypatch.setattr(g, "_judge_cli", fake_judge)
+    score = g.score_f5_citations(partial_output, partial_truth)
+    assert score["primary_citation_count"] == 2
+    assert score["spot_check_sample_size"] == 2
+    assert len(prompts) == 2
 
 
 def test_score_f5_blocklist_and_dead_links_score_low(monkeypatch):
@@ -139,6 +229,7 @@ def test_score_f5_blocklist_and_dead_links_score_low(monkeypatch):
         "run",
         _fake_curl_factory({"https://medium.com/example-post": "mismatch"}, dead={"https://medium.com/example-post"}),
     )
+    monkeypatch.setattr(g, "_judge_cli", lambda *_args, **_kwargs: "no")
     score = g.score_f5_citations(BAD_OUTPUT, TRUTH)
     assert score["blocklist_hits"] == ["https://medium.com/example-post"]
     assert score["word_count_within_bounds"] is False
@@ -148,6 +239,7 @@ def test_score_f5_blocklist_and_dead_links_score_low(monkeypatch):
 
 def test_score_f5_empty_output_returns_zero(monkeypatch):
     monkeypatch.setattr(g.subprocess, "run", _fake_curl_factory({}))
+    monkeypatch.setattr(g, "_judge_cli", lambda *_args, **_kwargs: "no")
     score = g.score_f5_citations("", TRUTH)
     assert score["citation_count"] == 0
     assert score["primary_citation_count"] == 0

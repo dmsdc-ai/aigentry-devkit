@@ -24,6 +24,7 @@ import dataclasses
 import html
 import json
 import os
+import random
 import re
 import statistics
 import subprocess
@@ -1170,8 +1171,29 @@ def score_f5_citations(agent_output: str, ground_truth: dict) -> dict:
     sources_urls = _extract_urls(sources_section)
     sources_ok = bool(sources_match) and len(set(sources_urls)) >= int(sources_cfg.get("min_urls_in_section", 0))
 
-    spot_sample = primary_citations[:3]
-    spot_hits = sum(1 for item in spot_sample if _quote_supported_by_url(item["quote"], item["url"]))
+    seed_raw = ground_truth.get("trial_seed", 42)
+    try:
+        seed = int(seed_raw)
+    except (TypeError, ValueError):
+        seed = 42
+    spot_sample = random.Random(seed).sample(primary_citations, min(3, len(primary_citations)))
+    spot_hits = 0
+    for item in spot_sample:
+        body = _run_curl(item["url"], head=False)
+        if body is None or body.returncode != 0 or not body.stdout:
+            continue
+        snippet = _normalise_text(body.stdout)[:4000]
+        if not snippet:
+            continue
+        prompt = (
+            "Does this quoted sentence appear substantively in the source text?\n"
+            f'QUOTE: "{item["quote"]}"\n'
+            f"SOURCE EXCERPT: {snippet}\n"
+            'Answer only "yes" or "no".'
+        )
+        verdict = _judge_cli("claude", prompt)
+        if verdict and verdict.strip().lower().startswith("y"):
+            spot_hits += 1
     spot_rate = _safe_div(spot_hits, len(spot_sample))
 
     quota_cfg = ground_truth.get("citation_quota") or {}
@@ -1495,11 +1517,7 @@ def score_f10_checklist(agent_output: str, ground_truth: dict) -> dict:
     unresolved_hits: list[str] = []
     for item in unresolved_cfg:
         content_hit = bool(_regex_any_hit(next_section, item.get("match_regex_any_of") or []))
-        turn_hit = any(
-            re.search(rf"\bTurn\s*{int(turn)}\b", next_section, re.IGNORECASE)
-            for turn in item.get("must_reference_turn_any_of") or []
-        )
-        if content_hit and turn_hit:
+        if content_hit:
             unresolved_hits.append(item.get("id", ""))
     unresolved_rate = _safe_div(len(unresolved_hits), len(unresolved_cfg))
 
