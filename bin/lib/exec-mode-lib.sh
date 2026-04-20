@@ -306,3 +306,81 @@ tmp.close()
 os.replace(tmp.name, path)
 PY
 }
+
+# ─── T7: Stage 2 probe-replay subprocess ───────────────────────────────────
+# Isolation invariants (spec §5.4, §7.1; build spec §3.1):
+#   (1) No CLAUDE_* env vars propagate into the subprocess (env -i scrub).
+#   (2) Probe text delivered via stdin ONLY — no probes path in argv/env.
+#   (3) Stage-1 jsonl is never touched by this function.
+#
+# Usage: execmode::stage2_probe_subprocess <transcript> <probes> <seed_idx> <out_answers>
+# Override the subprocess command via EXECMODE_STAGE2_CMD (e.g. a mock for tests);
+# default is "claude --print". Returns subprocess exit code.
+execmode::stage2_probe_subprocess() {
+  local transcript=$1 probes=$2 seed=$3 out=$4
+  if [[ -z "$transcript" || -z "$probes" || -z "$seed" || -z "$out" ]]; then
+    echo "stage2_probe_subprocess: usage: <transcript> <probes> <seed> <out_answers>" >&2
+    return 2
+  fi
+  if [[ ! -f "$transcript" ]]; then
+    echo "stage2_probe_subprocess: transcript not found: $transcript" >&2
+    return 2
+  fi
+  if [[ ! -f "$probes" ]]; then
+    echo "stage2_probe_subprocess: probes not found: $probes" >&2
+    return 2
+  fi
+
+  local py="${EXECMODE_PY:-$EXECMODE_REPO_ROOT/.venv-exec-mode/bin/python}"
+  if [[ ! -x "$py" ]]; then
+    py="$(command -v python3 || true)"
+  fi
+  [[ -n "$py" ]] || { echo "stage2_probe_subprocess: no python interpreter available" >&2; return 3; }
+
+  # Build the stdin payload (transcript + seed-shuffled probes) in a tempfile so
+  # the subprocess only ever sees it on fd0 — never as an argv path.
+  local stdin_tmp
+  stdin_tmp="$(mktemp -t execmode-stage2-stdin.XXXXXX)"
+  "$py" - "$transcript" "$probes" "$seed" >"$stdin_tmp" <<'PY'
+import json, pathlib, random, sys
+transcript = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").strip()
+probes_raw = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")
+seed = int(sys.argv[3])
+
+probe_lines = [ln.strip() for ln in probes_raw.splitlines() if ln.strip()]
+rng = random.Random(seed)
+order = list(range(len(probe_lines)))
+rng.shuffle(order)
+
+parts = [
+    "=== PRIOR CONVERSATION HISTORY ===",
+    transcript,
+    "=== PROBES (shuffled, seed=%d) ===" % seed,
+]
+for slot, i in enumerate(order):
+    parts.append(f"Q{slot} (orig_idx={i}): {probe_lines[i]}")
+parts.append("")
+parts.append('Respond as a single JSON: {"probes":[{"probe_idx":<orig_idx>,"answer":"<text>"},...]}')
+sys.stdout.write("\n".join(parts))
+PY
+
+  local out_dir; out_dir="$(dirname "$out")"
+  mkdir -p "$out_dir"
+
+  # env -i scrubs the entire env, then we re-inject the minimum needed for the
+  # subprocess to actually run. CLAUDE_* (session id, trace id, etc.) are NOT
+  # on the allow-list — that's the whole point of invariant (1).
+  local cmd="${EXECMODE_STAGE2_CMD:-claude --print}"
+  env -i \
+    PATH="$PATH" \
+    HOME="$HOME" \
+    LANG="${LANG:-C}" \
+    LC_ALL="${LC_ALL:-C}" \
+    TMPDIR="${TMPDIR:-/tmp}" \
+    USER="${USER:-unknown}" \
+    EXECMODE_STAGE2_SEED="$seed" \
+    bash -c "$cmd" <"$stdin_tmp" >"$out"
+  local ec=$?
+  rm -f "$stdin_tmp"
+  return "$ec"
+}
