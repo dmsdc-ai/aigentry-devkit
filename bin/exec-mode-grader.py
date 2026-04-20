@@ -22,7 +22,9 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import os
 import re
+import statistics
 import subprocess
 import sys
 import time
@@ -279,7 +281,9 @@ def loss_layer_b(expected: str, actual: str, threshold: float = 0.8) -> bool:
 JUDGE_TIMEOUT_S      = 30   # spec §7.1: per-call timeout
 JUDGE_MAX_RETRIES    = 3    # spec §7.1: 3 retries (4 total attempts)
 JUDGE_RATE_LIMIT_S   = 60   # spec §7.1: 60s cool-off when rate-limited
-_JUDGE_FAMILIES      = ("codex", "gemini")
+# claude added for T16 jury (spec §5.2 J1-J3); B/C dual judges use codex+gemini
+# only and pass those literals directly, so this widening is backwards-safe.
+_JUDGE_FAMILIES      = ("codex", "gemini", "claude")
 
 
 def _judge_command(family: str, prompt: str) -> list[str]:
@@ -287,6 +291,8 @@ def _judge_command(family: str, prompt: str) -> list[str]:
         return ["codex", "exec", prompt]
     if family == "gemini":
         return ["gemini", "-p", prompt]
+    if family == "claude":
+        return ["claude", "--print", prompt]
     raise ValueError(f"unknown judge family: {family!r}")
 
 
@@ -305,7 +311,7 @@ def _judge_cli(
     max_retries: int = JUDGE_MAX_RETRIES,
     cooloff: int = JUDGE_RATE_LIMIT_S,
 ) -> str | None:
-    """Invoke `codex|gemini` CLI with retry. Returns stdout (str) or None.
+    """Invoke `codex|gemini|claude` CLI with retry. Returns stdout (str) or None.
 
     Retry policy (spec §7.1):
       - per-call timeout = ``timeout`` seconds (default 30)
@@ -315,6 +321,10 @@ def _judge_cli(
     """
     if family not in _JUDGE_FAMILIES:
         raise ValueError(f"unknown judge family: {family!r}")
+    # Test stub: skip live CLI when EXEC_MODE_JURY_STUB=1 (used by deferred CLI
+    # smoke test where mocked subprocess.run can't reach the child interpreter).
+    if os.environ.get("EXEC_MODE_JURY_STUB") == "1":
+        return json.dumps({c: 4 for c in JURY_RUBRIC})
     cmd = _judge_command(family, prompt)
 
     last_stderr = ""
@@ -516,6 +526,250 @@ def loss_layer_c_dual(question: str, expected: str, actual: str) -> LossVerdict:
     )
 
 
+# ─── T16: 5-judge jury (deferred mode) ──────────────────────────────────────
+JURY_RUBRIC = ("correctness", "completeness", "efficiency", "edge_case", "style")
+JURY_LENGTH_CAP_TOKENS = 2048   # spec §5.2 verbosity-bias guard
+JURY_DISAGREEMENT_THRESH = 0.5  # spec §5.2 Layer 3 — |primary - jury_mean| > 0.5
+
+# Three families = Anthropic + OpenAI + Google (spec §5.2 v3-max.1).
+# Each judge gets a distinct system anchoring; criterion order is swapped per
+# call to wash out per-criterion presentation bias.
+JURY_PANEL: tuple[dict, ...] = (
+    {"id": "J1", "family": "claude", "anchor": "strict",  "system":
+        "You are a strict, evidence-only code reviewer. Penalize unsupported claims."},
+    {"id": "J2", "family": "claude", "anchor": "lenient", "system":
+        "You are a forgiving senior engineer. Reward clarity even if details are off."},
+    {"id": "J3", "family": "claude", "anchor": "anchored", "system":
+        "You are a rubric-anchored reviewer. Score each criterion independently."},
+    {"id": "J4", "family": "codex",  "anchor": "default",  "system":
+        "You are a careful code reviewer."},
+    {"id": "J5", "family": "gemini", "anchor": "default",  "system":
+        "You are a careful code reviewer."},
+)
+
+
+def _approx_token_count(text: str) -> int:
+    """Whitespace-token proxy for length cap. Cheap, deterministic, testable.
+
+    True tokeniser would need tiktoken or claude --count-tokens; this is fine
+    for the binary cap decision (see spec §5.2 verbosity-bias guard).
+    """
+    return len(text.split())
+
+
+def _truncate_to_cap(text: str, cap: int) -> tuple[str, bool]:
+    words = text.split()
+    if len(words) <= cap:
+        return text, False
+    head = " ".join(words[:cap])
+    return head + f"\n\n[truncated to {cap} words]", True
+
+
+def _build_jury_prompt(
+    transcript: str,
+    agent_output: str,
+    system_prompt: str,
+    criteria_order: Sequence[str],
+) -> str:
+    rubric_lines = "\n".join(
+        f"  - {c}: 0..5" for c in criteria_order
+    )
+    schema_pairs = ", ".join(f'"{c}": <int 0-5>' for c in criteria_order)
+    return (
+        f"{system_prompt}\n\n"
+        "TRANSCRIPT:\n"
+        f"<<<\n{transcript}\n>>>\n\n"
+        "AGENT OUTPUT:\n"
+        f"<<<\n{agent_output}\n>>>\n\n"
+        "Score the AGENT OUTPUT on each criterion (integer 0..5):\n"
+        f"{rubric_lines}\n\n"
+        f'Reply with one JSON object only: {{{schema_pairs}}}'
+    )
+
+
+def _parse_jury_response(raw: str | None) -> dict[str, int] | None:
+    if raw is None:
+        return None
+    candidates: list[str] = []
+    text = raw.strip()
+    if text.startswith("{"):
+        candidates.append(text)
+    m = re.search(r"\{[^{}]*\}", text, re.DOTALL)
+    if m and m.group(0) not in candidates:
+        candidates.append(m.group(0))
+    for cand in candidates:
+        try:
+            parsed = json.loads(cand)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        out: dict[str, int] = {}
+        for crit in JURY_RUBRIC:
+            v = parsed.get(crit)
+            if isinstance(v, bool):  # bool is int subclass — exclude
+                continue
+            if isinstance(v, int) and 0 <= v <= 5:
+                out[crit] = v
+            elif isinstance(v, float) and 0.0 <= v <= 5.0:
+                out[crit] = int(round(v))
+            elif isinstance(v, str) and v.isdigit() and 0 <= int(v) <= 5:
+                out[crit] = int(v)
+        if len(out) == len(JURY_RUBRIC):
+            return out
+    return None
+
+
+def _eval_mean_normalised(scores: dict[str, int]) -> float:
+    """Mean of 5 criteria, normalised from 0..5 to 0..1."""
+    return statistics.fmean(scores.values()) / 5.0
+
+
+def jury_score(
+    transcript: str,
+    agent_output: str,
+    *,
+    primary_score: float | None = None,
+    length_cap_tokens: int = JURY_LENGTH_CAP_TOKENS,
+) -> dict:
+    """Run the 5-judge jury (spec §5.2) with order-swap.
+
+    Returns a dict ready to write to ``metrics.jury.json``:
+      - judges: per-judge breakdown (forward + reverse evals, mean_score, parse_ok)
+      - jury_mean: mean across judges that produced ≥1 valid eval (None if all failed)
+      - length_capped: True iff agent_output was truncated
+      - human_review: True iff |primary_score - jury_mean| > 0.5 (spec §5.2 Layer 3)
+    """
+    capped_output, length_capped = _truncate_to_cap(agent_output, length_cap_tokens)
+    forward = list(JURY_RUBRIC)
+    reverse = list(reversed(JURY_RUBRIC))
+
+    judges_out: list[dict] = []
+    judge_means: list[float] = []
+
+    for spec in JURY_PANEL:
+        evaluations = []
+        valid_means: list[float] = []
+        for order_label, order in (("forward", forward), ("reverse", reverse)):
+            prompt = _build_jury_prompt(transcript, capped_output, spec["system"], order)
+            raw = _judge_cli(spec["family"], prompt)
+            scores = _parse_jury_response(raw)
+            if scores is None:
+                evaluations.append({
+                    "order": order_label,
+                    "scores": None,
+                    "total": None,
+                    "parse_ok": False,
+                })
+            else:
+                total = _eval_mean_normalised(scores)
+                evaluations.append({
+                    "order": order_label,
+                    "scores": scores,
+                    "total": round(total, 6),
+                    "parse_ok": True,
+                })
+                valid_means.append(total)
+        mean_score = round(statistics.fmean(valid_means), 6) if valid_means else None
+        judges_out.append({
+            "judge_id": spec["id"],
+            "family": spec["family"],
+            "anchor": spec["anchor"],
+            "evaluations": evaluations,
+            "mean_score": mean_score,
+        })
+        if mean_score is not None:
+            judge_means.append(mean_score)
+
+    jury_mean = round(statistics.fmean(judge_means), 6) if judge_means else None
+    jury_std  = round(statistics.pstdev(judge_means), 6) if len(judge_means) >= 2 else 0.0
+
+    human_review = (
+        primary_score is not None
+        and jury_mean is not None
+        and abs(primary_score - jury_mean) > JURY_DISAGREEMENT_THRESH
+    )
+
+    return {
+        "schema_version": "1",
+        "judges": judges_out,
+        "jury_mean": jury_mean,
+        "jury_std": jury_std,
+        "length_capped": length_capped,
+        "primary_score": primary_score,
+        "human_review": bool(human_review),
+    }
+
+
+# ─── T16: deferred batch walker ─────────────────────────────────────────────
+
+
+def _atomic_write_json(path: Path, body: dict) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(body, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _iter_trial_dirs(state_root: Path):
+    """Yield each trial dir under state_root that contains a metrics.json."""
+    if not state_root.exists():
+        return
+    for metrics_path in sorted(state_root.rglob("metrics.json")):
+        yield metrics_path.parent
+
+
+def run_deferred(
+    state_root: Path | str,
+    *,
+    fixture_filter: str | None = None,
+    mode_filter: str | None = None,
+) -> int:
+    """Walk state tree; for each ok trial without metrics.jury.json, run jury.
+
+    Returns the count of jury files written.
+    """
+    root = Path(state_root)
+    written = 0
+    for trial_dir in _iter_trial_dirs(root):
+        jury_path = trial_dir / "metrics.jury.json"
+        if jury_path.exists():
+            continue
+        try:
+            metrics = json.loads((trial_dir / "metrics.json").read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if metrics.get("status") != "ok":
+            continue
+        if fixture_filter and metrics.get("fixture_id") != fixture_filter:
+            continue
+        if mode_filter and metrics.get("mode") != mode_filter:
+            continue
+
+        paths = metrics.get("paths") or {}
+        out_rel = paths.get("stage1_output")
+        jsonl_rel = paths.get("stage1_jsonl")
+        if not out_rel:
+            continue
+        out_path = trial_dir / out_rel
+        if not out_path.exists():
+            continue
+        agent_output = out_path.read_text(encoding="utf-8")
+        # Transcript: prefer Stage 2 transcript file, fall back to Stage 1 jsonl.
+        transcript_path = trial_dir / (paths.get("stage2_transcript") or jsonl_rel or "")
+        transcript = transcript_path.read_text(encoding="utf-8") if transcript_path.exists() else ""
+
+        primary = (metrics.get("quality") or {}).get("primary")
+        result = jury_score(transcript, agent_output, primary_score=primary)
+        result["trial_id"] = metrics.get("trial_id")
+        result["fixture_id"] = metrics.get("fixture_id")
+        result["mode"] = metrics.get("mode")
+        result["seed_idx"] = metrics.get("seed_idx")
+        result["run_idx"] = metrics.get("run_idx")
+        _atomic_write_json(jury_path, result)
+        written += 1
+    return written
+
+
 # ─── T9: Fa primary grader + dispatch ───────────────────────────────────────
 def _regex_any_hit(text: str, patterns: Sequence[str], case_insensitive: bool = True) -> list[str]:
     """Return list of patterns that match anywhere in `text`."""
@@ -654,6 +908,16 @@ def _cmd_score_fixture(args) -> int:
     return 0
 
 
+def _cmd_deferred(args) -> int:
+    n = run_deferred(
+        args.state_root,
+        fixture_filter=args.fixture,
+        mode_filter=args.mode,
+    )
+    print(json.dumps({"jury_files_written": n}))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="exec-mode-grader", description="Exec-mode experiment grader (Part 1).")
     sub = p.add_subparsers(dest="cmd")
@@ -695,6 +959,12 @@ def build_parser() -> argparse.ArgumentParser:
     sf.add_argument("--output", required=True, help="Path to agent output file.")
     sf.add_argument("--ground-truth", required=True, help="Path to fixture ground_truth.json.")
     sf.set_defaults(func=_cmd_score_fixture)
+
+    df = sub.add_parser("deferred", help="Walk state tree; write metrics.jury.json per ok trial.")
+    df.add_argument("--state-root", required=True, help="Path to state/exec-mode-experiment root.")
+    df.add_argument("--fixture", default=None, help="Optional fixture_id filter.")
+    df.add_argument("--mode", default=None, choices=("D", "Pfresh", "Pacc", "S"), help="Optional mode filter.")
+    df.set_defaults(func=_cmd_deferred)
 
     return p
 
