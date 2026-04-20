@@ -1,6 +1,12 @@
 node_modules/
 mcp-servers/*/node_modules/
-state/
+# root state/ is auto-generated trial output; only the JSON Schema is tracked
+/state/*
+!/state/schema/
+!/state/schema/**
+# nested state/ dirs in workspace templates remain fully ignored (pre-existing)
+templates/**/state/
+.venv-exec-mode/
 *.log
 .env
 .env.local

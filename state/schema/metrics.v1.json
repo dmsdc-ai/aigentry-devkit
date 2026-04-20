@@ -1,0 +1,297 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aigentry.dev/schemas/exec-mode/metrics.v1.json",
+  "title": "Exec-Mode Experiment Trial Metrics (v1)",
+  "description": "One metrics.json per trial. Written atomically (tmp + rename) by bin/exec-mode-experiment.sh. Deferred jury/layer-B-pollution/layer-C-loss output goes into a sibling metrics.jury.json — NOT this file. See spec §5, analysis-plan §2, build-spec §3.1/§7.1.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "trial_id",
+    "fixture_id",
+    "mode",
+    "seed_idx",
+    "run_idx",
+    "status",
+    "timestamps",
+    "cli_versions",
+    "cost",
+    "compact",
+    "quality",
+    "pollution",
+    "loss",
+    "paths"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "1" },
+    "trial_id": {
+      "type": "string",
+      "description": "Stable unique id: {run_idx}/{mode}/{fixture_id}/seed{NN}[_pos{P}_sess{S}]. Must equal the directory stem this file lives in.",
+      "pattern": "^[0-9]+/(D|Pfresh|Pacc|S)/F[0-9a-zA-Z]+/seed[0-9]{2,3}(_pos[0-9]+_sess[0-9]+)?$"
+    },
+    "fixture_id": {
+      "type": "string",
+      "pattern": "^F[0-9a-zA-Z]+$"
+    },
+    "mode": { "enum": ["D", "Pfresh", "Pacc", "S"] },
+    "seed_idx": { "type": "integer", "minimum": 0 },
+    "run_idx": { "type": "integer", "enum": [1, 2] },
+    "session_idx": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "Pacc only (30 independent sessions). null for D/Pfresh/S."
+    },
+    "position_in_chain": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "maximum": 10,
+      "description": "Pacc only (1..10). null for D/Pfresh/S."
+    },
+    "status": {
+      "enum": ["ok", "failed", "timeout", "rate_limit_exhausted", "compact_blocked", "malformed_fixture"]
+    },
+    "dry_run": {
+      "type": "boolean",
+      "default": false,
+      "description": "True when emitted by --dry-run harness path (synthetic numbers, no LLM called). Excluded from primary analysis."
+    },
+    "timestamps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stage1_start", "stage1_end"],
+      "properties": {
+        "stage1_start": { "type": "string", "format": "date-time" },
+        "stage1_end": { "type": "string", "format": "date-time" },
+        "stage2_start": { "type": ["string", "null"], "format": "date-time" },
+        "stage2_end": { "type": ["string", "null"], "format": "date-time" }
+      }
+    },
+    "cli_versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claude", "codex", "gemini", "telepty"],
+      "properties": {
+        "claude": { "type": "string" },
+        "codex": { "type": "string" },
+        "gemini": { "type": "string" },
+        "telepty": { "type": "string" }
+      }
+    },
+    "cost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "marginal_usd",
+        "amort_usd",
+        "warmup_cost_usd",
+        "subagent_cost_usd",
+        "usage_buckets"
+      ],
+      "properties": {
+        "marginal_usd": { "type": "number", "minimum": 0 },
+        "amort_usd": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["n_1", "n_10", "n_30"],
+          "properties": {
+            "n_1":  { "type": "number", "minimum": 0 },
+            "n_10": { "type": "number", "minimum": 0 },
+            "n_30": { "type": "number", "minimum": 0 }
+          }
+        },
+        "warmup_cost_usd": { "type": "number", "minimum": 0 },
+        "subagent_cost_usd": { "type": "number", "minimum": 0 },
+        "usage_buckets": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "input_tokens",
+            "cache_write_5m_tokens",
+            "cache_write_1h_tokens",
+            "cache_read_tokens",
+            "output_tokens"
+          ],
+          "properties": {
+            "input_tokens":          { "type": "integer", "minimum": 0 },
+            "cache_write_5m_tokens": { "type": "integer", "minimum": 0 },
+            "cache_write_1h_tokens": { "type": "integer", "minimum": 0 },
+            "cache_read_tokens":     { "type": "integer", "minimum": 0 },
+            "output_tokens":         { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "compact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["detected"],
+      "properties": {
+        "detected": { "type": "boolean" },
+        "reason": { "type": ["string", "null"] },
+        "cache_read_drop_ratio": { "type": ["number", "null"] },
+        "next_input_spike_ratio": { "type": ["number", "null"] }
+      }
+    },
+    "quality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["primary", "length_capped"],
+      "properties": {
+        "primary": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Fixture-specific grader output normalized to 0..1. Null only when status != ok."
+        },
+        "primary_components": {
+          "type": ["object", "null"],
+          "description": "Free-form per-fixture grader sub-scores (e.g. Fa: binary_leak, task_correct, citation). Kept for debugging."
+        },
+        "length_capped": { "type": "boolean" },
+        "human_review_queued": {
+          "type": "boolean",
+          "default": false,
+          "description": "Set true when |primary - jury_mean| > 0.5 is expected; final flag lands in metrics.jury.json after deferred jury run."
+        }
+      }
+    },
+    "pollution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["self_rate", "self_leaks_layer_a"],
+      "properties": {
+        "self_rate": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Layer A union with confirmed Layer B. During harness emit, this MAY equal Layer A-only rate; deferred grader updates in metrics.jury.json."
+        },
+        "self_leaks_layer_a": {
+          "type": "array",
+          "minItems": 10,
+          "maxItems": 10,
+          "items": { "type": "boolean" },
+          "description": "Per-fact Layer A regex hit. Order matches planted_facts.json."
+        },
+        "self_layer_b_pending": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 0, "maximum": 9 },
+          "description": "Fact indices with ambiguous Layer A → queued for deferred dual-family (codex+gemini) check."
+        },
+        "chain_rate": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Pacc only: leaks on prior fixtures' facts / total_prior_facts. null elsewhere."
+        },
+        "chain_leaks_layer_a": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "object",
+            "required": ["fixture_id", "fact_idx", "hit"],
+            "properties": {
+              "fixture_id": { "type": "string" },
+              "fact_idx": { "type": "integer" },
+              "hit": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    "loss": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rate", "probe_order_seed", "probes"],
+      "properties": {
+        "rate": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "1 - (Σ recalls / 10). Null if Stage 2 not run (status != ok)."
+        },
+        "probe_order_seed": { "type": "integer" },
+        "probes": {
+          "type": "array",
+          "minItems": 10,
+          "maxItems": 10,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["probe_idx", "layer_a_hit", "layer_b_hit", "layer_c_pending", "recall"],
+            "properties": {
+              "probe_idx": { "type": "integer", "minimum": 0, "maximum": 9 },
+              "layer_a_hit": { "type": "boolean" },
+              "layer_b_hit": { "type": "boolean" },
+              "layer_b_ratio": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+              "layer_c_pending": { "type": "boolean" },
+              "recall": {
+                "type": ["boolean", "null"],
+                "description": "True if A∨B hit. Null when layer_c_pending=true (awaits deferred grader)."
+              }
+            }
+          }
+        }
+      }
+    },
+    "paths": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stage1_output", "stage1_jsonl"],
+      "properties": {
+        "stage1_output":     { "type": "string", "description": "Relative to trial dir." },
+        "stage1_jsonl":      { "type": "string" },
+        "stage2_transcript": { "type": ["string", "null"] },
+        "stage2_answers":    { "type": ["string", "null"] }
+      }
+    },
+    "incidents": {
+      "type": "array",
+      "description": "Retry exhaustions, rate limits, unexpected CLI exit codes. Informational; does not affect status.",
+      "items": {
+        "type": "object",
+        "required": ["kind", "message"],
+        "properties": {
+          "kind": { "type": "string" },
+          "message": { "type": "string" },
+          "at": { "type": "string", "format": "date-time" }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "description": "Pacc mode must populate session_idx + position_in_chain; other modes must leave them null.",
+      "if": { "properties": { "mode": { "const": "Pacc" } } },
+      "then": {
+        "properties": {
+          "session_idx":       { "type": "integer" },
+          "position_in_chain": { "type": "integer" }
+        },
+        "required": ["session_idx", "position_in_chain"]
+      },
+      "else": {
+        "properties": {
+          "session_idx":       { "type": "null" },
+          "position_in_chain": { "type": "null" },
+          "pollution": {
+            "properties": {
+              "chain_rate":          { "type": "null" },
+              "chain_leaks_layer_a": { "type": "null" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "description": "When status=ok, quality/pollution/loss primary values must be numeric (non-null).",
+      "if": { "properties": { "status": { "const": "ok" } } },
+      "then": {
+        "properties": {
+          "quality":   { "properties": { "primary":   { "type": "number" } } },
+          "pollution": { "properties": { "self_rate": { "type": "number" } } },
+          "loss":      { "properties": { "rate":      { "type": "number" } } }
+        }
+      }
+    }
+  ]
+}

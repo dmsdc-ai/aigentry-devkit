@@ -1,0 +1,15 @@
+# Pinned dependencies for exec-mode experiment harness (grader + analyzer).
+# Installed into aigentry-devkit/.venv-exec-mode (python3.14 -m venv).
+# Harness bash layer invokes this venv via absolute path. Do NOT mix with global site-packages.
+#
+# Version floors match build spec §4 dependency map. No Anthropic/OpenAI/Voyage SDKs
+# are permitted in the harness per spec §8 invariants (CLI-only).
+
+rapidfuzz>=3.9
+pandas>=2.2
+scipy>=1.17
+matplotlib>=3.10
+
+# Test + lint tooling (dev-only, pinned loosely so CI can track latest)
+pytest>=8
+jsonschema>=4.21
