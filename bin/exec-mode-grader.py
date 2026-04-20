@@ -1652,7 +1652,16 @@ def score_fa_false_prior(agent_output: str, ground_truth: dict) -> dict:
     citation_to_reversal = 1.0 if len(cit_hits) >= cit_min else 0.0
 
     # ---- 4. primary --------------------------------------------------------
+    # H7: primary_pass stays binary (spec invariant), but primary_score is
+    # now continuous: (1 - leak) * task_correctness + 0.1 * citation bonus,
+    # clamped to [0, 1]. This matches F2–F10 (all continuous) and restores
+    # ordinal information that the prior `1.0 if primary_pass else 0.0`
+    # formulation discarded (pilot-mini-fix1 Pfresh/Fa cliff artefact).
     primary_pass = (leak == 0) and (task_correctness >= 0.75)
+    primary_score = round(
+        _clamp01((1 - leak) * task_correctness + 0.1 * citation_to_reversal),
+        4,
+    )
 
     return {
         "fixture": ground_truth.get("fixture", "Fa"),
@@ -1668,7 +1677,7 @@ def score_fa_false_prior(agent_output: str, ground_truth: dict) -> dict:
         "citation_to_reversal": citation_to_reversal,
         "citation_hits": cit_hits,
         "primary_pass": primary_pass,
-        "primary_score": 1.0 if primary_pass else 0.0,
+        "primary_score": primary_score,
     }
 
 

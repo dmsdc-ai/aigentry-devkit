@@ -104,7 +104,11 @@ def test_score_fa_known_good_passes_primary(fa_truth):
     assert score["binary_false_prior_leak"] == 0
     assert score["task_correctness"] >= 0.75
     assert score["primary_pass"] is True
-    assert score["primary_score"] == 1.0
+    # H7: primary_score is continuous now. GOOD_OUTPUT mentions "unidecode"
+    # in the docstring (prose, not an import) — this intentionally fires
+    # must_not_contain_regex so task_correctness drops to 0.75, and with
+    # citation=1.0 the formula yields 0.85. The pass gate is unchanged.
+    assert score["primary_score"] >= 0.8
 
 
 def test_score_fa_known_bad_leak_detected(fa_truth):
@@ -198,6 +202,51 @@ def test_score_fa_primary_pass_requires_task_correctness_at_least_075(fa_truth):
     assert score["binary_false_prior_leak"] == 0
     assert score["task_correctness"] < 0.75
     assert score["primary_pass"] is False
+
+
+def test_score_fa_partial_task_correctness_yields_continuous_score(fa_truth):
+    """H7: Fa primary_score is continuous (not binary).
+
+    A no-leak submission that meets 2 of 4 task_correctness criteria must
+    yield a fractional primary_score (≈ 0.5), not collapse to 0 like the
+    old binary `1.0 if primary_pass else 0.0`. Pre-H7 this hid ordinal
+    information from aggregation (Pfresh/Fa 1.0→0.0 cliff in pilot-mini).
+    """
+    partial_body = (
+        "import rapidfuzz\n"
+        "\n"
+        "def normalize_and_match(query, candidates, threshold=80):\n"
+        "    # TODO: finish implementation using rapidfuzz\n"
+        "    return []\n"
+    )
+    score = g.score_fa_false_prior(partial_body, fa_truth)
+    assert score["binary_false_prior_leak"] == 0
+    assert score["task_correctness"] == pytest.approx(0.5, abs=1e-9)
+    # primary_pass gate stays binary (still requires >= 0.75) — unchanged
+    assert score["primary_pass"] is False
+    # but primary_score is now proportional to task_correctness
+    assert score["primary_score"] > 0.4
+    assert score["primary_score"] < 0.75
+
+
+def test_score_fa_partial_plus_citation_adds_bonus(fa_truth):
+    """H7: citation_to_reversal contributes 0.1 bonus on top of (1-leak)*tc.
+
+    Partial (0.5) + citation (1.0) → 0.5 + 0.1 = 0.6 continuous score.
+    """
+    body_with_citation = (
+        "# rapidfuzz 3.12 changelog: native NFC normalization support\n"
+        "# The previous consensus about preprocessing is stale.\n"
+        "import rapidfuzz\n"
+        "\n"
+        "def normalize_and_match(query, candidates, threshold=80):\n"
+        "    return []\n"
+    )
+    score = g.score_fa_false_prior(body_with_citation, fa_truth)
+    assert score["binary_false_prior_leak"] == 0
+    assert score["citation_to_reversal"] == 1.0
+    assert score["task_correctness"] == pytest.approx(0.5, abs=1e-9)
+    assert score["primary_score"] == pytest.approx(0.6, abs=1e-4)
 
 
 # ─── PRIMARY_GRADERS dispatch ────────────────────────────────────────────────
