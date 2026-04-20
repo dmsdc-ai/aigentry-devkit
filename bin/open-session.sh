@@ -25,7 +25,23 @@
 set -euo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve symlinks to find the real script directory (POSIX-portable).
+# Required because ~/projects/aigentry-orchestrator/bin/open-session.sh is a symlink
+# pointing at this script, and `cd + pwd` alone does not follow symlinks — which
+# breaks `source $SCRIPT_DIR/lib/platform.sh`.
+_resolve_src() {
+  local src="$1"
+  while [ -L "$src" ]; do
+    local target
+    target="$(readlink "$src")"
+    case "$target" in
+      /*) src="$target" ;;
+      *)  src="$(cd "$(dirname "$src")" && pwd -P)/$target" ;;
+    esac
+  done
+  printf '%s\n' "$src"
+}
+SCRIPT_DIR="$(cd "$(dirname "$(_resolve_src "${BASH_SOURCE[0]}")")" && pwd -P)"
 # shellcheck source=./lib/platform.sh
 source "$SCRIPT_DIR/lib/platform.sh"
 
