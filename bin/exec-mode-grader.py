@@ -140,6 +140,30 @@ def _buckets_from_usage(usage: dict) -> CostBuckets:
     )
 
 
+def _accumulate_jsonl(path: Path, seen_message_ids: set[str]) -> CostBuckets:
+    """Sum usage across a single jsonl, deduping by ``message.id``.
+
+    Real Claude CLI stream-json writes one jsonl row per assistant content-block
+    (text + each tool_use become separate rows), each carrying a COPY of the
+    same ``message.id`` and the same aggregate ``usage`` payload. Summing every
+    row double/triple-counts cost (Fa smoke 2026-04-20 observed this).
+    Records without an ``id`` (legacy or hand-crafted fixtures) are counted
+    every time.
+    """
+    acc = CostBuckets()
+    for rec in _iter_jsonl(path):
+        u = _extract_usage(rec)
+        if u is None:
+            continue
+        mid = (rec.get("message") or {}).get("id")
+        if mid:
+            if mid in seen_message_ids:
+                continue
+            seen_message_ids.add(mid)
+        acc = acc + _buckets_from_usage(u)
+    return acc
+
+
 def parse_cost(jsonl_path: Path | str, include_subagents: bool = True) -> CostBuckets:
     """Parse a Claude session JSONL into cost buckets.
 
@@ -149,21 +173,16 @@ def parse_cost(jsonl_path: Path | str, include_subagents: bool = True) -> CostBu
     Medium 3 fix).
     """
     path = Path(jsonl_path)
+    seen: set[str] = set()
     total = CostBuckets()
     if path.exists():
-        for rec in _iter_jsonl(path):
-            u = _extract_usage(rec)
-            if u is not None:
-                total = total + _buckets_from_usage(u)
+        total = total + _accumulate_jsonl(path, seen)
 
     if include_subagents:
         sub_root = path.parent / "subagents"
         if sub_root.is_dir():
             for sub_path in sorted(sub_root.rglob("agent-*.jsonl")):
-                for rec in _iter_jsonl(sub_path):
-                    u = _extract_usage(rec)
-                    if u is not None:
-                        total = total + _buckets_from_usage(u)
+                total = total + _accumulate_jsonl(sub_path, seen)
     return total
 
 

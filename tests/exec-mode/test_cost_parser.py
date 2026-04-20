@@ -94,6 +94,54 @@ def test_parse_cost_fallback_cache_creation_field(tmp_path: Path):
     assert buckets.cache_write_1h == 0
 
 
+def test_parse_cost_dedups_duplicate_message_ids(fixture_dir):
+    """Regression: real Claude CLI stream-json writes one assistant record per
+    content-block (text + tool_use split). Every split record carries a copy of
+    the SAME ``message.id`` and the SAME ``usage`` payload — summing them all
+    double/triple-counts cost.
+
+    Fa smoke (2026-04-20) observed this: harness parse_cost disagreed with
+    ``result.total_cost_usd`` because duplicate assistant rows sharing a single
+    ``msg_*`` id were summed. Fix: dedupe by ``message.id``.
+
+    Fixture ``sample_session_streaming.jsonl`` contains:
+        msg_A (duplicated 2x): input=10, output=100, cache_read=16000, cw5=500
+        msg_B (duplicated 3x): input=5,  output=50,  cache_read=17000, cw5=200
+    """
+    buckets = g.parse_cost(fixture_dir / "sample_session_streaming.jsonl")
+    assert buckets.input_tokens == 15   # 10 + 5, not 35
+    assert buckets.output_tokens == 150  # 100 + 50, not 350
+    assert buckets.cache_read == 33000   # 16000 + 17000, not 83000
+    assert buckets.cache_write_5m == 700  # 500 + 200, not 1600
+
+
+def test_parse_cost_dedup_does_not_drop_legacy_records_without_id(tmp_path: Path):
+    """Older / test fixtures omit ``message.id``. Those records must still be
+    counted — dedup only kicks in when the id is actually present."""
+    f = tmp_path / "no_ids.jsonl"
+    f.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {"role": "assistant", "usage": {"input_tokens": 10, "output_tokens": 20}},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {"role": "assistant", "usage": {"input_tokens": 3, "output_tokens": 4}},
+                    }
+                ),
+            ]
+        )
+    )
+    buckets = g.parse_cost(f)
+    assert buckets.input_tokens == 13
+    assert buckets.output_tokens == 24
+
+
 def test_parse_cost_recurses_into_subagent_jsonls(tmp_path: Path):
     """Nested subagents/agent-*.jsonl contribute when include_subagents=True."""
     parent = tmp_path / "project"
