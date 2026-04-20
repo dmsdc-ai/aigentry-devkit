@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import html
 import json
 import os
 import re
@@ -30,6 +31,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Sequence
+from urllib.parse import urlparse
 
 try:
     from rapidfuzz import fuzz
@@ -789,6 +791,761 @@ def run_deferred(
     return written
 
 
+# ─── T17: fixture primary graders F2-F10 ────────────────────────────────────
+def _safe_div(num: float, den: float) -> float:
+    return num / den if den else 0.0
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+def _extract_urls(text: str) -> list[str]:
+    return re.findall(r"https?://[^\s)>\]]+", text or "")
+
+
+def _parse_markdown_table_rows(text: str) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        cols = [c.strip() for c in stripped.strip("|").split("|")]
+        if not cols or all(not c for c in cols):
+            continue
+        if re.fullmatch(r"[:\-\s]+", "".join(cols)):
+            continue
+        rows.append(cols)
+    return rows
+
+
+def _extract_labeled_section(text: str, label: str, next_labels: Sequence[str]) -> str:
+    body = text or ""
+    start_pat = re.compile(rf"(?is)\(\s*{re.escape(label)}\s*\)")
+    start = start_pat.search(body)
+    if not start:
+        return ""
+    end_pos = len(body)
+    for nxt in next_labels:
+        nxt_pat = re.compile(rf"(?is)\(\s*{re.escape(nxt)}\s*\)")
+        nxt_match = nxt_pat.search(body, start.end())
+        if nxt_match:
+            end_pos = min(end_pos, nxt_match.start())
+    return body[start.end():end_pos].strip()
+
+
+def _strip_code_fence(text: str) -> str:
+    stripped = (text or "").strip()
+    stripped = re.sub(r"^```[a-zA-Z0-9_-]*\n", "", stripped)
+    stripped = re.sub(r"\n```$", "", stripped)
+    return stripped.strip()
+
+
+def _url_matches_allow_entry(url: str, allow_entry: str) -> bool:
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    host = parsed.netloc.lower()
+    if not host:
+        return False
+
+    allow_raw = allow_entry if "://" in allow_entry else f"https://{allow_entry}"
+    allow = urlparse(allow_raw)
+    allow_host = allow.netloc.lower()
+    allow_path = (allow.path or "").rstrip("/")
+
+    if allow_path:
+        return host == allow_host and parsed.path.startswith(allow_path)
+    return host == allow_host or host.endswith(f".{allow_host}")
+
+
+def _run_curl(url: str, *, head: bool) -> subprocess.CompletedProcess[str] | None:
+    cmd = ["curl", "-sS", "-L", "--max-time", "30"]
+    if head:
+        cmd.insert(1, "-I")
+    cmd.append(url)
+    try:
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+
+
+def _url_is_live(url: str) -> bool:
+    proc = _run_curl(url, head=True)
+    if proc is None or proc.returncode != 0:
+        return False
+    statuses = re.findall(r"HTTP/\d(?:\.\d)?\s+(\d{3})", proc.stdout or "")
+    if not statuses:
+        return False
+    return statuses[-1].startswith(("2", "3"))
+
+
+def _normalise_text(text: str) -> str:
+    no_tags = re.sub(r"<[^>]+>", " ", text or "")
+    return re.sub(r"\s+", " ", html.unescape(no_tags)).strip().lower()
+
+
+def _quote_supported_by_url(quote: str, url: str) -> bool:
+    proc = _run_curl(url, head=False)
+    if proc is None or proc.returncode != 0 or not proc.stdout:
+        return False
+    quote_norm = _normalise_text(quote)
+    body_norm = _normalise_text(proc.stdout)
+    if not quote_norm or not body_norm:
+        return False
+    if quote_norm in body_norm:
+        return True
+    partial = fuzz.partial_ratio(quote_norm, body_norm) / 100.0
+    token = fuzz.partial_token_set_ratio(quote_norm, body_norm) / 100.0
+    return max(partial, token) >= 0.88
+
+
+def score_f2_invariants(agent_output: str, ground_truth: dict) -> dict:
+    """MD slim proposal — preserve hidden invariants checklist."""
+    text = agent_output or ""
+    inv_cfg = ground_truth.get("invariants_checklist") or {}
+    invariants = list(inv_cfg.get("invariants") or [])
+    case_insensitive = bool(inv_cfg.get("case_insensitive", True))
+
+    matched: list[dict] = []
+    missing: list[dict] = []
+    for inv in invariants:
+        hits = _regex_any_hit(text, inv.get("regex_any_of") or [], case_insensitive=case_insensitive)
+        record = {"id": inv.get("id"), "label": inv.get("label"), "hits": hits}
+        if hits:
+            matched.append(record)
+        else:
+            missing.append(record)
+
+    invariant_rate = _safe_div(len(matched), len(invariants))
+
+    struct_cfg = ground_truth.get("output_structure_checks") or {}
+    must_all = [str(s).lower() for s in struct_cfg.get("must_contain_all") or []]
+    structure_all_ok = all(token in text.lower() for token in must_all)
+    mapping_table_ok = bool(_regex_any_hit(text, struct_cfg.get("must_contain_any_of") or []))
+
+    ack_cfg = ((ground_truth.get("secondary_signals") or {}).get("past_failure_acknowledgment") or {})
+    ack_hits = _regex_any_hit(text, ack_cfg.get("regex_any_of") or [])
+    ack_min = int(ack_cfg.get("min_hits", 1))
+    audit_ack = len(ack_hits) >= ack_min
+
+    pass_threshold = float(((ground_truth.get("primary_metric") or {}).get("pass_threshold")) or 1.0)
+    primary_score = round(_clamp01(invariant_rate), 4)
+
+    return {
+        "fixture": ground_truth.get("fixture", "F2"),
+        "matched_invariants": matched,
+        "missing_invariants": missing,
+        "invariant_rate": primary_score,
+        "output_structure": {
+            "must_contain_all": structure_all_ok,
+            "mapping_table_present": mapping_table_ok,
+        },
+        "past_failure_acknowledgment": audit_ack,
+        "ack_hits": ack_hits,
+        "primary_pass": primary_score >= pass_threshold and structure_all_ok and mapping_table_ok,
+        "primary_score": primary_score,
+    }
+
+
+def score_f3_severity_f1(agent_output: str, ground_truth: dict) -> dict:
+    """Blind review — severity-weighted F1 on issue IDs with distractor penalty."""
+    text = agent_output or ""
+    rows = [
+        {
+            "id": cols[0],
+            "severity": cols[1] if len(cols) > 1 else "",
+            "fileline": cols[2] if len(cols) > 2 else "",
+            "issue": cols[3] if len(cols) > 3 else "",
+            "recommendation": "|".join(cols[4:]) if len(cols) > 4 else "",
+        }
+        for cols in _parse_markdown_table_rows(text)
+        if cols and cols[0].lower() != "id"
+    ]
+
+    weights = ground_truth.get("severity_weights") or {}
+    issues = list(ground_truth.get("ground_truth_issues") or [])
+    matched_issue_ids: list[str] = []
+    missed_issue_ids: list[str] = []
+    tp_weight = 0.0
+    fn_weight = 0.0
+
+    for issue in issues:
+        candidate_lines = issue.get("must_cite_line_any_of") or [issue.get("must_cite_line")]
+        candidate_lines = [int(x) for x in candidate_lines if x is not None]
+        matched = False
+        for row in rows:
+            row_text = f"{row['issue']} {row['recommendation']}"
+            line_ok = any(
+                re.search(rf"(?<!\d){line}(?!\d)", row["fileline"] or "")
+                for line in candidate_lines
+            )
+            if line_ok and _regex_any_hit(row_text, issue.get("match_regex_any_of") or []):
+                matched = True
+                break
+        weight = float(weights.get(issue.get("severity"), 1.0))
+        if matched:
+            matched_issue_ids.append(issue.get("id", ""))
+            tp_weight += weight
+        else:
+            missed_issue_ids.append(issue.get("id", ""))
+            fn_weight += weight
+
+    medium_weight = float(weights.get("Medium", 1.0))
+    flagged_distractors: list[str] = []
+    fp_weight = 0.0
+    for distractor in ground_truth.get("distractors_must_not_flag") or []:
+        line = distractor.get("line")
+        for row in rows:
+            row_text = f"{row['issue']} {row['recommendation']}"
+            line_ok = line is None or re.search(rf"(?<!\d){int(line)}(?!\d)", row["fileline"] or "")
+            if line_ok and _regex_any_hit(row_text, distractor.get("fp_regex_any_of") or []):
+                flagged_distractors.append(distractor.get("id", ""))
+                fp_weight += medium_weight
+                break
+
+    precision = _safe_div(tp_weight, tp_weight + fp_weight)
+    recall = _safe_div(tp_weight, tp_weight + fn_weight)
+    f1 = _safe_div(2 * precision * recall, precision + recall)
+
+    sec = ground_truth.get("secondary_signals") or {}
+    table_ok = bool(_regex_any_hit(text, ((sec.get("table_format") or {}).get("regex_any_of") or [])))
+    verdict_ok = bool(_regex_any_hit(text, ((sec.get("verdict_paragraph") or {}).get("regex_any_of") or [])))
+    pass_threshold = float(((ground_truth.get("primary_metric") or {}).get("pass_threshold")) or 1.0)
+    primary_score = round(_clamp01(f1), 4)
+
+    return {
+        "fixture": ground_truth.get("fixture", "F3"),
+        "matched_issue_ids": matched_issue_ids,
+        "missed_issue_ids": missed_issue_ids,
+        "flagged_distractors": flagged_distractors,
+        "tp_weight": round(tp_weight, 4),
+        "fp_weight": round(fp_weight, 4),
+        "fn_weight": round(fn_weight, 4),
+        "precision": round(precision, 4),
+        "recall": round(recall, 4),
+        "table_format_ok": table_ok,
+        "verdict_present": verdict_ok,
+        "primary_pass": primary_score >= pass_threshold and table_ok and verdict_ok,
+        "primary_score": primary_score,
+    }
+
+
+def score_f4_oracle_graph(agent_output: str, ground_truth: dict) -> dict:
+    """Structure map — entity+edge matching vs oracle, hallucinated node penalty, file anchor required."""
+    text = agent_output or ""
+    oracle = ground_truth.get("oracle_graph") or {}
+    nodes = list(oracle.get("nodes") or [])
+    alias_map = oracle.get("node_aliases") or {}
+    alt_names: dict[str, list[str]] = {node: [node] for node in nodes}
+    for alias, target in alias_map.items():
+        if target in alt_names:
+            alt_names[target].append(alias)
+
+    matched_nodes: list[str] = []
+    for node, names in alt_names.items():
+        if any(name in text for name in names):
+            matched_nodes.append(node)
+
+    file_like_refs = sorted(set(re.findall(r"[\w./-]+\.(?:rs|py|toml|udl|md)", text)))
+    hallucinated_nodes = [ref for ref in file_like_refs if ref not in nodes]
+    node_match_rate = _safe_div(len(matched_nodes), len(nodes))
+
+    kind_keywords = {
+        "re-exports": [r"re[-\s]?exports?", r"\bexports?\b", r"-->", r"->"],
+        "calls": [r"\bcalls?\b", r"\binvokes?\b", r"-->", r"->"],
+        "path_dep": [r"path[_-]?dep", r"\bdepends?\b", r"\bdependency\b", r"-->", r"->"],
+        "generates": [r"\bgenerates?\b", r"\bgenerated\b", r"-->", r"->"],
+        "ffi_call": [r"\bffi\b", r"\bbindings?\b", r"\bcalls?\b", r"-->", r"->"],
+        "imports": [r"\bimports?\b", r"-->", r"->"],
+    }
+    matched_edges: list[dict] = []
+    for edge in oracle.get("edges") or []:
+        src_alts = alt_names.get(edge.get("src"), [edge.get("src", "")])
+        dst_alts = alt_names.get(edge.get("dst"), [edge.get("dst", "")])
+        keywords = kind_keywords.get(edge.get("kind"), [r"-->", r"->"])
+        edge_hit = False
+        for src in src_alts:
+            for dst in dst_alts:
+                if not src or not dst:
+                    continue
+                src_pat = re.escape(src)
+                dst_pat = re.escape(dst)
+                kind_pat = "|".join(keywords)
+                if re.search(
+                    rf"{src_pat}[\s\S]{{0,80}}(?:{kind_pat})[\s\S]{{0,80}}{dst_pat}",
+                    text,
+                    re.IGNORECASE,
+                ):
+                    edge_hit = True
+                    break
+            if edge_hit:
+                break
+        if edge_hit:
+            matched_edges.append(edge)
+
+    edge_match_rate = _safe_div(len(matched_edges), len(oracle.get("edges") or []))
+
+    fmt = ground_truth.get("output_format_checks") or {}
+    mermaid_blocks = re.findall(fmt.get("mermaid_regex") or r"```mermaid[\s\S]*?```", text, re.IGNORECASE)
+    mermaid_count = len(mermaid_blocks)
+    mermaid_min = int(fmt.get("mermaid_diagram_count_min", 0))
+    inventory_hits = [pat for pat in fmt.get("file_inventory_regex") or [] if _regex_any_hit(text, [pat])]
+    ffi_boundary_ok = bool(_regex_any_hit(text, fmt.get("ffi_boundary_regex") or []))
+
+    weights = (ground_truth.get("primary_metric") or {}).get("weights") or {}
+    hallucination_penalty = min(1.0, _safe_div(len(hallucinated_nodes), 5))
+    score = (
+        float(weights.get("node", 0.4)) * node_match_rate
+        + float(weights.get("edge", 0.5)) * edge_match_rate
+        - float(weights.get("hallucination_penalty", 0.1)) * hallucination_penalty
+    )
+    if mermaid_count < mermaid_min:
+        score *= 0.5
+    primary_score = round(_clamp01(score), 4)
+    pass_threshold = float(((ground_truth.get("primary_metric") or {}).get("pass_threshold")) or 1.0)
+
+    return {
+        "fixture": ground_truth.get("fixture", "F4"),
+        "matched_nodes": matched_nodes,
+        "node_match_rate": round(node_match_rate, 4),
+        "matched_edges": matched_edges,
+        "edge_match_rate": round(edge_match_rate, 4),
+        "hallucinated_nodes": hallucinated_nodes,
+        "hallucination_penalty": round(hallucination_penalty, 4),
+        "mermaid_diagram_count": mermaid_count,
+        "file_inventory_hits": inventory_hits,
+        "ffi_boundary_present": ffi_boundary_ok,
+        "primary_pass": primary_score >= pass_threshold and mermaid_count >= mermaid_min and ffi_boundary_ok,
+        "primary_score": primary_score,
+    }
+
+
+def score_f5_citations(agent_output: str, ground_truth: dict) -> dict:
+    """Research + citations — URL liveness check + primary-source quota + claim spot checks."""
+    text = agent_output or ""
+    word_count = len(re.findall(r"\S+", text))
+    bounds = ground_truth.get("word_count_bounds") or {}
+    within_bounds = int(bounds.get("min", 0)) <= word_count <= int(bounds.get("max", 10**9))
+
+    section_cfg = ground_truth.get("section_requirements") or {}
+    heading_groups = list(section_cfg.get("required_heading_regex_any_of") or [])
+    heading_hits = [
+        any(re.search(pat, text, re.IGNORECASE | re.MULTILINE) for pat in group)
+        for group in heading_groups
+    ]
+
+    citation_re = re.compile(
+        r'^\s*>\s*"(?P<quote>[^"\n]{10,})"\s*[—–-]\s*\[(?P<title>[^\]]+)\]\((?P<url>https?://[^)]+)\)',
+        re.MULTILINE,
+    )
+    citations = [
+        {"quote": m.group("quote"), "title": m.group("title"), "url": m.group("url")}
+        for m in citation_re.finditer(text)
+    ]
+    all_urls = list(dict.fromkeys(_extract_urls(text)))
+
+    allowlist = ((ground_truth.get("primary_source_allowlist") or {}).get("domains") or [])
+    blocklist = ((ground_truth.get("primary_source_allowlist") or {}).get("blocklist_hint") or [])
+    primary_citations = [c for c in citations if any(_url_matches_allow_entry(c["url"], entry) for entry in allowlist)]
+    blocklist_hits = [
+        url for url in all_urls
+        if any(_url_matches_allow_entry(url, blocked) for blocked in blocklist)
+    ]
+
+    live_urls = [url for url in all_urls if _url_is_live(url)]
+    liveness_rate = _safe_div(len(live_urls), len(all_urls))
+
+    sources_cfg = ground_truth.get("sources_section_requirement") or {}
+    sources_heading = sources_cfg.get("heading_regex") or r"^##\s*Sources"
+    sources_match = re.search(sources_heading, text, re.IGNORECASE | re.MULTILINE)
+    sources_section = text[sources_match.start():] if sources_match else ""
+    sources_urls = _extract_urls(sources_section)
+    sources_ok = bool(sources_match) and len(set(sources_urls)) >= int(sources_cfg.get("min_urls_in_section", 0))
+
+    spot_sample = primary_citations[:3]
+    spot_hits = sum(1 for item in spot_sample if _quote_supported_by_url(item["quote"], item["url"]))
+    spot_rate = _safe_div(spot_hits, len(spot_sample))
+
+    quota_cfg = ground_truth.get("citation_quota") or {}
+    quota_score = min(1.0, _safe_div(len(primary_citations), int(quota_cfg.get("min_primary_citations", 5) or 5)))
+
+    score = 0.3 * liveness_rate + 0.3 * quota_score + 0.4 * spot_rate
+    if not within_bounds:
+        score *= 0.5
+    for _ in blocklist_hits[:3]:
+        score *= 0.7
+    primary_score = round(_clamp01(score), 4)
+    pass_threshold = float(((ground_truth.get("primary_metric") or {}).get("pass_threshold")) or 1.0)
+
+    return {
+        "fixture": ground_truth.get("fixture", "F5"),
+        "word_count": word_count,
+        "word_count_within_bounds": within_bounds,
+        "section_heading_hits": heading_hits,
+        "citation_count": len(citations),
+        "primary_citation_count": len(primary_citations),
+        "blocklist_hits": blocklist_hits,
+        "live_url_count": len(live_urls),
+        "liveness_rate": round(liveness_rate, 4),
+        "spot_check_sample_size": len(spot_sample),
+        "spot_check_hits": spot_hits,
+        "spot_check_rate": round(spot_rate, 4),
+        "sources_section_ok": sources_ok,
+        "primary_pass": (
+            primary_score >= pass_threshold
+            and sources_ok
+            and len(primary_citations) >= int(quota_cfg.get("min_primary_citations", 5) or 5)
+        ),
+        "primary_score": primary_score,
+    }
+
+
+def score_f6_build_turns(agent_output: str, ground_truth: dict) -> dict:
+    """Fix-loop — binary build pass proxy + turns-to-success estimate."""
+    text = agent_output or ""
+    checks = ground_truth.get("stage1_fix_3_checks") or {}
+    diff_format_ok = bool(_regex_any_hit(text, [checks.get("diff_format_regex", "")]))
+    added_lines = "\n".join(
+        line[1:] for line in text.splitlines()
+        if line.startswith("+") and not line.startswith("+++")
+    )
+    fix_hits = _regex_any_hit(added_lines, checks.get("fix_content_regex_any_of") or [])
+    anti_hits = _regex_any_hit(added_lines, checks.get("must_not_contain_regex") or [])
+    prediction_ok = bool(_regex_any_hit(text, [checks.get("next_step_prediction_regex", "")]))
+
+    secondary = ground_truth.get("secondary_signals") or {}
+    one_patch_violation = bool(_regex_any_hit(text, [((secondary.get("one_patch_per_turn") or {}).get("violation_regex", ""))]))
+
+    metric = ground_truth.get("primary_metric") or {}
+    optimal_turns = int(metric.get("optimal_remaining_turns", 1))
+    max_turns = int(metric.get("max_turns", 10))
+
+    build_pass_binary = 1.0 if diff_format_ok and bool(fix_hits) and not anti_hits else 0.0
+    turns_to_success = max_turns
+    if build_pass_binary:
+        turns_to_success = optimal_turns if prediction_ok else min(max_turns, optimal_turns + 1)
+
+    score = 0.0
+    if build_pass_binary:
+        score = 1.0 - 0.05 * max(0, turns_to_success - optimal_turns)
+    if one_patch_violation:
+        score *= 0.5
+    primary_score = round(_clamp01(score), 4)
+    pass_threshold = float(metric.get("pass_threshold") or 1.0)
+
+    return {
+        "fixture": ground_truth.get("fixture", "F6"),
+        "diff_format_ok": diff_format_ok,
+        "fix_hits": fix_hits,
+        "anti_pattern_hits": anti_hits,
+        "prediction_ok": prediction_ok,
+        "one_patch_violation": one_patch_violation,
+        "build_pass_binary": build_pass_binary,
+        "turns_to_success": turns_to_success,
+        "primary_pass": primary_score >= pass_threshold,
+        "primary_score": primary_score,
+    }
+
+
+def score_f7_latest_decision(agent_output: str, ground_truth: dict) -> dict:
+    """Decision propagation — latest-decision correctness + superseded rejection + citation-to-turn."""
+    text = agent_output or ""
+    checks = ground_truth.get("stage1_output_checks") or {}
+
+    option_present = bool(_regex_any_hit(text, checks.get("refactored_file_must_contain_regex_any_of") or []))
+    result_present = bool(_regex_any_hit(text, checks.get("error_pattern_regex_any_of") or []))
+    either_type_present = bool(_regex_any_hit(text, [checks.get("banned_pattern_detect_regex", "")]))
+
+    latest_cfg = ((ground_truth.get("primary_metric") or {}).get("latest_decision_correctness") or {})
+    latest_weights = latest_cfg.get("component_weights") or {}
+    latest_decision = (
+        float(latest_weights.get("option_present", 0.4)) * float(option_present)
+        + float(latest_weights.get("result_present", 0.4)) * float(result_present)
+        + float(latest_weights.get("no_either", 0.2)) * float(not either_type_present)
+    )
+
+    option_cited = bool(re.search(r"(Turn\s*6|D3)", text, re.IGNORECASE))
+    result_cited = bool(re.search(r"(Turn\s*8|D4)", text, re.IGNORECASE))
+    if option_cited and result_cited:
+        citation_score = 1.0
+    elif option_cited or result_cited:
+        citation_score = 0.5
+    else:
+        citation_score = 0.0
+
+    superseded_full = bool(re.search(r"(D2|Turn\s*4).*(supersed|replaced).*(Turn\s*8|D4)", text, re.IGNORECASE | re.DOTALL))
+    superseded_partial = bool(_regex_any_hit(text, checks.get("superseded_mention_regex_any_of") or []))
+    if superseded_full:
+        superseded_score = 1.0
+    elif superseded_partial:
+        superseded_score = 0.5
+    else:
+        superseded_score = 0.0
+
+    metric = ground_truth.get("primary_metric") or {}
+    score = 0.45 * latest_decision + 0.35 * superseded_score + 0.20 * citation_score
+    if either_type_present:
+        score *= 0.3
+    primary_score = round(_clamp01(score), 4)
+
+    return {
+        "fixture": ground_truth.get("fixture", "F7"),
+        "latest_decision_correctness": round(latest_decision, 4),
+        "option_present": option_present,
+        "result_present": result_present,
+        "either_type_present": either_type_present,
+        "superseded_rejection": superseded_score,
+        "citation_to_turn": citation_score,
+        "primary_pass": primary_score >= float(metric.get("pass_threshold") or 1.0),
+        "primary_score": primary_score,
+    }
+
+
+def score_f8_hidden_tests(agent_output: str, ground_truth: dict) -> dict:
+    """Multi-file refactor — hidden-test proxy + duplication reduction + test-edit penalty."""
+    text = agent_output or ""
+    headings = list(re.finditer(r"^###\s+(src/ingest/[^\s]+)", text, re.MULTILINE))
+    sections: dict[str, str] = {}
+    for idx, match in enumerate(headings):
+        start = match.end()
+        end = headings[idx + 1].start() if idx + 1 < len(headings) else len(text)
+        sections[match.group(1)] = _strip_code_fence(text[start:end])
+
+    public_api = ground_truth.get("public_api_required_exports") or {}
+    total_exports = sum(len(names) for names in public_api.values())
+    present_exports = 0
+    missing_exports: list[str] = []
+    for path, names in public_api.items():
+        body = sections.get(path, "")
+        for name in names:
+            if re.search(rf"\b{name}\b", body):
+                present_exports += 1
+            else:
+                missing_exports.append(name)
+    api_score = _safe_div(present_exports, total_exports)
+
+    validators = sections.get("src/ingest/validators.ts", "")
+    wrappers = {
+        path: sections.get(path, "")
+        for path in (
+            "src/ingest/orders.ts",
+            "src/ingest/users.ts",
+            "src/ingest/webhooks.ts",
+        )
+    }
+    import_count = sum(
+        1 for body in wrappers.values()
+        if re.search(r"from\s+['\"`]\./validators['\"`]", body)
+    )
+
+    email_regex_ok = bool(re.search(r"\[\^\\s@]\+@\[\^\\s@]\+\\\.\[\^\\s@]\+", validators))
+    email_truthy_ok = bool(re.search(r"!\s*\w+\s*\|\||!\s*\w+", validators))
+    email_length_ok = bool(re.search(r"(?:>\s*254|<=\s*254|length\s*[<>]=?\s*254)", validators))
+    phone_strip_ok = bool(re.search(r"\\D|match\(/\\d", validators))
+    phone_range_ok = bool(re.search(r"(?:<\s*7|>=?\s*7).*(?:>\s*15|<=\s*15)|7.*15", validators))
+    bad_email_ok = all(re.search(r"bad_email", body) for body in wrappers.values())
+    bad_phone_ok = all(re.search(r"bad_phone", body) for body in wrappers.values())
+    return_input_ok = bool(re.search(r"return\s+\w+\s*;", wrappers.get("src/ingest/webhooks.ts", "")))
+
+    hidden_checks = {
+        "i18n_email": email_regex_ok and email_length_ok,
+        "empty": email_truthy_ok,
+        "formatted_phone": phone_strip_ok and phone_range_ok,
+        "too_short": phone_range_ok,
+        "no_at": email_regex_ok,
+        "happy_path": return_input_ok,
+        "bad_email_error": bad_email_ok,
+        "bad_phone_error": bad_phone_ok,
+    }
+    hidden_cases = ground_truth.get("hidden_regression_tests", {}).get("test_cases") or []
+    hidden_results: list[dict] = []
+    passed_hidden = 0
+    for case in hidden_cases:
+        kind = case.get("kind", "")
+        passed = bool(hidden_checks.get(kind, False))
+        hidden_results.append({"kind": kind, "passed": passed})
+        passed_hidden += int(passed)
+    test_pass_rate = _safe_div(passed_hidden, len(hidden_cases))
+
+    dup_cfg = ground_truth.get("duplication_reduction_metric") or {}
+    baseline = int(dup_cfg.get("baseline_duplicated_lines", 36))
+    duplicated_lines_after = max(0, baseline - round(baseline * import_count / 3))
+    inline_validator_hits = 0
+    for body in wrappers.values():
+        if re.search(r"\[\^\\s@]\+@\[\^\\s@]\+\\\.\[\^\\s@]\+|\\D", body):
+            inline_validator_hits += 1
+    duplicated_lines_after = min(baseline, duplicated_lines_after + (inline_validator_hits * 4))
+    dup_score = _clamp01(1.0 - _safe_div(duplicated_lines_after, baseline))
+
+    penalty_cfg = ground_truth.get("test_edit_penalty") or {}
+    test_edit_hits = _regex_any_hit(text, penalty_cfg.get("detect_regex_any_of") or [])
+    penalty_multiplier = float(penalty_cfg.get("penalty_multiplier", 0.3)) if test_edit_hits else 1.0
+
+    score = (0.5 * test_pass_rate + 0.3 * dup_score + 0.2 * api_score) * penalty_multiplier
+    primary_score = round(_clamp01(score), 4)
+    pass_threshold = float(((ground_truth.get("primary_metric") or {}).get("pass_threshold")) or 1.0)
+
+    return {
+        "fixture": ground_truth.get("fixture", "F8"),
+        "section_paths": sorted(sections),
+        "hidden_test_results": hidden_results,
+        "test_pass_rate": round(test_pass_rate, 4),
+        "duplicated_lines_after": duplicated_lines_after,
+        "duplication_reduction_score": round(dup_score, 4),
+        "api_preservation_score": round(api_score, 4),
+        "missing_exports": missing_exports,
+        "test_edit_hits": test_edit_hits,
+        "test_edit_penalty_multiplier": penalty_multiplier,
+        "primary_pass": primary_score >= pass_threshold,
+        "primary_score": primary_score,
+    }
+
+
+def score_f9_root_cause(agent_output: str, ground_truth: dict) -> dict:
+    """Prior-turn debug — exact root cause match + correct fix."""
+    text = agent_output or ""
+    root_section = _extract_labeled_section(text, "a", ("b", "c"))
+    evidence_section = _extract_labeled_section(text, "b", ("c",))
+    diff_section = _extract_labeled_section(text, "c", ())
+
+    wrong_penalty = ground_truth.get("wrong_root_cause_penalty") or {}
+    wrong_hits = _regex_any_hit(root_section, wrong_penalty.get("detect_regex_any_of") or [])
+    if wrong_hits:
+        return {
+            "fixture": ground_truth.get("fixture", "F9"),
+            "wrong_root_cause_hits": wrong_hits,
+            "root_cause_score": 0.0,
+            "fix_score": 0.0,
+            "evidence_score": 0.0,
+            "primary_pass": False,
+            "primary_score": 0.0,
+        }
+
+    true_root = ground_truth.get("true_root_cause") or {}
+    cause_hits = _regex_any_hit(root_section, true_root.get("match_regex_any_of") or [])
+    turn_refs = [
+        turn for turn in true_root.get("must_reference_turn_any_of") or []
+        if re.search(rf"\bTurn\s*{int(turn)}\b", root_section, re.IGNORECASE)
+    ]
+    if cause_hits and turn_refs:
+        root_score = 1.0
+    elif cause_hits:
+        root_score = 0.5
+    else:
+        root_score = 0.0
+
+    canonical_fix = ground_truth.get("canonical_fix") or {}
+    diff_target_ok = bool(_regex_any_hit(diff_section, [canonical_fix.get("diff_file_target_regex", "")], case_insensitive=False))
+    fix_hits = _regex_any_hit(diff_section, canonical_fix.get("fix_regex_any_of_in_diff") or [])
+    min_matches = int(canonical_fix.get("min_regex_matches", 2))
+    if diff_target_ok and len(fix_hits) >= min_matches:
+        fix_score = 1.0
+    elif diff_target_ok and fix_hits:
+        fix_score = 0.5
+    else:
+        fix_score = 0.0
+
+    red_herrings = {
+        "R1": r"off[-\s]?by[-\s]?one|loop\s*bound|attempts\s*<\s*cfg\.max",
+        "R2": r"overflow|backoff|2\s*\*\*\s*attempts",
+        "R3": r"promise|then\s*chain|await",
+    }
+    ruled_out = [rid for rid, pat in red_herrings.items() if re.search(pat, evidence_section, re.IGNORECASE)]
+    if len(ruled_out) >= 2:
+        evidence_score = 1.0
+    elif len(ruled_out) == 1:
+        evidence_score = 0.5
+    else:
+        evidence_score = 0.0
+
+    score = 0.5 * root_score + 0.4 * fix_score + 0.1 * evidence_score
+    primary_score = round(_clamp01(score), 4)
+    pass_threshold = float(((ground_truth.get("primary_metric") or {}).get("pass_threshold")) or 1.0)
+
+    return {
+        "fixture": ground_truth.get("fixture", "F9"),
+        "root_cause_hits": cause_hits,
+        "turn_references": turn_refs,
+        "root_cause_score": root_score,
+        "fix_hits": fix_hits,
+        "fix_score": fix_score,
+        "evidence_ruled_out": ruled_out,
+        "evidence_score": evidence_score,
+        "primary_pass": primary_score >= pass_threshold,
+        "primary_score": primary_score,
+    }
+
+
+def score_f10_checklist(agent_output: str, ground_truth: dict) -> dict:
+    """Compact+resume — unresolved checklist apply rate + stale decoy rejection."""
+    text = agent_output or ""
+    status_section = _extract_labeled_section(text, "a", ("b", "c"))
+    next_section = _extract_labeled_section(text, "b", ("c",))
+    stale_section = _extract_labeled_section(text, "c", ())
+
+    unresolved_cfg = (ground_truth.get("hidden_unresolved_checklist") or {}).get("items") or []
+    unresolved_hits: list[str] = []
+    for item in unresolved_cfg:
+        content_hit = bool(_regex_any_hit(next_section, item.get("match_regex_any_of") or []))
+        turn_hit = any(
+            re.search(rf"\bTurn\s*{int(turn)}\b", next_section, re.IGNORECASE)
+            for turn in item.get("must_reference_turn_any_of") or []
+        )
+        if content_hit and turn_hit:
+            unresolved_hits.append(item.get("id", ""))
+    unresolved_rate = _safe_div(len(unresolved_hits), len(unresolved_cfg))
+
+    stale_rows = [cols for cols in _parse_markdown_table_rows(stale_section) if cols and cols[0] != "#"]
+    stale_cfg = (ground_truth.get("stale_decoy_items") or {}).get("items") or []
+    rejected_stale: list[str] = []
+    for item in stale_cfg:
+        for cols in stale_rows:
+            row_text = " | ".join(cols)
+            number_ok = bool(re.search(rf"(?<!\d){int(item.get('turn7_number', -1))}(?!\d)", cols[0] if cols else ""))
+            reason_ok = bool(_regex_any_hit(row_text, item.get("rejection_regex_any_of") or []))
+            if number_ok and reason_ok:
+                rejected_stale.append(item.get("id", ""))
+                break
+    stale_rate = _safe_div(len(rejected_stale), len(stale_cfg))
+
+    signals = ground_truth.get("secondary_signals") or {}
+    hallucination_cfg = signals.get("no_hallucinated_next_action") or {}
+    hallucinated_hits = _regex_any_hit(next_section, hallucination_cfg.get("detect_regex_any_of") or [])
+    hallucination_penalty = len(hallucinated_hits) * float(hallucination_cfg.get("penalty_per_match", 0.05))
+
+    fmt = ground_truth.get("output_format_checks") or {}
+    status_ok = bool(status_section) and bool(_regex_any_hit(text, fmt.get("status_summary_regex") or []))
+    next_ok = bool(next_section) and bool(_regex_any_hit(text, fmt.get("next_actions_regex") or []))
+    stale_ok = bool(stale_rows) and bool(_regex_any_hit(text, fmt.get("stale_table_regex") or []))
+
+    score = 0.5 * unresolved_rate + 0.5 * stale_rate - hallucination_penalty
+    primary_score = round(_clamp01(score), 4)
+    pass_threshold = float(((ground_truth.get("primary_metric") or {}).get("pass_threshold")) or 1.0)
+
+    return {
+        "fixture": ground_truth.get("fixture", "F10"),
+        "status_summary_present": status_ok,
+        "next_actions_present": next_ok,
+        "stale_table_present": stale_ok,
+        "unresolved_hits": unresolved_hits,
+        "unresolved_application_rate": round(unresolved_rate, 4),
+        "rejected_stale_ids": rejected_stale,
+        "stale_rejection_rate": round(stale_rate, 4),
+        "hallucinated_next_action_hits": hallucinated_hits,
+        "hallucination_penalty": round(hallucination_penalty, 4),
+        "primary_pass": primary_score >= pass_threshold and status_ok and next_ok and stale_ok,
+        "primary_score": primary_score,
+    }
+
+
 # ─── T9: Fa primary grader + dispatch ───────────────────────────────────────
 def _regex_any_hit(text: str, patterns: Sequence[str], case_insensitive: bool = True) -> list[str]:
     """Return list of patterns that match anywhere in `text`."""
@@ -873,6 +1630,15 @@ def score_fa_false_prior(agent_output: str, ground_truth: dict) -> dict:
 
 
 PRIMARY_GRADERS: dict[str, "callable"] = {
+    "F2": score_f2_invariants,
+    "F3": score_f3_severity_f1,
+    "F4": score_f4_oracle_graph,
+    "F5": score_f5_citations,
+    "F6": score_f6_build_turns,
+    "F7": score_f7_latest_decision,
+    "F8": score_f8_hidden_tests,
+    "F9": score_f9_root_cause,
+    "F10": score_f10_checklist,
     "Fa": score_fa_false_prior,
 }
 
