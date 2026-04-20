@@ -13,3 +13,6 @@ matplotlib>=3.10
 # Test + lint tooling (dev-only, pinned loosely so CI can track latest)
 pytest>=8
 jsonschema>=4.21
+# tiktoken used by tests/exec-mode/test_fixture_lint.py (cl100k_base token cap check);
+# falls back to `claude --count-tokens` CLI if unavailable.
+tiktoken>=0.7
