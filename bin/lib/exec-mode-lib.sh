@@ -224,17 +224,22 @@ execmode::compact_detect() {
 }
 
 # ─── T6: Pacc chain state (.chain_state.json) ──────────────────────────────
-# Path convention: <state_root>/<run_idx>/Pacc/<fixture>/chain_sess<S>.json
+# Spec §4.4: one Pacc session visits all 10 fixtures in random order under a
+# SINGLE claude session_id. Chain state therefore spans fixtures within a
+# session — keying the path by fixture splits the chain so pos>1 cannot find
+# pos=1's session_id (fix3, refs #329 full-pilot-fix2).
+# Path convention: <state_root>/<run_idx>/Pacc/chain_sess<S>.json
 # Schema (informal):
-#   {"session_idx":N, "fixture_id":"Fa", "run_idx":1,
+#   {"session_idx":N, "run_idx":1, "session_id":"claude-uuid",
 #    "status":"active"|"completed"|"crashed",
-#    "fixtures_completed":[{"position_in_chain":P,"seed_idx":N,"trial_id":"...","at":"iso"} ...]}
+#    "fixtures_completed":[{"position_in_chain":P,"seed_idx":N,
+#                           "fixture_id":"Fa","trial_id":"...","at":"iso"} ...]}
 # R8 (build spec §5): on Pacc session crash → discard session, rerun cheap.
 
 execmode::chain_state_path() {
-  # Usage: execmode::chain_state_path <state_root> <run_idx> <fixture> <session_idx>
-  local sr=$1 run=$2 fix=$3 sess=$4
-  echo "$sr/$run/Pacc/$fix/chain_sess${sess}.json"
+  # Usage: execmode::chain_state_path <state_root> <run_idx> <session_idx>
+  local sr=$1 run=$2 sess=$3
+  echo "$sr/$run/Pacc/chain_sess${sess}.json"
 }
 
 # Exit 0 if path exists AND parses AND status=="crashed". Nonzero otherwise.
@@ -280,7 +285,6 @@ if os.path.exists(path):
 if not isinstance(state, dict):
     state = {
         "session_idx": int(sess),
-        "fixture_id": fix,
         "run_idx": int(run),
         "status": "active",
         "fixtures_completed": [],
@@ -291,6 +295,7 @@ if not any((e.get("position_in_chain"), e.get("seed_idx")) == key for e in entri
     entries.append({
         "position_in_chain": int(pos),
         "seed_idx":          int(seed),
+        "fixture_id":        fix,
         "trial_id":          tid,
         "at":                at,
     })
@@ -313,9 +318,9 @@ PY
 # stash it on the chain_state file so subsequent positions can look it up.
 
 execmode::chain_state_set_session_id() {
-  # Usage: execmode::chain_state_set_session_id <path> <run_idx> <fixture> <session_idx> <session_id>
+  # Usage: execmode::chain_state_set_session_id <path> <run_idx> <session_idx> <session_id>
   # Creates the file if absent (status=active) and sets top-level session_id.
-  local path=$1 run=$2 fix=$3 sess=$4 sid=$5
+  local path=$1 run=$2 sess=$3 sid=$4
   [[ -n "$path" && -n "$sid" ]] || { echo "chain_state_set_session_id: path + session_id required" >&2; return 2; }
   local dir; dir="$(dirname "$path")"
   mkdir -p "$dir"
@@ -325,9 +330,9 @@ execmode::chain_state_set_session_id() {
   fi
   [[ -n "$py" ]] || { echo "chain_state_set_session_id: no python interpreter" >&2; return 3; }
 
-  "$py" - "$path" "$run" "$fix" "$sess" "$sid" <<'PY'
+  "$py" - "$path" "$run" "$sess" "$sid" <<'PY'
 import json, os, sys, tempfile
-path, run, fix, sess, sid = sys.argv[1:6]
+path, run, sess, sid = sys.argv[1:5]
 state = None
 if os.path.exists(path):
     try:
@@ -337,7 +342,6 @@ if os.path.exists(path):
 if not isinstance(state, dict):
     state = {
         "session_idx": int(sess),
-        "fixture_id": fix,
         "run_idx": int(run),
         "status": "active",
         "fixtures_completed": [],

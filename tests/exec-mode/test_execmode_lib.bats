@@ -156,3 +156,39 @@ SH
   run execmode::compact_detect "$TMPDIR_T/nope.jsonl"
   [ "$status" -ne 0 ]
 }
+
+# ─── fix3: chain_state path + schema (spec §4.4, refs #329) ───────────────
+
+@test "chain_state_path: is session-scoped, not fixture-scoped" {
+  local p; p=$(execmode::chain_state_path "$TMPDIR_T" 1 5)
+  [ "$p" = "$TMPDIR_T/1/Pacc/chain_sess5.json" ]
+}
+
+@test "chain_state_append: records fixture_id per entry (schema supports multi-fixture chain)" {
+  local path="$TMPDIR_T/1/Pacc/chain_sess1.json"
+  execmode::chain_state_append "$path" 1 F8  1 1 1 "1/Pacc/F8/seed01_pos1_sess1"  "2026-04-20T10:00:00Z"
+  execmode::chain_state_append "$path" 1 F10 1 2 1 "1/Pacc/F10/seed01_pos2_sess1" "2026-04-20T10:05:00Z"
+  python3 - <<PY
+import json
+c = json.load(open("$path"))
+assert c["session_idx"] == 1, c
+assert "fixture_id" not in c, "fixture_id must be per-entry, not top-level"
+entries = {(e["position_in_chain"], e["fixture_id"]) for e in c["fixtures_completed"]}
+assert entries == {(1, "F8"), (2, "F10")}, entries
+PY
+}
+
+@test "chain_state_set_session_id + get_session_id: session-scoped round-trip across fixtures" {
+  local path="$TMPDIR_T/1/Pacc/chain_sess7.json"
+  execmode::chain_state_set_session_id "$path" 1 7 "sid-xyz-42"
+  run execmode::chain_state_get_session_id "$path"
+  [ "$status" -eq 0 ]
+  [ "$output" = "sid-xyz-42" ]
+
+  # Append entries for two different fixtures — session_id must persist.
+  execmode::chain_state_append "$path" 1 F8  7 1 7 "tid-a" "2026-04-20T10:00:00Z"
+  execmode::chain_state_append "$path" 1 F10 7 2 7 "tid-b" "2026-04-20T10:05:00Z"
+  run execmode::chain_state_get_session_id "$path"
+  [ "$status" -eq 0 ]
+  [ "$output" = "sid-xyz-42" ]
+}

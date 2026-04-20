@@ -409,7 +409,7 @@ setup_live_env() {
     --state-root "$STATE" --fixtures-root "$LIVE_FIXTURES_ROOT"
   [ "$status" -eq 0 ]
 
-  local chain="$STATE/1/Pacc/Fa/chain_sess5.json"
+  local chain="$STATE/1/Pacc/chain_sess5.json"
   [ -f "$chain" ]
 
   local sid; sid=$("$VENV_PY" -c "import json; print(json.load(open('$chain')).get('session_id',''))")
@@ -484,14 +484,13 @@ EOF
     --session-idx 7 --position-in-chain 1 --dry-run --state-root "$STATE"
   [ "$status" -eq 0 ]
 
-  local chain="$STATE/1/Pacc/Fa/chain_sess7.json"
+  local chain="$STATE/1/Pacc/chain_sess7.json"
   [ -f "$chain" ]
 
   "$VENV_PY" - <<PY
 import json, sys
 c = json.load(open("$chain"))
 assert c["session_idx"] == 7, c
-assert c["fixture_id"] == "Fa", c
 assert c["run_idx"] == 1, c
 assert c["status"] == "active", c
 entries = c["fixtures_completed"]
@@ -499,6 +498,7 @@ assert len(entries) == 1, entries
 e = entries[0]
 assert e["position_in_chain"] == 1, e
 assert e["seed_idx"] == 0, e
+assert e["fixture_id"] == "Fa", e
 assert e["trial_id"] == "1/Pacc/Fa/seed00_pos1_sess7", e
 PY
 }
@@ -509,16 +509,16 @@ PY
   "$HARNESS" --fixture Fa --mode Pacc --seed-idx 0 --run-idx 1 \
     --session-idx 7 --position-in-chain 2 --dry-run --state-root "$STATE" >/dev/null
 
-  local chain="$STATE/1/Pacc/Fa/chain_sess7.json"
+  local chain="$STATE/1/Pacc/chain_sess7.json"
   local n; n=$("$VENV_PY" -c "import json; print(len(json.load(open('$chain'))['fixtures_completed']))")
   [ "$n" = "2" ]
 }
 
 @test "T6 Pacc refuses new trials when chain marked crashed (R8)" {
-  local chain_dir="$STATE/1/Pacc/Fa"
+  local chain_dir="$STATE/1/Pacc"
   mkdir -p "$chain_dir"
   cat >"$chain_dir/chain_sess7.json" <<JSON
-{"session_idx":7,"fixture_id":"Fa","run_idx":1,"status":"crashed","fixtures_completed":[]}
+{"session_idx":7,"run_idx":1,"status":"crashed","fixtures_completed":[]}
 JSON
 
   run "$HARNESS" --fixture Fa --mode Pacc --seed-idx 0 --run-idx 1 \
@@ -552,4 +552,32 @@ JSON
   run find "$STATE" -name 'chain_sess*.json'
   [ "$status" -eq 0 ]
   [ -z "$output" ]
+}
+
+# ─── fix3 regression: Pacc chain spans fixtures within one session (spec §4.4)
+# Previously chain_state_path keyed by fixture, so sess=1 pos=1 F8 wrote to
+# Pacc/F8/chain_sess1.json but sess=1 pos=2 F10 looked in Pacc/F10/chain_sess1.json
+# and could not resolve pos=1's session_id → die rc=5 on 90/100 trials.
+
+@test "fix3: Pacc chain spans multiple fixtures in one session (dry-run)" {
+  # Session 1 visits F8 at pos=1, then F10 at pos=2 — spec §4.4 random order.
+  "$HARNESS" --fixture F8 --mode Pacc --seed-idx 1 --run-idx 1 \
+    --session-idx 1 --position-in-chain 1 --dry-run --state-root "$STATE" >/dev/null
+  "$HARNESS" --fixture F10 --mode Pacc --seed-idx 1 --run-idx 1 \
+    --session-idx 1 --position-in-chain 2 --dry-run --state-root "$STATE" >/dev/null
+
+  # One chain file per session, not per fixture.
+  local chain="$STATE/1/Pacc/chain_sess1.json"
+  [ -f "$chain" ]
+  [ ! -f "$STATE/1/Pacc/F8/chain_sess1.json" ]
+  [ ! -f "$STATE/1/Pacc/F10/chain_sess1.json" ]
+
+  "$VENV_PY" - <<PY
+import json
+c = json.load(open("$chain"))
+assert c["session_idx"] == 1, c
+assert c["run_idx"] == 1, c
+entries = {(e["position_in_chain"], e["fixture_id"]) for e in c["fixtures_completed"]}
+assert entries == {(1, "F8"), (2, "F10")}, entries
+PY
 }

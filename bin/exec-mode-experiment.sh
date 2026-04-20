@@ -138,7 +138,7 @@ venv_py="$REPO_ROOT/.venv-exec-mode/bin/python"
 
 # ─── Pacc chain-state: discard session if crashed (R8) ──────────────────────
 if [ "$mode" = "Pacc" ]; then
-  chain_path="$(execmode::chain_state_path "$state_root" "$run_idx" "$fixture" "$session_idx")"
+  chain_path="$(execmode::chain_state_path "$state_root" "$run_idx" "$session_idx")"
   if execmode::chain_state_is_crashed "$chain_path"; then
     die 5 "Pacc session $session_idx (fixture=$fixture, run=$run_idx) marked crashed in $chain_path — discarded per R8; re-queue at the session level, not this trial"
   fi
@@ -403,7 +403,7 @@ execmode::harness_stage1_live_Pacc() {
     local sid
     sid=$(execmode::harness_extract_session_id "$stage1_jsonl_path" || echo "")
     if [ -n "$sid" ]; then
-      execmode::chain_state_set_session_id "$chain_path" "$run_idx" "$fixture" "$session_idx" "$sid"
+      execmode::chain_state_set_session_id "$chain_path" "$run_idx" "$session_idx" "$sid"
     fi
   else
     local prior_sid
