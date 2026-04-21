@@ -828,6 +828,14 @@ def _label_marker_regex(label: str) -> re.Pattern[str]:
       - `**(a)**`, `*(a)*`         — bold/italic-wrapped parens
       - `a)` `a.` `a:`             — half-paren or trailing punctuation
       - `**a.**` `**a:**` `**a)**` — bold-wrapped letter + punctuation
+      - `## (a)`, `### **(a)**`    — markdown h1-h6 header prefix + any
+                                     of the above surfaces (H8 deep-fix:
+                                     F10 agents empirically emit h2
+                                     enumerations; see analyst phase 3
+                                     §8 and stage1_output.md samples)
+
+    The optional `#{1,6}\s+` prefix is applied as an outer non-capturing
+    group so all pre-existing combinations continue to match unchanged.
 
     The trailing-punctuation branch requires a `)`, `.`, or `:` after the
     label (with optional bold markers) so prose lines that simply start
@@ -835,9 +843,9 @@ def _label_marker_regex(label: str) -> re.Pattern[str]:
     """
     esc = re.escape(label)
     return re.compile(
-        rf"(?im)^\s*(?:"
-        rf"\*{{0,2}}\(\s*{esc}\s*\)\*{{0,2}}"     # (a), *(a)*, **(a)**
-        rf"|\*{{0,2}}{esc}\*{{0,2}}[\)\.\:]"      # a) a. a: **a.** **a:** **a)**
+        rf"(?im)^\s*(?:#{{1,6}}\s+)?(?:"
+        rf"\*{{0,2}}\(\s*{esc}\s*\)\*{{0,2}}"     # (a), *(a)*, **(a)**, ## (a)
+        rf"|\*{{0,2}}{esc}\*{{0,2}}[\)\.\:]"      # a) a. a: **a.** **a:** ## a.
         rf")"
     )
 
