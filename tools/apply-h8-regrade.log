@@ -1,0 +1,44 @@
+# apply-h8-regrade run @ 2026-04-22T09:18:19+00:00
+# csv=tools/h8-f10-regrade-output.csv
+# state_root=state/exec-mode-experiment/full-pilot-fix4/1
+PATCH D/F10/seed00 :: primary: 0.0 -> 1.0; primary_score: 0.0 -> 1.0; primary_pass: False -> True; status_summary_present: False -> True; next_actions_present: False -> True; stale_table_present: False -> True; unresolved_application_rate: 0.0 -> 1.0; stale_rejection_rate: 0.0 -> 1.0; regraded_from_fix3: None -> True
+PATCH D/F10/seed01 :: primary: 0.0 -> 1.0; primary_score: 0.0 -> 1.0; primary_pass: False -> True; status_summary_present: False -> True; next_actions_present: False -> True; stale_table_present: False -> True; unresolved_application_rate: 0.0 -> 1.0; stale_rejection_rate: 0.0 -> 1.0; regraded_from_fix3: None -> True
+PATCH D/F10/seed02 :: primary: 0.0 -> 1.0; primary_score: 0.0 -> 1.0; primary_pass: False -> True; status_summary_present: False -> True; next_actions_present: False -> True; stale_table_present: False -> True; unresolved_application_rate: 0.0 -> 1.0; stale_rejection_rate: 0.0 -> 1.0; regraded_from_fix3: None -> True
+PATCH D/F10/seed03 :: regraded_from_fix3: None -> True
+PATCH D/F10/seed04 :: regraded_from_fix3: None -> True
+PATCH D/F10/seed05 :: regraded_from_fix3: None -> True
+PATCH D/F10/seed06 :: regraded_from_fix3: None -> True
+PATCH D/F10/seed07 :: primary: 0.0 -> 1.0; primary_score: 0.0 -> 1.0; primary_pass: False -> True; status_summary_present: False -> True; next_actions_present: False -> True; stale_table_present: False -> True; unresolved_application_rate: 0.0 -> 1.0; stale_rejection_rate: 0.0 -> 1.0; regraded_from_fix3: None -> True
+PATCH D/F10/seed08 :: primary: 0.0 -> 1.0; primary_score: 0.0 -> 1.0; primary_pass: False -> True; status_summary_present: False -> True; next_actions_present: False -> True; stale_table_present: False -> True; unresolved_application_rate: 0.0 -> 1.0; stale_rejection_rate: 0.0 -> 1.0; regraded_from_fix3: None -> True
+PATCH D/F10/seed09 :: regraded_from_fix3: None -> True
+PATCH Pfresh/F10/seed00 :: primary: 0.0 -> 0.5; primary_score: 0.0 -> 0.5; status_summary_present: False -> True; next_actions_present: False -> True; stale_table_present: False -> True; stale_rejection_rate: 0.0 -> 1.0; regraded_from_fix3: None -> True
+PATCH Pfresh/F10/seed01 :: status_summary_present: False -> True; next_actions_present: False -> True; stale_table_present: False -> True; regraded_from_fix3: None -> True
+PATCH Pfresh/F10/seed02 :: primary: 0.0 -> 0.5; primary_score: 0.0 -> 0.5; status_summary_present: False -> True; next_actions_present: False -> True; stale_table_present: False -> True; stale_rejection_rate: 0.0 -> 1.0; regraded_from_fix3: None -> True
+PATCH Pfresh/F10/seed03 :: primary: 0.0 -> 0.5; primary_score: 0.0 -> 0.5; status_summary_present: False -> True; next_actions_present: False -> True; stale_table_present: False -> True; stale_rejection_rate: 0.0 -> 1.0; regraded_from_fix3: None -> True
+PATCH Pfresh/F10/seed04 :: regraded_from_fix3: None -> True
+PATCH Pfresh/F10/seed05 :: primary: 0.0 -> 0.5; primary_score: 0.0 -> 0.5; status_summary_present: False -> True; next_actions_present: False -> True; stale_table_present: False -> True; stale_rejection_rate: 0.0 -> 1.0; regraded_from_fix3: None -> True
+PATCH Pfresh/F10/seed06 :: regraded_from_fix3: None -> True
+PATCH Pfresh/F10/seed07 :: regraded_from_fix3: None -> True
+PATCH Pfresh/F10/seed08 :: primary: 0.0 -> 0.5; primary_score: 0.0 -> 0.5; status_summary_present: False -> True; next_actions_present: False -> True; stale_table_present: False -> True; stale_rejection_rate: 0.0 -> 1.0; regraded_from_fix3: None -> True
+PATCH Pfresh/F10/seed09 :: regraded_from_fix3: None -> True
+PATCH Pacc/F10/seed01_pos2_sess1 :: primary: 0.0 -> 0.1667; primary_score: 0.0 -> 0.1667; status_summary_present: False -> True; next_actions_present: False -> True; stale_table_present: False -> True; stale_rejection_rate: 0.0 -> 0.3333; regraded_from_fix3: None -> True
+PATCH Pacc/F10/seed02_pos8_sess2 :: regraded_from_fix3: None -> True
+PATCH Pacc/F10/seed03_pos9_sess3 :: regraded_from_fix3: None -> True
+PATCH Pacc/F10/seed04_pos1_sess4 :: primary: 0.0 -> 1.0; primary_score: 0.0 -> 1.0; primary_pass: False -> True; status_summary_present: False -> True; next_actions_present: False -> True; stale_table_present: False -> True; unresolved_application_rate: 0.0 -> 1.0; stale_rejection_rate: 0.0 -> 1.0; regraded_from_fix3: None -> True
+PATCH Pacc/F10/seed05_pos5_sess5 :: regraded_from_fix3: None -> True
+PATCH Pacc/F10/seed06_pos2_sess6 :: status_summary_present: False -> True; next_actions_present: False -> True; stale_table_present: False -> True; regraded_from_fix3: None -> True
+PATCH Pacc/F10/seed07_pos1_sess7 :: regraded_from_fix3: None -> True
+PATCH Pacc/F10/seed08_pos1_sess8 :: primary: 0.0 -> 1.0; primary_score: 0.0 -> 1.0; primary_pass: False -> True; status_summary_present: False -> True; next_actions_present: False -> True; stale_table_present: False -> True; unresolved_application_rate: 0.0 -> 1.0; stale_rejection_rate: 0.0 -> 1.0; regraded_from_fix3: None -> True
+PATCH Pacc/F10/seed09_pos2_sess9 :: regraded_from_fix3: None -> True
+PATCH Pacc/F10/seed10_pos5_sess10 :: regraded_from_fix3: None -> True
+PATCH S/F10/seed00 :: primary: 0.0 -> 1.0; primary_score: 0.0 -> 1.0; primary_pass: False -> True; status_summary_present: False -> True; next_actions_present: False -> True; stale_table_present: False -> True; unresolved_application_rate: 0.0 -> 1.0; stale_rejection_rate: 0.0 -> 1.0; regraded_from_fix3: None -> True
+PATCH S/F10/seed01 :: primary: 0.0 -> 1.0; primary_score: 0.0 -> 1.0; primary_pass: False -> True; status_summary_present: False -> True; next_actions_present: False -> True; stale_table_present: False -> True; unresolved_application_rate: 0.0 -> 1.0; stale_rejection_rate: 0.0 -> 1.0; regraded_from_fix3: None -> True
+PATCH S/F10/seed02 :: primary: 0.0 -> 1.0; primary_score: 0.0 -> 1.0; primary_pass: False -> True; status_summary_present: False -> True; next_actions_present: False -> True; stale_table_present: False -> True; unresolved_application_rate: 0.0 -> 1.0; stale_rejection_rate: 0.0 -> 1.0; regraded_from_fix3: None -> True
+PATCH S/F10/seed03 :: regraded_from_fix3: None -> True
+PATCH S/F10/seed04 :: primary: 0.0 -> 1.0; primary_score: 0.0 -> 1.0; primary_pass: False -> True; status_summary_present: False -> True; next_actions_present: False -> True; stale_table_present: False -> True; unresolved_application_rate: 0.0 -> 1.0; stale_rejection_rate: 0.0 -> 1.0; regraded_from_fix3: None -> True
+PATCH S/F10/seed05 :: primary: 0.0 -> 1.0; primary_score: 0.0 -> 1.0; primary_pass: False -> True; status_summary_present: False -> True; next_actions_present: False -> True; stale_table_present: False -> True; unresolved_application_rate: 0.0 -> 1.0; stale_rejection_rate: 0.0 -> 1.0; regraded_from_fix3: None -> True
+PATCH S/F10/seed06 :: primary: 0.0 -> 1.0; primary_score: 0.0 -> 1.0; primary_pass: False -> True; status_summary_present: False -> True; next_actions_present: False -> True; stale_table_present: False -> True; unresolved_application_rate: 0.0 -> 1.0; stale_rejection_rate: 0.0 -> 1.0; regraded_from_fix3: None -> True
+PATCH S/F10/seed07 :: primary: 0.0 -> 1.0; primary_score: 0.0 -> 1.0; primary_pass: False -> True; status_summary_present: False -> True; next_actions_present: False -> True; stale_table_present: False -> True; unresolved_application_rate: 0.0 -> 1.0; stale_rejection_rate: 0.0 -> 1.0; regraded_from_fix3: None -> True
+PATCH S/F10/seed08 :: primary: 0.0 -> 1.0; primary_score: 0.0 -> 1.0; primary_pass: False -> True; status_summary_present: False -> True; next_actions_present: False -> True; stale_table_present: False -> True; unresolved_application_rate: 0.0 -> 1.0; stale_rejection_rate: 0.0 -> 1.0; regraded_from_fix3: None -> True
+PATCH S/F10/seed09 :: primary: 0.0 -> 1.0; primary_score: 0.0 -> 1.0; primary_pass: False -> True; status_summary_present: False -> True; next_actions_present: False -> True; stale_table_present: False -> True; unresolved_application_rate: 0.0 -> 1.0; stale_rejection_rate: 0.0 -> 1.0; regraded_from_fix3: None -> True
+# summary: patched=40 no_change=0 skipped_missing=0
