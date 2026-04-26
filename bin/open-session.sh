@@ -21,6 +21,11 @@
 #   # With ~/.aigentry/config.json configured:
 #   open-session.sh --track B --role architect --task 264
 #
+# Default per-CLI flags (applied only when --extra-flags + config cli_flags both empty):
+#   claude default flags: --permission-mode bypassPermissions
+#   codex default flags: -c check_for_update_on_startup=false --dangerously-bypass-approvals-and-sandbox
+#   gemini default flags: --approval-mode yolo
+#
 # Output: session ref on stdout (cmux: "workspace:N", others: SID)
 set -euo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
@@ -124,7 +129,7 @@ if [ -z "$extra_flags" ] && [ -n "$cli_flags_from_config" ]; then
 fi
 case "$cli" in
   claude) [ -z "$extra_flags" ] && extra_flags="--permission-mode bypassPermissions";;
-  codex)  [ -z "$extra_flags" ] && extra_flags="--dangerously-bypass-approvals-and-sandbox";;
+  codex)  [ -z "$extra_flags" ] && extra_flags="-c check_for_update_on_startup=false --dangerously-bypass-approvals-and-sandbox";;
   gemini) [ -z "$extra_flags" ] && extra_flags="--approval-mode yolo";;
 esac
 
