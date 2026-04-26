@@ -237,9 +237,11 @@ execmode::compact_detect() {
 # R8 (build spec §5): on Pacc session crash → discard session, rerun cheap.
 
 execmode::chain_state_path() {
-  # Usage: execmode::chain_state_path <state_root> <run_idx> <session_idx>
-  local sr=$1 run=$2 sess=$3
-  echo "$sr/$run/Pacc/chain_sess${sess}.json"
+  # Usage: execmode::chain_state_path <state_root> <run_idx> <session_idx> [<mode>]
+  # Phase 4 (spec §5.3): <mode> defaults to "Pacc" for Phase 3 back-compat.
+  # Phase 4c Preuse arms pass their mode string so chain-state is isolated per arm.
+  local sr=$1 run=$2 sess=$3 mode=${4:-Pacc}
+  echo "$sr/$run/$mode/chain_sess${sess}.json"
 }
 
 # Exit 0 if path exists AND parses AND status=="crashed". Nonzero otherwise.
@@ -380,6 +382,253 @@ if isinstance(sid, str) and sid:
     print(sid)
     sys.exit(0)
 sys.exit(1)
+PY
+}
+
+# ─── Phase 4c: substitute-compact chain-state additions ────────────────────
+# Spec §5: additive `segment_start_position` field (default 1, back-compat for
+# Phase 3 Pacc files); set AFTER cold-restart claude call per OQ-4.
+# ADR §4.6.9 lines 343-347 (chain-state delta).
+
+execmode::chain_state_set_segment_start_position() {
+  # Usage: execmode::chain_state_set_segment_start_position <path> <new_position>
+  # Atomic write parallel to chain_state_set_session_id; creates file if absent.
+  local path=$1 new_pos=$2
+  [[ -n "$path" && -n "$new_pos" ]] || { echo "chain_state_set_segment_start_position: path + new_position required" >&2; return 2; }
+  local dir; dir="$(dirname "$path")"
+  mkdir -p "$dir"
+  local py="${EXECMODE_PY:-$EXECMODE_REPO_ROOT/.venv-exec-mode/bin/python}"
+  if [[ ! -x "$py" ]]; then
+    py="$(command -v python3 || true)"
+  fi
+  [[ -n "$py" ]] || { echo "chain_state_set_segment_start_position: no python interpreter" >&2; return 3; }
+
+  "$py" - "$path" "$new_pos" <<'PY'
+import json, os, sys, tempfile
+path, new_pos = sys.argv[1], int(sys.argv[2])
+state = None
+if os.path.exists(path):
+    try:
+        state = json.load(open(path))
+    except Exception:
+        state = None
+if not isinstance(state, dict):
+    state = {"status": "active", "fixtures_completed": []}
+state["segment_start_position"] = new_pos
+tmp = tempfile.NamedTemporaryFile(
+    "w",
+    dir=os.path.dirname(path) or ".",
+    delete=False,
+    prefix=os.path.basename(path) + ".tmp.",
+)
+json.dump(state, tmp, sort_keys=True)
+tmp.flush(); tmp.close()
+os.replace(tmp.name, path)
+PY
+}
+
+execmode::chain_state_get_segment_start_position() {
+  # Usage: execmode::chain_state_get_segment_start_position <path>
+  # Echoes integer to stdout; defaults to 1 when file/field missing
+  # (back-compat for Phase 3 chain_state.json; spec §5.2).
+  local path=$1
+  if [[ -z "$path" || ! -f "$path" ]]; then
+    echo "1"
+    return 0
+  fi
+  local py="${EXECMODE_PY:-$EXECMODE_REPO_ROOT/.venv-exec-mode/bin/python}"
+  if [[ ! -x "$py" ]]; then
+    py="$(command -v python3 || true)"
+  fi
+  if [[ -z "$py" ]]; then
+    echo "1"
+    return 0
+  fi
+  "$py" - "$path" <<'PY'
+import json, sys
+try:
+    state = json.load(open(sys.argv[1]))
+except Exception:
+    print(1)
+    sys.exit(0)
+v = state.get("segment_start_position") if isinstance(state, dict) else None
+try:
+    print(int(v) if v is not None else 1)
+except (TypeError, ValueError):
+    print(1)
+PY
+}
+
+execmode::preuse_compute_segment_input_tokens() {
+  # Usage: execmode::preuse_compute_segment_input_tokens \
+  #          <state_root> <run_idx> <mode> <session_idx> \
+  #          <segment_start_position> <current_position> <chain_path>
+  # Walks <state_root>/<run_idx>/<mode>/<fixture>/seed<NN>_pos<P>_sess<S>/metrics.json
+  # for P in [segment_start_position .. current_position - 1]; sums
+  # cost.usage_buckets.input_tokens; exits 5 (malformed) on missing prior
+  # metrics per OQ-2 (chain corruption is fail-fast).
+  # Echoes the integer sum to stdout on success.
+  local sr=$1 run=$2 mode=$3 sess=$4 seg_start=$5 cur=$6 chain=$7
+  [[ -n "$sr" && -n "$run" && -n "$mode" && -n "$sess" && -n "$seg_start" && -n "$cur" && -n "$chain" ]] \
+    || { echo "preuse_compute_segment_input_tokens: 7 args required" >&2; return 2; }
+  local py="${EXECMODE_PY:-$EXECMODE_REPO_ROOT/.venv-exec-mode/bin/python}"
+  if [[ ! -x "$py" ]]; then
+    py="$(command -v python3 || true)"
+  fi
+  [[ -n "$py" ]] || { echo "preuse_compute_segment_input_tokens: no python interpreter" >&2; return 3; }
+
+  "$py" - "$sr" "$run" "$mode" "$sess" "$seg_start" "$cur" "$chain" <<'PY'
+import json, os, sys
+sr, run, mode, sess, seg_start, cur, chain = sys.argv[1:8]
+seg_start_i = int(seg_start); cur_i = int(cur); sess_i = int(sess)
+try:
+    state = json.load(open(chain))
+except Exception as e:
+    print(f"chain state unreadable: {chain}: {e}", file=sys.stderr); sys.exit(5)
+entries = state.get("fixtures_completed") if isinstance(state, dict) else None
+if not isinstance(entries, list):
+    entries = []
+by_pos = {}
+for e in entries:
+    if not isinstance(e, dict): continue
+    try:
+        p = int(e.get("position_in_chain"))
+        s = int(e.get("seed_idx"))
+        fix = str(e.get("fixture_id"))
+    except (TypeError, ValueError):
+        continue
+    by_pos[p] = (s, fix)
+total = 0
+for p in range(seg_start_i, cur_i):
+    if p not in by_pos:
+        print(f"missing chain entry for position {p} in segment [{seg_start_i}..{cur_i-1}]", file=sys.stderr)
+        sys.exit(5)
+    seed, fix = by_pos[p]
+    stem = "seed%02d_pos%d_sess%d" % (seed, p, sess_i)
+    metrics_path = os.path.join(sr, run, mode, fix, stem, "metrics.json")
+    if not os.path.exists(metrics_path):
+        print(f"missing prior metrics: {metrics_path}", file=sys.stderr); sys.exit(5)
+    try:
+        m = json.load(open(metrics_path))
+    except Exception as e:
+        print(f"prior metrics unreadable {metrics_path}: {e}", file=sys.stderr); sys.exit(5)
+    cost = m.get("cost") if isinstance(m, dict) else None
+    buckets = cost.get("usage_buckets") if isinstance(cost, dict) else None
+    if not isinstance(buckets, dict):
+        print(f"prior metrics missing cost.usage_buckets: {metrics_path}", file=sys.stderr); sys.exit(5)
+    try:
+        total += int(buckets.get("input_tokens") or 0)
+    except (TypeError, ValueError):
+        pass
+print(total)
+PY
+}
+
+execmode::preuse_stage_inputs() {
+  # Usage: execmode::preuse_stage_inputs <stage_dir> <setup_src> <task_src> \
+  #          <prior_count> <prior_pos_1> <prior_fix_1> <prior_task_src_1> <prior_out_src_1> ...
+  # Creates depth-1 symlinks under <stage_dir> for impl A's manifest-relative
+  # path resolution. STRICT per OQ-3: fails fast if any source missing.
+  # Spec §3.3.
+  local stage=$1 setup_src=$2 task_src=$3 prior_count=$4
+  shift 4
+  [[ -n "$stage" && -n "$setup_src" && -n "$task_src" && -n "$prior_count" ]] \
+    || { echo "preuse_stage_inputs: stage/setup/task/prior_count required" >&2; return 2; }
+  [[ -f "$setup_src" ]] || { echo "preuse_stage_inputs: setup source missing: $setup_src" >&2; return 5; }
+  [[ -f "$task_src"  ]] || { echo "preuse_stage_inputs: task source missing: $task_src"  >&2; return 5; }
+
+  rm -rf "$stage"
+  mkdir -p "$stage" "$stage/prior"
+  ln -sf "$setup_src" "$stage/setup_history.md"
+  ln -sf "$task_src"  "$stage/task_prompt.md"
+
+  local i=0
+  while [ "$i" -lt "$prior_count" ]; do
+    local pos=$1 fix=$2 ptask=$3 pout=$4
+    shift 4
+    [[ -n "$pos" && -n "$fix" && -n "$ptask" ]] \
+      || { echo "preuse_stage_inputs: prior turn $i missing pos/fix/ptask" >&2; return 2; }
+    [[ -f "$ptask" ]] || { echo "preuse_stage_inputs: prior task source missing: $ptask" >&2; return 5; }
+    # OQ-3 STRICT: stage1_output may legitimately be empty (impl A handles
+    # missing per ADR §4.6.11 row 7) but the symlink target MUST exist if
+    # specified. An empty path is treated as "no prior assistant".
+    if [[ -n "$pout" ]]; then
+      [[ -f "$pout" ]] || { echo "preuse_stage_inputs: prior output source missing: $pout" >&2; return 5; }
+    fi
+    ln -sf "$ptask" "$stage/prior/${pos}_${fix}.task"
+    if [[ -n "$pout" ]]; then
+      ln -sf "$pout" "$stage/prior/${pos}_${fix}.out"
+    fi
+    i=$((i + 1))
+  done
+}
+
+execmode::preuse_build_manifest() {
+  # Usage: execmode::preuse_build_manifest <stage_dir> <out_path> \
+  #          <cut_id> <cut_tokens> <run_idx> <session_idx> \
+  #          <segment_start_position> <compact_before_position> <current_position> \
+  #          <current_fixture_id> <chain_path>
+  # Constructs ADR §4.6.3 manifest as JSON with manifest-relative paths
+  # (impl A's __main__ resolves against manifest parent dir per
+  # bin/lib/preuse_substitute_compact/impl_a/build_substitute_compact_stdin.py:236-245).
+  # prior_turns derived from chain_state.fixtures_completed entries with
+  # position_in_chain in [segment_start_position .. current_position - 1].
+  local stage=$1 out=$2 cut_id=$3 cut_tokens=$4 run=$5 sess=$6
+  local seg_start=$7 compact_before=$8 cur_pos=$9
+  local cur_fix=${10} chain=${11}
+  [[ -n "$stage" && -n "$out" && -n "$cut_id" && -n "$cut_tokens" && -n "$chain" ]] \
+    || { echo "preuse_build_manifest: required args missing" >&2; return 2; }
+  local py="${EXECMODE_PY:-$EXECMODE_REPO_ROOT/.venv-exec-mode/bin/python}"
+  if [[ ! -x "$py" ]]; then
+    py="$(command -v python3 || true)"
+  fi
+  [[ -n "$py" ]] || { echo "preuse_build_manifest: no python interpreter" >&2; return 3; }
+
+  "$py" - "$out" "$cut_id" "$cut_tokens" "$run" "$sess" \
+              "$seg_start" "$compact_before" "$cur_pos" "$cur_fix" "$chain" <<'PY'
+import json, sys
+out, cut_id, cut_tokens, run, sess, seg_start, compact_before, cur_pos, cur_fix, chain = sys.argv[1:11]
+try:
+    state = json.load(open(chain))
+except Exception as e:
+    print(f"chain unreadable: {e}", file=sys.stderr); sys.exit(5)
+entries = state.get("fixtures_completed") if isinstance(state, dict) else []
+seg_start_i = int(seg_start); cur_i = int(cur_pos)
+prior = []
+for e in entries or []:
+    if not isinstance(e, dict): continue
+    try:
+        p = int(e.get("position_in_chain"))
+    except (TypeError, ValueError):
+        continue
+    if not (seg_start_i <= p < cur_i):
+        continue
+    fix = str(e.get("fixture_id"))
+    seed = int(e.get("seed_idx"))
+    # Manifest-relative paths matching the symlink layout from preuse_stage_inputs.
+    prior.append({
+        "position_in_chain": p,
+        "fixture_id":        fix,
+        "seed_idx":          seed,
+        "task_prompt_path":  f"prior/{p}_{fix}.task",
+        "stage1_output_path": f"prior/{p}_{fix}.out",
+    })
+manifest = {
+    "schema_version":            1,
+    "cut_id":                    cut_id,
+    "cut_tokens":                int(cut_tokens),
+    "run_idx":                   int(run),
+    "session_idx":               int(sess),
+    "segment_start_position":    seg_start_i,
+    "compact_before_position":   int(compact_before),
+    "current_position":          cur_i,
+    "current_fixture_id":        cur_fix,
+    "current_task_prompt_path":  "task_prompt.md",
+    "setup_history_path":        "setup_history.md",
+    "prior_turns":               prior,
+}
+with open(out, "w", encoding="utf-8") as f:
+    json.dump(manifest, f, sort_keys=True)
 PY
 }
 

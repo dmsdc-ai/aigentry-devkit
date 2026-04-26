@@ -96,22 +96,44 @@ done
 [ -z "$seed_idx"  ] && die 5 "--seed-idx required"
 [ -z "$run_idx"   ] && die 5 "--run-idx required"
 
+# Phase 4 mode set per spec §2.1: 4 Phase 3 modes preserved; 5 new modes added
+# (Preuse-clear + Preuse-substitute-compact-C{1..4}). The cut suffix is parsed
+# from the mode string to derive cut_tokens (spec §2.2 cut map; INV-5).
+preuse_cut_tokens=""
+preuse_cut_id=""
 case "$mode" in
-  D|Pfresh|Pacc|S) ;;
-  *) die 5 "--mode must be one of D|Pfresh|Pacc|S (got: $mode)";;
+  D|Pfresh|Pacc|S)
+    ;;
+  Preuse-clear)
+    ;;
+  Preuse-substitute-compact-C1) preuse_cut_id="C1"; preuse_cut_tokens=10000  ;;
+  Preuse-substitute-compact-C2) preuse_cut_id="C2"; preuse_cut_tokens=50000  ;;
+  Preuse-substitute-compact-C3) preuse_cut_id="C3"; preuse_cut_tokens=100000 ;;
+  Preuse-substitute-compact-C4) preuse_cut_id="C4"; preuse_cut_tokens=150000 ;;
+  *) die 5 "--mode must be one of D|S|Pfresh|Pacc|Preuse-clear|Preuse-substitute-compact-C{1,2,3,4} (got: $mode)";;
 esac
+
+# Spec §2.3 + §2.4: Preuse arms use chain semantics (session/position required),
+# matching Pacc's CLI shape. Group all chain modes for arg-validator widening.
+is_chain_mode=0
+case "$mode" in
+  Pacc|Preuse-clear|Preuse-substitute-compact-C1|Preuse-substitute-compact-C2|Preuse-substitute-compact-C3|Preuse-substitute-compact-C4)
+    is_chain_mode=1
+    ;;
+esac
+
 [[ "$fixture"  =~ ^F[0-9a-zA-Z]+$ ]]   || die 5 "--fixture must match ^F[0-9a-zA-Z]+$ (got: $fixture)"
 [[ "$seed_idx" =~ ^[0-9]+$          ]] || die 5 "--seed-idx must be a non-negative integer"
 [[ "$run_idx"  =~ ^[12]$            ]] || die 5 "--run-idx must be 1 or 2"
 
-if [ "$mode" = "Pacc" ]; then
-  [ -z "$session_idx" ]       && die 5 "--session-idx required for Pacc"
-  [ -z "$position_in_chain" ] && die 5 "--position-in-chain required for Pacc"
+if [ "$is_chain_mode" -eq 1 ]; then
+  [ -z "$session_idx" ]       && die 5 "--session-idx required for chain modes (Pacc/Preuse-*)"
+  [ -z "$position_in_chain" ] && die 5 "--position-in-chain required for chain modes (Pacc/Preuse-*)"
   [[ "$session_idx"        =~ ^[0-9]+$ ]] || die 5 "--session-idx must be non-negative integer"
   [[ "$position_in_chain"  =~ ^([1-9]|10)$ ]] || die 5 "--position-in-chain must be 1..10"
 else
-  [ -n "$session_idx" ] && die 5 "--session-idx only valid for Pacc"
-  [ -n "$position_in_chain" ] && die 5 "--position-in-chain only valid for Pacc"
+  [ -n "$session_idx" ] && die 5 "--session-idx only valid for chain modes (Pacc/Preuse-*)"
+  [ -n "$position_in_chain" ] && die 5 "--position-in-chain only valid for chain modes (Pacc/Preuse-*)"
 fi
 
 # fixtures_root is read by the live path (Pfresh/D/Pacc/S) to load the
@@ -120,8 +142,10 @@ _EXECMODE_FIXTURES_ROOT="$fixtures_root"
 fixture_dir="$_EXECMODE_FIXTURES_ROOT/$fixture"
 
 # ─── trial layout ────────────────────────────────────────────────────────────
+# Spec §2.1 + §2.2: chain modes (Pacc + Preuse-*) use the seedNN_posP_sessS
+# stem; non-chain modes (D/S/Pfresh) use seedNN.
 seed_stem=$(printf "seed%02d" "$seed_idx")
-if [ "$mode" = "Pacc" ]; then
+if [ "$is_chain_mode" -eq 1 ]; then
   trial_stem="${seed_stem}_pos${position_in_chain}_sess${session_idx}"
   trial_id_tail="${seed_stem}_pos${position_in_chain}_sess${session_idx}"
 else
@@ -136,11 +160,13 @@ trial_id="${run_idx}/${mode}/${fixture}/${trial_id_tail}"
 venv_py="$REPO_ROOT/.venv-exec-mode/bin/python"
 [ -x "$venv_py" ] || die 5 "venv python not found at $venv_py; run: python3.14 -m venv .venv-exec-mode && .venv-exec-mode/bin/pip install -r requirements-exec-mode.txt"
 
-# ─── Pacc chain-state: discard session if crashed (R8) ──────────────────────
-if [ "$mode" = "Pacc" ]; then
-  chain_path="$(execmode::chain_state_path "$state_root" "$run_idx" "$session_idx")"
+# ─── chain-state: discard session if crashed (R8) ───────────────────────────
+# Spec §5.3: chain_state.json is per-arm (path includes mode); Phase 3 Pacc
+# behavior preserved by chain_state_path's default mode=Pacc.
+if [ "$is_chain_mode" -eq 1 ]; then
+  chain_path="$(execmode::chain_state_path "$state_root" "$run_idx" "$session_idx" "$mode")"
   if execmode::chain_state_is_crashed "$chain_path"; then
-    die 5 "Pacc session $session_idx (fixture=$fixture, run=$run_idx) marked crashed in $chain_path — discarded per R8; re-queue at the session level, not this trial"
+    die 5 "$mode session $session_idx (fixture=$fixture, run=$run_idx) marked crashed in $chain_path — discarded per R8; re-queue at the session level, not this trial"
   fi
 fi
 
@@ -213,6 +239,12 @@ execmode::harness_validate_fixture() {
   case "$mode" in
     D|S|Pacc) req+=( setup_history.md ) ;;
     Pfresh)   req+=( warmup_transcript.md ) ;;
+    Preuse-clear|Preuse-substitute-compact-C1|Preuse-substitute-compact-C2|Preuse-substitute-compact-C3|Preuse-substitute-compact-C4)
+      # Spec §2.3 + §2.4: Preuse arms compose stdin from setup_history + task
+      # (Preuse-clear) or impl A manifest output (Preuse-substitute-compact),
+      # both require setup_history.md present in the fixture.
+      req+=( setup_history.md )
+      ;;
   esac
   local f
   for f in "${req[@]}"; do
@@ -416,6 +448,132 @@ execmode::harness_stage1_live_Pacc() {
   fi
 }
 
+# Spec §2.3: Preuse-clear runs each chain position in a fresh claude --print.
+# stdin composition is identical to D mode (setup_history + task_prompt). The
+# chain identity lives in the run-order CSV + chain-state accounting only.
+execmode::harness_stage1_live_Preuse_clear() {
+  execmode::harness_stage1_live_D
+}
+
+# Spec §2.4: Preuse-substitute-compact-Cn extends Pacc with a per-segment cut:
+# pos=1 → Pacc cold start; pos>1 → if cumulative segment input tokens cross
+# cut_tokens, build manifest via preuse_build_manifest, invoke impl A
+# (bin/lib/preuse_substitute_compact/impl_a/build_substitute_compact_stdin.py),
+# feed result to cold `claude --print` (no --resume), capture new session_id
+# and advance segment_start_position AFTER the call (OQ-4 retry-safe order).
+# Below the cut → standard Pacc --resume path.
+# Args: $1=cut_tokens (int), $2=cut_id (C1..C4).
+execmode::harness_stage1_live_Preuse_substitute_compact() {
+  local cut_tokens=$1 cut_id=$2
+  [[ -n "$cut_tokens" && -n "$cut_id" ]] || die 5 "preuse-substitute-compact helper: cut_tokens + cut_id required"
+
+  if [ "$position_in_chain" = "1" ]; then
+    # Cold start identical to Pacc pos=1 (setup + task), capture session_id,
+    # initialize segment_start_position=1 AFTER the claude call (OQ-4).
+    local stdin_tmp; stdin_tmp="$(mktemp -t execmode-stage1-stdin.XXXXXX)"
+    {
+      cat "$fixture_dir/setup_history.md"
+      printf '\n\n'
+      cat "$fixture_dir/task_prompt.md"
+    } > "$stdin_tmp"
+    execmode::harness_invoke_claude_stage1 "$stdin_tmp" "$stage1_jsonl_path"
+    rm -f "$stdin_tmp"
+    local sid
+    sid=$(execmode::harness_extract_session_id "$stage1_jsonl_path" || echo "")
+    if [ -n "$sid" ]; then
+      execmode::chain_state_set_session_id "$chain_path" "$run_idx" "$session_idx" "$sid"
+    fi
+    execmode::chain_state_set_segment_start_position "$chain_path" 1
+    return 0
+  fi
+
+  # pos > 1: cumulative-input check decides whether to substitute-compact.
+  local seg_start; seg_start=$(execmode::chain_state_get_segment_start_position "$chain_path")
+  local seg_in
+  if ! seg_in=$(execmode::preuse_compute_segment_input_tokens \
+                  "$state_root" "$run_idx" "$mode" "$session_idx" \
+                  "$seg_start" "$position_in_chain" "$chain_path"); then
+    die 5 "preuse: segment_input_tokens computation failed for $trial_id"
+  fi
+
+  if [ "$seg_in" -lt "$cut_tokens" ]; then
+    # Below cut → standard Pacc --resume behavior (task only).
+    local prior_sid
+    prior_sid=$(execmode::chain_state_get_session_id "$chain_path" || echo "")
+    [ -n "$prior_sid" ] || die 5 "preuse-substitute-compact pos=$position_in_chain requires session_id from pos=1 in $chain_path (run pos=1 trial first)"
+    local stdin_tmp; stdin_tmp="$(mktemp -t execmode-stage1-stdin.XXXXXX)"
+    cat "$fixture_dir/task_prompt.md" > "$stdin_tmp"
+    execmode::harness_invoke_claude_stage1 "$stdin_tmp" "$stage1_jsonl_path" --resume "$prior_sid"
+    rm -f "$stdin_tmp"
+    return 0
+  fi
+
+  # Cut crossed → substitute-compact: stage symlinks, build manifest, invoke
+  # impl A, feed bytes to cold claude (NO --resume), capture new session_id,
+  # advance segment_start_position to current position (ADR §4.6.9 step 6).
+  local stage_dir="$trial_dir/.preuse_inputs"
+  # Walk chain entries in [seg_start..pos-1] to build prior_args for staging.
+  local prior_args=()
+  local p
+  for p in $(seq "$seg_start" $((position_in_chain - 1))); do
+    # Look up fixture_id + seed_idx + paths from chain_state.
+    local lookup; lookup=$("$venv_py" - "$chain_path" "$p" <<'PY'
+import json, sys
+state = json.load(open(sys.argv[1]))
+target = int(sys.argv[2])
+for e in state.get("fixtures_completed", []):
+    if int(e.get("position_in_chain")) == target:
+        print(f"{e.get('fixture_id')}\t{int(e.get('seed_idx'))}")
+        break
+PY
+)
+    if [ -z "$lookup" ]; then
+      die 5 "preuse: chain_state missing entry for position $p"
+    fi
+    local p_fix p_seed
+    p_fix=$(echo "$lookup" | cut -f1)
+    p_seed=$(echo "$lookup" | cut -f2)
+    local p_task="$_EXECMODE_FIXTURES_ROOT/$p_fix/task_prompt.md"
+    local p_stem; p_stem=$(printf "seed%02d_pos%d_sess%d" "$p_seed" "$p" "$session_idx")
+    local p_out="$state_root/$run_idx/$mode/$p_fix/$p_stem/stage1_output.md"
+    prior_args+=( "$p" "$p_fix" "$p_task" "$p_out" )
+  done
+
+  local prior_count=$((position_in_chain - seg_start))
+  execmode::preuse_stage_inputs "$stage_dir" \
+    "$fixture_dir/setup_history.md" \
+    "$fixture_dir/task_prompt.md" \
+    "$prior_count" "${prior_args[@]}"
+
+  local manifest_path="$stage_dir/manifest.json"
+  execmode::preuse_build_manifest "$stage_dir" "$manifest_path" \
+    "$cut_id" "$cut_tokens" "$run_idx" "$session_idx" \
+    "$seg_start" "$position_in_chain" "$position_in_chain" \
+    "$fixture" "$chain_path"
+
+  local impl_a="$REPO_ROOT/bin/lib/preuse_substitute_compact/impl_a/build_substitute_compact_stdin.py"
+  [ -f "$impl_a" ] || die 5 "preuse: impl A not found at $impl_a (pre-reg tag pin violated)"
+
+  local stdin_tmp; stdin_tmp="$(mktemp -t execmode-stage1-stdin.XXXXXX)"
+  if ! LC_ALL=C "$venv_py" "$impl_a" "$manifest_path" > "$stdin_tmp"; then
+    rm -f "$stdin_tmp"
+    die 5 "preuse: impl A invocation failed for $trial_id"
+  fi
+  # Cold claude --print (NO --resume) per ADR §4.6.9 step 3.
+  execmode::harness_invoke_claude_stage1 "$stdin_tmp" "$stage1_jsonl_path"
+  rm -f "$stdin_tmp"
+
+  # Step 5: extract new session_id + overwrite chain_state.session_id.
+  local new_sid
+  new_sid=$(execmode::harness_extract_session_id "$stage1_jsonl_path" || echo "")
+  if [ -n "$new_sid" ]; then
+    execmode::chain_state_set_session_id "$chain_path" "$run_idx" "$session_idx" "$new_sid"
+  fi
+  # Step 6 (OQ-4 ordering): advance segment marker AFTER claude call so a
+  # claude failure leaves chain_state untouched and the trial is retry-safe.
+  execmode::chain_state_set_segment_start_position "$chain_path" "$position_in_chain"
+}
+
 if [ "$dry_run" -eq 1 ]; then
   execmode::harness_stage1_dryrun
 else
@@ -426,6 +584,10 @@ else
     S)      execmode::harness_stage1_live_S;;
     Pfresh) execmode::harness_stage1_live_Pfresh;;
     Pacc)   execmode::harness_stage1_live_Pacc;;
+    Preuse-clear) execmode::harness_stage1_live_Preuse_clear;;
+    Preuse-substitute-compact-C1|Preuse-substitute-compact-C2|Preuse-substitute-compact-C3|Preuse-substitute-compact-C4)
+      execmode::harness_stage1_live_Preuse_substitute_compact "$preuse_cut_tokens" "$preuse_cut_id"
+      ;;
   esac
   [ -s "$stage1_jsonl_path" ] || die 5 "stage1 produced empty jsonl; claude invocation likely failed"
   execmode::harness_extract_assistant_text "$stage1_jsonl_path" "$stage1_out_path"
@@ -524,7 +686,16 @@ validator = Draft202012Validator(schema)
 
 mode = "$mode"
 dry_run = bool(int("$dry_run"))
-pacc = mode == "Pacc"
+# Spec §2.1: chain modes (session_idx + position_in_chain populated).
+# Pacc + Preuse-clear + 4 Preuse-substitute-compact-Cn cuts.
+is_chain = mode in (
+    "Pacc",
+    "Preuse-clear",
+    "Preuse-substitute-compact-C1",
+    "Preuse-substitute-compact-C2",
+    "Preuse-substitute-compact-C3",
+    "Preuse-substitute-compact-C4",
+)
 
 def maybe_int(s):
     s = s.strip()
@@ -737,8 +908,8 @@ metrics = {
     "mode": mode,
     "seed_idx": int("$seed_idx"),
     "run_idx": int("$run_idx"),
-    "session_idx": sess_idx if pacc else None,
-    "position_in_chain": pos_idx if pacc else None,
+    "session_idx": sess_idx if is_chain else None,
+    "position_in_chain": pos_idx if is_chain else None,
     "status": "ok",
     "dry_run": dry_run,
     "timestamps": {
@@ -791,8 +962,11 @@ if errs:
 json.dump(metrics, sys.stdout, sort_keys=True)
 PY
 
-# ─── T6: record Pacc chain-state entry for this position ────────────────────
-if [ "$mode" = "Pacc" ]; then
+# ─── chain-state entry: Pacc (T6) + Preuse arms (spec §2.3 + §5.3) ─────────
+# Spec §5.3: chain-state participation is uniform across chain modes; Phase 3
+# Pacc behavior preserved (the only field that differs across arms is whether
+# segment_start_position is updated at the trial — handled in the live path).
+if [ "$is_chain_mode" -eq 1 ]; then
   execmode::chain_state_append \
     "$chain_path" "$run_idx" "$fixture" "$session_idx" \
     "$position_in_chain" "$seed_idx" "$trial_id" "$stage1_end"

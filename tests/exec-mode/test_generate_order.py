@@ -24,10 +24,15 @@ REPO = Path(__file__).resolve().parents[2]
 GENERATOR = REPO / "bin" / "exec-mode-generate-order.py"
 
 EXPECTED_FIXTURES = ["F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "Fa"]
-EXPECTED_TRIALS_PER_FLAT_MODE = 300  # 10 fixtures × 30 seeds
-EXPECTED_PACC_SESSIONS = 30
+# Phase 4 widening (pre-reg tag exec-mode-v4-replication-preregistered-20260426
+# + spec docs/superpowers/specs/2026-04-26-phase4-trial-driver-wiring.md §4.2):
+# replication arms now use 20 seeds per fixture (was: 30 in Phase 3 generator,
+# 10 actually consumed by Phase 3 runner). Pacc widens to 20 sessions × 10 pos.
+EXPECTED_TRIALS_PER_FLAT_MODE = 200  # 10 fixtures × 20 seeds (Phase 4)
+EXPECTED_SEEDS_PER_FIXTURE = 20
+EXPECTED_PACC_SESSIONS = 20
 EXPECTED_PACC_POSITIONS = 10
-EXPECTED_PACC_TRIALS = EXPECTED_PACC_SESSIONS * EXPECTED_PACC_POSITIONS  # 300
+EXPECTED_PACC_TRIALS = EXPECTED_PACC_SESSIONS * EXPECTED_PACC_POSITIONS  # 200
 
 
 @pytest.fixture
@@ -64,16 +69,16 @@ def test_flat_csv_columns(tmp_path, generator, mode):
 
 @pytest.mark.parametrize("mode", ["D", "Pfresh", "S"])
 def test_flat_csv_balanced(tmp_path, generator, mode):
-    """Every fixture appears 30×; every seed_idx (0..29) appears 10×."""
+    """Every fixture appears 20×; every seed_idx (0..19) appears 10× (Phase 4)."""
     out = tmp_path / f"run_order_{mode}.csv"
     generator.write_flat_order(mode, out)
     rows = _read_csv(out)
     fixtures = Counter(r["fixture_id"] for r in rows)
     seeds = Counter(int(r["seed_idx"]) for r in rows)
     assert set(fixtures) == set(EXPECTED_FIXTURES)
-    assert all(fixtures[f] == 30 for f in EXPECTED_FIXTURES)
-    assert set(seeds) == set(range(30))
-    assert all(seeds[s] == 10 for s in range(30))
+    assert all(fixtures[f] == EXPECTED_SEEDS_PER_FIXTURE for f in EXPECTED_FIXTURES)
+    assert set(seeds) == set(range(EXPECTED_SEEDS_PER_FIXTURE))
+    assert all(seeds[s] == len(EXPECTED_FIXTURES) for s in range(EXPECTED_SEEDS_PER_FIXTURE))
 
 
 @pytest.mark.parametrize("mode", ["D", "Pfresh", "S"])
@@ -145,11 +150,12 @@ def test_pacc_each_session_covers_all_fixtures_at_distinct_positions(tmp_path, g
         assert fixtures == set(EXPECTED_FIXTURES), f"session {sid}"
 
 
-def test_pacc_position_average_three(tmp_path, generator):
-    """30 sessions × 10 positions / 10 fixtures = average 3 per (fixture, position).
+def test_pacc_position_average(tmp_path, generator):
+    """20 sessions × 10 positions / 10 fixtures = average 2 per (fixture, position).
 
-    Spec §4.4 says 평균(average) 3 — exact balance is NOT guaranteed by random
-    shuffle (binomial dispersion). Test the invariant the spec actually states.
+    Phase 4 widening reduces the per-cell average from 3 (Phase 3) to 2.
+    Exact balance is NOT guaranteed by random shuffle (binomial dispersion);
+    the spec only constrains the deterministic seed.
     """
     out = tmp_path / "Pacc.csv"
     generator.write_pacc_order(out)
@@ -157,7 +163,7 @@ def test_pacc_position_average_three(tmp_path, generator):
     pairs = Counter((r["fixture_id"], int(r["position_in_chain"])) for r in rows)
     assert sum(pairs.values()) == EXPECTED_PACC_TRIALS
     avg = sum(pairs.values()) / (len(EXPECTED_FIXTURES) * EXPECTED_PACC_POSITIONS)
-    assert avg == pytest.approx(3.0)
+    assert avg == pytest.approx(EXPECTED_PACC_TRIALS / (len(EXPECTED_FIXTURES) * EXPECTED_PACC_POSITIONS))
 
 
 def test_pacc_seed_idx_equals_session_idx(tmp_path, generator):

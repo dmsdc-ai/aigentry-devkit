@@ -1,21 +1,37 @@
 #!/usr/bin/env python3
-"""Generate pre-registered run orders for the exec-mode comparison experiment (T14).
+"""Generate pre-registered run orders for the exec-mode comparison experiment.
 
-Produces four CSVs under --output-dir:
+Phase 3 (T14): produced 4 CSVs (D / Pfresh / S flat-shuffle + Pacc per-session)
+under a single output dir. Phase 4 extends to 9 CSVs per the trial-driver
+wiring spec `docs/superpowers/specs/2026-04-26-phase4-trial-driver-wiring.md`
+§4 — pre-reg tag `exec-mode-v4-replication-preregistered-20260426`.
 
-  run_order_D.csv       300 trials  10 fixtures × 30 seeds   flat shuffle
-  run_order_Pfresh.csv  300 trials  10 fixtures × 30 seeds   flat shuffle
-  run_order_S.csv       300 trials  10 fixtures × 30 seeds   flat shuffle
-  run_order_Pacc.csv    300 trials  30 sessions × 10 positions  per-session shuffle
+CSV outputs (Phase 4):
 
-Determinism (spec §4.4 / §7.5):
+  Replication arms (10 fixtures × 20 seeds = 200 trials each):
+    run_order_D.csv
+    run_order_Pfresh.csv
+    run_order_S.csv
+    run_order_Pacc.csv          (20 sessions × 10 positions)
+
+  Preuse arms (10 fixtures × 10 seeds = 100 trials each):
+    run_order_Preuse-clear.csv
+    run_order_Preuse-substitute-compact-C1.csv
+    run_order_Preuse-substitute-compact-C2.csv
+    run_order_Preuse-substitute-compact-C3.csv
+    run_order_Preuse-substitute-compact-C4.csv
+
+Total Phase 4 trials: 800 + 500 = 1,300 (matches pre-reg tag annotation).
+
+Determinism (spec §4.3):
 - D / Pfresh / S use a master seed derived as MASTER_SEED + mode_offset so the
   three orders are reproducible AND distinct (no shared time-slot confound).
-- Pacc per-session order = random.Random(session_idx).shuffle(FIXTURES) per
-  spec line 143. seed_idx in the CSV equals session_idx (1..30).
-
-CSV columns are stable; the harness (Session A) reads them positionally.
-The trial_idx column is dense 0..N-1 to make resume-by-index trivial.
+  Phase 4 takes the FIRST 20 seeds per fixture (was: first 10 in Phase 3).
+- Pacc + Preuse arms per-session order = random.Random(session_idx).shuffle(FIXTURES)
+  per spec §4.3 — Preuse arms use the same per-session shuffle as Pacc so that
+  sessions 1..10 of every Preuse arm visit fixtures in the same order as
+  sessions 1..10 of Pacc (intentional + pre-registered: per-arm fixture-ordering
+  variance would confound arm comparison).
 
 CLI:
   exec-mode-generate-order.py --output-dir <dir>
@@ -30,16 +46,29 @@ import sys
 from pathlib import Path
 
 FIXTURES: tuple[str, ...] = ("F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "Fa")
-SEEDS_PER_FIXTURE = 30
-PACC_SESSIONS = 30
-PACC_POSITIONS = 10
+
+# Phase 4 seed/session counts (spec §4.3).
+SEEDS_PER_FIXTURE_REPLICATION = 20
+SEEDS_PER_FIXTURE_PREUSE = 10  # not used for flat-shuffle; per-session arms use PREUSE_SESSIONS
+PACC_SESSIONS_REPLICATION = 20
+PREUSE_SESSIONS = 10
+PACC_POSITIONS = 10  # unchanged from Phase 3
+PREUSE_POSITIONS = 10  # matches PACC_POSITIONS
 
 MASTER_SEED = 42
+# Phase 3 offsets preserved verbatim (spec §4.3): Pacc + Preuse arms use
+# session_idx as their RNG key, so they are intentionally absent here.
 _MODE_OFFSET = {"D": 0, "Pfresh": 1, "S": 2}
 
+_PER_SESSION_HEADER = ["trial_idx", "session_idx", "position_in_chain", "fixture_id", "seed_idx"]
+_FLAT_HEADER = ["trial_idx", "fixture_id", "seed_idx"]
 
-def _flat_pairs() -> list[tuple[str, int]]:
-    return [(f, s) for f in FIXTURES for s in range(SEEDS_PER_FIXTURE)]
+# Preuse-substitute-compact cuts (spec §2.2 cut map; INV-5 hardcoded values).
+PREUSE_SUBSTITUTE_COMPACT_CUTS: tuple[str, ...] = ("C1", "C2", "C3", "C4")
+
+
+def _flat_pairs(seeds_per_fixture: int) -> list[tuple[str, int]]:
+    return [(f, s) for f in FIXTURES for s in range(seeds_per_fixture)]
 
 
 def _write_csv(path: Path, header: list[str], rows: list[list[object]]) -> None:
@@ -50,38 +79,72 @@ def _write_csv(path: Path, header: list[str], rows: list[list[object]]) -> None:
         w.writerows(rows)
 
 
-def write_flat_order(mode: str, out: Path) -> None:
-    """Write run_order_{D|Pfresh|S}.csv."""
+def write_flat_order(mode: str, out: Path,
+                     seeds_per_fixture: int = SEEDS_PER_FIXTURE_REPLICATION) -> None:
+    """Write run_order_{D|Pfresh|S}.csv (flat shuffle keyed by MASTER_SEED + mode_offset)."""
     if mode not in _MODE_OFFSET:
         raise ValueError(f"flat mode must be one of {sorted(_MODE_OFFSET)}, got {mode!r}")
-    pairs = _flat_pairs()
+    pairs = _flat_pairs(seeds_per_fixture)
     random.Random(MASTER_SEED + _MODE_OFFSET[mode]).shuffle(pairs)
     rows = [[idx, fixture, seed] for idx, (fixture, seed) in enumerate(pairs)]
-    _write_csv(out, ["trial_idx", "fixture_id", "seed_idx"], rows)
+    _write_csv(out, _FLAT_HEADER, rows)
 
 
-def write_pacc_order(out: Path) -> None:
-    """Write run_order_Pacc.csv (30 sessions × 10 fixtures, balanced positions on average)."""
+def _per_session_rows(num_sessions: int) -> list[list[object]]:
+    """Per-session shuffle keyed by session_idx (Pacc + all Preuse arms).
+
+    Spec §4.3: sessions 1..10 of every per-session arm visit fixtures in the
+    same order — guarantees fixture-ordering variance does not confound
+    cross-arm comparison.
+    """
     rows: list[list[object]] = []
     trial_idx = 0
-    for session_idx in range(1, PACC_SESSIONS + 1):
+    for session_idx in range(1, num_sessions + 1):
         order = list(FIXTURES)
         random.Random(session_idx).shuffle(order)
         for position, fixture in enumerate(order, start=1):
             rows.append([trial_idx, session_idx, position, fixture, session_idx])
             trial_idx += 1
-    _write_csv(
-        out,
-        ["trial_idx", "session_idx", "position_in_chain", "fixture_id", "seed_idx"],
-        rows,
-    )
+    return rows
+
+
+def write_pacc_order(out: Path) -> None:
+    """Write run_order_Pacc.csv (20 sessions × 10 positions = 200 trials)."""
+    rows = _per_session_rows(num_sessions=PACC_SESSIONS_REPLICATION)
+    _write_csv(out, _PER_SESSION_HEADER, rows)
+
+
+def write_preuse_clear_order(out: Path) -> None:
+    """Write run_order_Preuse-clear.csv (10 sessions × 10 positions = 100 trials)."""
+    rows = _per_session_rows(num_sessions=PREUSE_SESSIONS)
+    _write_csv(out, _PER_SESSION_HEADER, rows)
+
+
+def write_preuse_substitute_compact_order(out: Path, _cut_id: str) -> None:
+    """Write run_order_Preuse-substitute-compact-{Cn}.csv.
+
+    The cut_id is recorded only in the filename; the CSV body is identical to
+    Preuse-clear (same per-session shuffle, same seed = session_idx). The cut
+    parameter is consumed by the trial driver via the --mode flag, not by
+    the CSV.
+    """
+    rows = _per_session_rows(num_sessions=PREUSE_SESSIONS)
+    _write_csv(out, _PER_SESSION_HEADER, rows)
 
 
 def write_all(output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
+    # Phase 3 modes (replication scope: 20 seeds, 4 modes — spec §4.2 row D/Pfresh/S).
     for mode in ("D", "Pfresh", "S"):
         write_flat_order(mode, output_dir / f"run_order_{mode}.csv")
     write_pacc_order(output_dir / "run_order_Pacc.csv")
+    # Phase 4 Preuse arms (10 sessions, 5 modes — spec §4.2 row Preuse-*).
+    write_preuse_clear_order(output_dir / "run_order_Preuse-clear.csv")
+    for cut_id in PREUSE_SUBSTITUTE_COMPACT_CUTS:
+        write_preuse_substitute_compact_order(
+            output_dir / f"run_order_Preuse-substitute-compact-{cut_id}.csv",
+            cut_id,
+        )
 
 
 def main(argv: list[str] | None = None) -> int:

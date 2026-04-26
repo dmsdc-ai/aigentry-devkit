@@ -27,25 +27,34 @@
     "trial_id": {
       "type": "string",
       "description": "Stable unique id: {run_idx}/{mode}/{fixture_id}/seed{NN}[_pos{P}_sess{S}]. Must equal the directory stem this file lives in.",
-      "pattern": "^[0-9]+/(D|Pfresh|Pacc|S)/F[0-9a-zA-Z]+/seed[0-9]{2,3}(_pos[0-9]+_sess[0-9]+)?$"
+      "pattern": "^[0-9]+/(D|Pfresh|Pacc|S|Preuse-clear|Preuse-substitute-compact-C[1-4])/F[0-9a-zA-Z]+/seed[0-9]{2,3}(_pos[0-9]+_sess[0-9]+)?$"
     },
     "fixture_id": {
       "type": "string",
       "pattern": "^F[0-9a-zA-Z]+$"
     },
-    "mode": { "enum": ["D", "Pfresh", "Pacc", "S"] },
+    "mode": {
+      "enum": [
+        "D", "Pfresh", "Pacc", "S",
+        "Preuse-clear",
+        "Preuse-substitute-compact-C1",
+        "Preuse-substitute-compact-C2",
+        "Preuse-substitute-compact-C3",
+        "Preuse-substitute-compact-C4"
+      ]
+    },
     "seed_idx": { "type": "integer", "minimum": 0 },
     "run_idx": { "type": "integer", "enum": [1, 2] },
     "session_idx": {
       "type": ["integer", "null"],
       "minimum": 0,
-      "description": "Pacc only (30 independent sessions). null for D/Pfresh/S."
+      "description": "Chain modes only (Pacc + Preuse-*). null for D/Pfresh/S."
     },
     "position_in_chain": {
       "type": ["integer", "null"],
       "minimum": 1,
       "maximum": 10,
-      "description": "Pacc only (1..10). null for D/Pfresh/S."
+      "description": "Chain modes only (Pacc + Preuse-*, positions 1..10). null for D/Pfresh/S."
     },
     "status": {
       "enum": ["ok", "failed", "timeout", "rate_limit_exhausted", "compact_blocked", "malformed_fixture"]
@@ -260,8 +269,21 @@
   },
   "allOf": [
     {
-      "description": "Pacc mode must populate session_idx + position_in_chain; other modes must leave them null.",
-      "if": { "properties": { "mode": { "const": "Pacc" } } },
+      "description": "Chain modes (Pacc + Preuse-*) must populate session_idx + position_in_chain; non-chain modes must leave them null.",
+      "if": {
+        "properties": {
+          "mode": {
+            "enum": [
+              "Pacc",
+              "Preuse-clear",
+              "Preuse-substitute-compact-C1",
+              "Preuse-substitute-compact-C2",
+              "Preuse-substitute-compact-C3",
+              "Preuse-substitute-compact-C4"
+            ]
+          }
+        }
+      },
       "then": {
         "properties": {
           "session_idx":       { "type": "integer" },
