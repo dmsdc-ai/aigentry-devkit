@@ -1,0 +1,29 @@
+{
+  "compact_before_position": 5,
+  "current_fixture_id": "fix10c",
+  "current_position": 5,
+  "current_task_prompt_path": "_fixtures/m10/task_prompt.md",
+  "cut_id": "C2",
+  "cut_tokens": 50000,
+  "prior_turns": [
+    {
+      "fixture_id": "fix10a",
+      "position_in_chain": 3,
+      "seed_idx": 20,
+      "stage1_output_path": "_fixtures/m10/stage1_output.txt",
+      "task_prompt_path": "_fixtures/m10/task_prompt.md"
+    },
+    {
+      "fixture_id": "fix10b",
+      "position_in_chain": 4,
+      "seed_idx": 21,
+      "stage1_output_path": "_fixtures/m10/stage1_output.txt",
+      "task_prompt_path": "_fixtures/m10/task_prompt.md"
+    }
+  ],
+  "run_idx": 10,
+  "schema_version": 1,
+  "segment_start_position": 3,
+  "session_idx": 1,
+  "setup_history_path": "_fixtures/m10/setup_history.md"
+}

@@ -1,0 +1,22 @@
+{
+  "compact_before_position": 2,
+  "current_fixture_id": "fix07a",
+  "current_position": 2,
+  "current_task_prompt_path": "_fixtures/m07/task_prompt.md",
+  "cut_id": "C2",
+  "cut_tokens": 50000,
+  "prior_turns": [
+    {
+      "fixture_id": "fix07a",
+      "position_in_chain": 1,
+      "seed_idx": 0,
+      "stage1_output_path": "_fixtures/m07/stage1_output.txt",
+      "task_prompt_path": "_fixtures/m07/task_prompt.md"
+    }
+  ],
+  "run_idx": 7,
+  "schema_version": 1,
+  "segment_start_position": 1,
+  "session_idx": 1,
+  "setup_history_path": "_fixtures/m07/setup_history.md"
+}

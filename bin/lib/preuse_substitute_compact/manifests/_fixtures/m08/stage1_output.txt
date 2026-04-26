@@ -1,0 +1,1 @@
+Output for m08 — minimal content for the C1 boundary test.
