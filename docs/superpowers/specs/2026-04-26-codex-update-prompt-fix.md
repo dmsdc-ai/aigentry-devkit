@@ -385,8 +385,8 @@ Total: ≤ 15 min including verification.
 ## §15 Phase 2 Changelog
 
 **Date applied:** 2026-04-26
-**Phase 2 commit:** `<COMMIT-SHA-PLACEHOLDER>` (filled by Phase 2 commit step;
-orchestrator may rewrite post-merge)
+**Phase 2 commit:** `7d874d64b2315b7cd521d57936e211f7631e0750` (this commit
+amended-in via follow-up; orchestrator may rewrite post-merge)
 **Executed by:** aigentry-devkit-coder (Claude Opus 4.7) per Phase 2 inject
 authorized by orchestrator after Phase 1 review.
 
