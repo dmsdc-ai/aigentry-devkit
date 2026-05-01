@@ -1826,6 +1826,25 @@ def score_h10_strict_instruction_following(agent_output: str, ground_truth: dict
             # range (1900-2099) prevents false positives in retrospective memos
             # that are explicitly 2026-dated by the prompt.
             year_pat = re.compile(r"(?:19|20)\d{2}")
+            # NB1 (cascade-13d codex): blanket year-shape skip masked metric
+            # counts that happen to fall in 1900-2099 (e.g., "2026 건" = 2026
+            # items, "1985 명" = 1985 people). Disambiguate by inspecting the
+            # token's right-context: an immediately-following counter marker
+            # (Korean counter or English count noun) signals metric usage and
+            # must NOT be skipped. Year-context (no counter follows) still
+            # passes per B1.
+            counter_after_pat = re.compile(
+                r"\s+(?:"
+                # Single-char Korean counters bounded by particle/punct/EOL
+                # to avoid colliding with common nouns (e.g., 회 vs 회고).
+                r"(?:건|명|개|번|호|회)"
+                r"(?=[\s.,!?)\]은는이가을를과의에도만로]|이[가다였었랐]|$)"
+                r"|"
+                # English count nouns at word boundary
+                r"(?:items?|units?|errors?|requests?|tickets?|people|times|counts?)"
+                r"\b"
+                r")"
+            )
             violations: list[str] = []
             for m in re.finditer(r"(?<![\w\-/])\d+(?:[,\.]\d+)*(?![\w\-/])", prose):
                 tok = m.group(0)
@@ -1835,9 +1854,11 @@ def score_h10_strict_instruction_following(agent_output: str, ground_truth: dict
                 digits_only = tok.replace(",", "")
                 if len(digits_only) < min_digits:
                     continue
-                # B1: skip standalone 4-digit year-shaped tokens.
+                # B1+NB1: skip year-shaped tokens only if right-context isn't
+                # a counter marker. With counter follow, treat as metric count.
                 if year_pat.fullmatch(tok):
-                    continue
+                    if not counter_after_pat.match(prose, m.end()):
+                        continue
                 # If no comma at all and >= min_digits, it's a violation.
                 if "," not in tok:
                     violations.append(tok)
@@ -2263,7 +2284,6 @@ def score_h5_agentic_tool_use(agent_output: str, ground_truth: dict) -> dict:
 
     phantom_cfg = ground_truth.get("phantom_tool_check") or {}
     phantom_pat = phantom_cfg.get("candidate_pattern") or r"(?:^|\d\.\s+|`)([a-z_][a-z0-9_]*)\s*\("
-    candidate_calls = re.findall(phantom_pat, text, re.MULTILINE)
     # B4 (cascade-13b gemini): the prompt explicitly requires citing candidate
     # bug-target functions (e.g., `apply_refund(...)`). Those literals share the
     # phantom regex shape but are NOT phantom tool invocations. Build a citation
@@ -2273,10 +2293,22 @@ def score_h5_agentic_tool_use(agent_output: str, ground_truth: dict) -> dict:
     for pat in (citation_cfg.get("candidate_function_any_of") or []):
         if isinstance(pat, str) and re.fullmatch(r"[a-z_][a-z0-9_]*", pat):
             citation_allowlist.add(pat)
-    phantom_calls = sorted({
-        c for c in candidate_calls
-        if c not in palette and c not in citation_allowlist
-    })
+    # NB2 (cascade-13d codex): the identifier-wide allowlist masked actual
+    # phantom invocations whenever the same name also appeared as a citation
+    # (e.g., backticked `apply_refund()`). Switch to citation-CONTEXT-only
+    # exemption: a name is only treated as citation when its match position
+    # is preceded by a backtick. Names matched in numbered-step or line-start
+    # context (true call sites) are no longer pre-exempted and must rely on
+    # the palette membership check alone.
+    candidate_calls: list[str] = []
+    for m in re.finditer(phantom_pat, text, re.MULTILINE):
+        name = m.group(1)
+        prev_char = text[m.start(1) - 1] if m.start(1) > 0 else ""
+        if prev_char == "`":
+            # citation context — not an invocation
+            continue
+        candidate_calls.append(name)
+    phantom_calls = sorted({c for c in candidate_calls if c not in palette})
     per = float(phantom_cfg.get("penalty_per", 0.10))
     cap = float(phantom_cfg.get("max_penalty", 0.40))
     phantom_penalty = min(cap, per * len(phantom_calls))

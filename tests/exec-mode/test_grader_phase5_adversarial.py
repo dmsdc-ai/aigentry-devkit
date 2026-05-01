@@ -244,3 +244,119 @@ def test_h1_b8_partial_match_below_floor_fails_pass_gate():
     assert score["primary_pass"] is False, (
         f"partial 2/6 match must fail min floor; score={score['primary_score']}"
     )
+
+
+# ─── NB1 — H10 year-skip too broad (over-correction in cascade-13c B1) ───────
+# Round-2 codex caught: B1 fix skipped ALL 1900-2099 tokens, masking metric
+# counts that happen to fall in year-shape (e.g., "2026 건" = 2026 items).
+
+def test_h10_nb1_year_shape_with_korean_counter_must_flag():
+    """4-digit year-shaped tokens immediately followed by a Korean counter
+    (건/명/개/번/호) signal metric-count usage, not a date — must be flagged
+    as missing thousands comma."""
+    truth = _load_truth("H10")
+    text = (
+        "## 무슨 일이 있었나\n"
+        "결제 흐름은 2026 건이었고, 응답 큐에 1985 명이 대기했다.\n"
+        "회고 작성자 사인오프: ops-on-call."
+    )
+    score = g.score_h10_strict_instruction_following(text, truth)
+    c5 = next(c for c in score["constraint_results"] if c["id"] == "C5")
+    assert c5["passed"] is False, (
+        f"C5 must flag year-shaped count (NB1): {c5}"
+    )
+    assert "2026" in c5["violations"], c5
+    assert "1985" in c5["violations"], c5
+
+
+def test_h10_nb1_year_shape_with_english_counter_must_flag():
+    """English count nouns (errors/requests/items) after year-shape tokens
+    likewise mark metric-count usage."""
+    truth = _load_truth("H10")
+    text = (
+        "## 무슨 일이 있었나\n"
+        "We saw 2026 errors and 1985 requests in the dead-letter queue.\n"
+        "회고 작성자 사인오프: ops-on-call."
+    )
+    score = g.score_h10_strict_instruction_following(text, truth)
+    c5 = next(c for c in score["constraint_results"] if c["id"] == "C5")
+    assert c5["passed"] is False, c5
+    assert "2026" in c5["violations"], c5
+    assert "1985" in c5["violations"], c5
+
+
+def test_h10_nb1_year_shape_in_date_context_still_passes():
+    """Regression: B1 — year-shaped tokens in genuine date/year context
+    (followed by 회고/패턴 etc., or preceded by 'in') must still pass.
+    The NB1 fix must not over-revert to flagging genuine years."""
+    truth = _load_truth("H10")
+    text = (
+        "## 무슨 일이 있었나\n"
+        "2026 회고로 정리한다. 1985 패턴과 비슷하다. "
+        "결제 흐름은 1,247 건이었다.\n"
+        "회고 작성자 사인오프: ops-on-call."
+    )
+    score = g.score_h10_strict_instruction_following(text, truth)
+    c5 = next(c for c in score["constraint_results"] if c["id"] == "C5")
+    assert c5["passed"] is True, (
+        f"C5 wrongly flagged date-context year-shape (NB1 over-revert): {c5}"
+    )
+    assert c5["violations"] == []
+
+
+# ─── NB2 — H5 citation allowlist too broad (over-correction in B4) ───────────
+# Round-2 codex caught: identifier-wide allowlist masks ALL occurrences of an
+# allowlisted name, including actual phantom invocations in numbered steps.
+
+def test_h5_nb2_numbered_step_invocation_still_phantom_after_citation():
+    """A numbered-step invocation `apply_refund(123)` of a non-palette name
+    must remain phantom even when the same name appears as a backticked
+    citation elsewhere in the plan. The allowlist is citation-context-only;
+    it must not exempt actual call-context invocations."""
+    truth = _load_truth("H5")
+    plan = """## Plan
+
+1. run_tests(target="tests/test_refund.py::test_partial_refund_within_24h") — reproduce.
+2. apply_refund(amount=123, txn_id="t1") — wrongly invoke candidate function as a tool.
+3. grep_search(pattern="def apply_refund") — locate `apply_refund()` and `is_within_24h()`.
+4. read_file(path="payments-svc/refund.py") — read body.
+5. edit_file(path="payments-svc/time_utils.py", old_text="x", new_text="y") — fix `is_within_24h()`.
+6. run_tests(target="tests/test_refund.py") — verify.
+"""
+    score = g.score_h5_agentic_tool_use(plan, truth)
+    assert "apply_refund" in score["phantom_tool_calls"], (
+        f"NB2: apply_refund invocation in numbered step must be phantom even "
+        f"if cited elsewhere; phantom_tool_calls={score['phantom_tool_calls']}"
+    )
+    assert score["primary_pass"] is False
+
+
+def test_h5_nb2_pure_backtick_citation_no_invocation_still_passes():
+    """Regression: B4 — pure backticked citation `apply_refund()` with no
+    line-start/numbered-step invocation must still NOT be flagged as phantom.
+    The NB2 fix must not over-revert by re-flagging backtick citations."""
+    truth = _load_truth("H5")
+    score = g.score_h5_agentic_tool_use(H5_PLAN_WITH_CITATIONS, truth)
+    assert "apply_refund" not in score["phantom_tool_calls"], (
+        f"NB2 over-revert: backtick citations wrongly re-flagged: "
+        f"{score['phantom_tool_calls']}"
+    )
+    assert "is_within_24h" not in score["phantom_tool_calls"]
+
+
+def test_h5_nb2_bare_identifier_without_parens_never_phantom():
+    """Bare identifier citations without `()` (e.g., 'process_data' as prose)
+    do not match the call-context regex at all — they are never phantom
+    regardless of allowlist behavior. Documents the expected boundary."""
+    truth = _load_truth("H5")
+    plan = """## Plan
+
+1. run_tests(target="tests/test_refund.py::test_partial_refund_within_24h") — reproduce.
+2. read_file(path="tests/test_refund.py") — read the failing test; mentions process_data.
+3. grep_search(pattern="def apply_refund") — locate `apply_refund()`.
+4. read_file(path="payments-svc/refund.py") — read body.
+5. edit_file(path="payments-svc/time_utils.py", old_text="x", new_text="y") — fix.
+6. run_tests(target="tests/test_refund.py") — verify.
+"""
+    score = g.score_h5_agentic_tool_use(plan, truth)
+    assert "process_data" not in score["phantom_tool_calls"], score["phantom_tool_calls"]
