@@ -1750,6 +1750,21 @@ def score_h10_strict_instruction_following(agent_output: str, ground_truth: dict
     type→checker dispatcher. No LLM judge.
     """
     text = agent_output or ""
+
+    # B3 (cascade-13b gemini): empty/whitespace output gets a misleading 0.5 from
+    # vacuously-passing negative constraints (regex_must_not_match). Reject before
+    # rubric runs so score is monotonic in actual content.
+    if len(text.strip()) < 20:
+        return {
+            "fixture": ground_truth.get("fixture", "H10"),
+            "constraints_total": len(ground_truth.get("constraints") or []),
+            "constraints_passed": 0,
+            "constraint_results": [],
+            "primary_pass": False,
+            "primary_score": 0.0,
+            "empty_output_rejection": True,
+        }
+
     prose = _h10_extract_prose(text)
     constraint_results: list[dict] = []
 
@@ -1806,6 +1821,11 @@ def score_h10_strict_instruction_following(agent_output: str, ground_truth: dict
             # hyphen or slash so identifiers don't false-trigger.
             min_value = int(cfg.get("min_value", 1000))
             min_digits = len(str(min_value))
+            # B1 (cascade-13b gemini): 4-digit years like "2026", "1985" are
+            # date-context values, not metric counts. Skipping the year-shaped
+            # range (1900-2099) prevents false positives in retrospective memos
+            # that are explicitly 2026-dated by the prompt.
+            year_pat = re.compile(r"(?:19|20)\d{2}")
             violations: list[str] = []
             for m in re.finditer(r"(?<![\w\-/])\d+(?:[,\.]\d+)*(?![\w\-/])", prose):
                 tok = m.group(0)
@@ -1814,6 +1834,9 @@ def score_h10_strict_instruction_following(agent_output: str, ground_truth: dict
                     continue
                 digits_only = tok.replace(",", "")
                 if len(digits_only) < min_digits:
+                    continue
+                # B1: skip standalone 4-digit year-shaped tokens.
+                if year_pat.fullmatch(tok):
                     continue
                 # If no comma at all and >= min_digits, it's a violation.
                 if "," not in tok:
@@ -1859,13 +1882,20 @@ def score_h10_strict_instruction_following(agent_output: str, ground_truth: dict
     n_pass = sum(1 for c in constraint_results if c["passed"])
     primary_score = round(_clamp01(n_pass / n), 4)
     pass_threshold = float(((ground_truth.get("primary_metric") or {}).get("pass_threshold")) or 1.0)
+    # B2 (cascade-13b codex): the H10 prompt declares "any single violation
+    # auto-rejects" semantics. Continuous score stays for analysis, but pass is
+    # binary on full-constraint satisfaction (n_pass == n). Threshold field is
+    # retained for backward-compat reporting only.
+    failed_constraint_ids = [c["id"] for c in constraint_results if not c["passed"]]
 
     return {
         "fixture": ground_truth.get("fixture", "H10"),
         "constraints_total": n,
         "constraints_passed": n_pass,
         "constraint_results": constraint_results,
-        "primary_pass": primary_score >= pass_threshold,
+        "failed_constraint_ids": failed_constraint_ids,
+        "pass_threshold": pass_threshold,
+        "primary_pass": (n_pass == n),
         "primary_score": primary_score,
     }
 
@@ -1951,6 +1981,22 @@ def score_h1_long_form_code_review(agent_output: str, ground_truth: dict) -> dic
 
     pass_threshold = float(((ground_truth.get("primary_metric") or {}).get("pass_threshold")) or 1.0)
 
+    # B8 (cascade-13b codex condition): the 0.55 F1 threshold lets a
+    # Critical+1-High subset (2/6 issues) pass, which understates the prompt's
+    # "find six bugs" signal. Apply an objective floor: an output must match at
+    # least half of the planted issues — defaulting to ⌈n/2⌉ when the fixture
+    # does not specify, with primary_metric.min_matches_for_pass as an override.
+    primary_metric = ground_truth.get("primary_metric") or {}
+    min_matches_default = max(1, (len(issues) + 1) // 2) if issues else 0
+    min_matches = int(primary_metric.get("min_matches_for_pass", min_matches_default))
+    matches_floor_ok = len(matched_ids) >= min_matches
+
+    primary_pass = (
+        primary_score >= pass_threshold
+        and structure_ok
+        and matches_floor_ok
+    )
+
     return {
         "fixture": ground_truth.get("fixture", "H1"),
         "matched_issue_ids": matched_ids,
@@ -1962,7 +2008,9 @@ def score_h1_long_form_code_review(agent_output: str, ground_truth: dict) -> dic
         "precision": round(precision, 4),
         "recall": round(recall, 4),
         "structure_ok": structure_ok,
-        "primary_pass": primary_score >= pass_threshold and structure_ok,
+        "min_matches_for_pass": min_matches,
+        "matches_floor_ok": matches_floor_ok,
+        "primary_pass": primary_pass,
         "primary_score": primary_score,
     }
 
@@ -2006,6 +2054,29 @@ def score_h2_multi_hop_reasoning(agent_output: str, ground_truth: dict) -> dict:
     primary_score = round(_clamp01(0.7 * answer_rate + 0.3 * step_rate), 4)
     pass_threshold = float(((ground_truth.get("primary_metric") or {}).get("pass_threshold")) or 1.0)
 
+    # B6 (cascade-13b codex): two cheats currently pass H2:
+    #   (a) "answer-only" output (3/3 answers, 0/4 steps) hits 0.7 — passes the
+    #       0.7 threshold even though the prompt requires reasoning steps.
+    #   (b) Verbatim ground_truth.json copy passes because the regex scan finds
+    #       the canonical answer text inside the JSON dump.
+    # Fix (a) with a reasoning gate: step_rate >= 0.75 (3/4 steps) for pass.
+    # Fix (b) with ground_truth-leak detection: any rubric key as substring
+    # marks the output as a leak and forces primary_pass=False.
+    min_step_rate = 0.75
+    leak_markers = (
+        "expected_answer_regex_any_of",
+        "canonical_solution",
+        "primary_grader",
+        "intermediate_steps",
+        "regex_any_of",
+    )
+    ground_truth_leak = any(marker in text for marker in leak_markers)
+    primary_pass = (
+        primary_score >= pass_threshold
+        and step_rate >= min_step_rate
+        and not ground_truth_leak
+    )
+
     return {
         "fixture": ground_truth.get("fixture", "H2"),
         "sub_question_results": sub_q_results,
@@ -2015,7 +2086,9 @@ def score_h2_multi_hop_reasoning(agent_output: str, ground_truth: dict) -> dict:
         "intermediate_step_results": step_results,
         "matched_steps": matched_steps,
         "step_rate": round(step_rate, 4),
-        "primary_pass": primary_score >= pass_threshold,
+        "min_step_rate": min_step_rate,
+        "ground_truth_leak": ground_truth_leak,
+        "primary_pass": primary_pass,
         "primary_score": primary_score,
     }
 
@@ -2091,6 +2164,18 @@ def score_h3_multilingual_recall_ko_en(agent_output: str, ground_truth: dict) ->
     primary_score = round(_clamp01(raw_score), 4)
     pass_threshold = float(((ground_truth.get("primary_metric") or {}).get("pass_threshold")) or 1.0)
 
+    # B7 (cascade-13b codex): structure preservation is mandatory by the prompt
+    # ("preserve ##, ###, bullet, table 1:1") but only weights 20% of the score.
+    # An entity/term-rich paragraph without any required structural marker can
+    # still cross the 0.7 threshold. Gate primary_pass on ALL structure
+    # components passing in addition to the score and fabrication checks.
+    structure_ok = all(structure_components.values())
+    primary_pass = (
+        primary_score >= pass_threshold
+        and structure_ok
+        and not fabrication_hits
+    )
+
     return {
         "fixture": ground_truth.get("fixture", "H3"),
         "matched_entity_ids": matched_entities,
@@ -2101,10 +2186,11 @@ def score_h3_multilingual_recall_ko_en(agent_output: str, ground_truth: dict) ->
         "term_rate": round(term_rate, 4),
         "structure_components": structure_components,
         "structure_score": round(structure_score, 4),
+        "structure_ok": structure_ok,
         "ascii_ratio": round(ascii_ratio, 4),
         "fabrication_hits": fabrication_hits,
         "fabrication_penalty": fabrication_penalty,
-        "primary_pass": primary_score >= pass_threshold and not fabrication_hits,
+        "primary_pass": primary_pass,
         "primary_score": primary_score,
     }
 
@@ -2178,7 +2264,19 @@ def score_h5_agentic_tool_use(agent_output: str, ground_truth: dict) -> dict:
     phantom_cfg = ground_truth.get("phantom_tool_check") or {}
     phantom_pat = phantom_cfg.get("candidate_pattern") or r"(?:^|\d\.\s+|`)([a-z_][a-z0-9_]*)\s*\("
     candidate_calls = re.findall(phantom_pat, text, re.MULTILINE)
-    phantom_calls = sorted({c for c in candidate_calls if c not in palette})
+    # B4 (cascade-13b gemini): the prompt explicitly requires citing candidate
+    # bug-target functions (e.g., `apply_refund(...)`). Those literals share the
+    # phantom regex shape but are NOT phantom tool invocations. Build a citation
+    # allowlist of literal identifiers from `argument_citation_checks` so valid
+    # citations are not penalized as phantom tool calls.
+    citation_allowlist: set[str] = set()
+    for pat in (citation_cfg.get("candidate_function_any_of") or []):
+        if isinstance(pat, str) and re.fullmatch(r"[a-z_][a-z0-9_]*", pat):
+            citation_allowlist.add(pat)
+    phantom_calls = sorted({
+        c for c in candidate_calls
+        if c not in palette and c not in citation_allowlist
+    })
     per = float(phantom_cfg.get("penalty_per", 0.10))
     cap = float(phantom_cfg.get("max_penalty", 0.40))
     phantom_penalty = min(cap, per * len(phantom_calls))
@@ -2188,11 +2286,22 @@ def score_h5_agentic_tool_use(agent_output: str, ground_truth: dict) -> dict:
     step_max = int(step_range.get("max", 10**6))
     numbered_steps = re.findall(r"(?m)^\s*\d+\.\s+\S", text)
     step_count = len(numbered_steps)
-    step_violation_penalty = 0.0 if step_min <= step_count <= step_max else 0.10
+    step_in_range = step_min <= step_count <= step_max
+    step_violation_penalty = 0.0 if step_in_range else 0.10
 
     raw_score = (required_recall * ordering_rate) + 0.10 * citation_rate - phantom_penalty - step_violation_penalty
     primary_score = round(_clamp01(raw_score), 4)
     pass_threshold = float(((ground_truth.get("primary_metric") or {}).get("pass_threshold")) or 1.0)
+
+    # B5 (cascade-13b codex): the citation bonus (0.10) can numerically cancel a
+    # phantom or step-violation penalty (each 0.10). Without conjunctive gates,
+    # an unnumbered paragraph or a phantom-call plan reaches primary_score=1.0.
+    # Pass requires: score ≥ threshold AND step count in [min,max] AND no phantom.
+    primary_pass = (
+        primary_score >= pass_threshold
+        and step_in_range
+        and not phantom_calls
+    )
 
     return {
         "fixture": ground_truth.get("fixture", "H5"),
@@ -2209,10 +2318,12 @@ def score_h5_agentic_tool_use(agent_output: str, ground_truth: dict) -> dict:
         },
         "phantom_tool_calls": phantom_calls,
         "phantom_penalty": round(phantom_penalty, 4),
+        "citation_allowlist": sorted(citation_allowlist),
         "step_count": step_count,
         "step_count_range": [step_min, step_max],
+        "step_in_range": step_in_range,
         "step_violation_penalty": step_violation_penalty,
-        "primary_pass": primary_score >= pass_threshold,
+        "primary_pass": primary_pass,
         "primary_score": primary_score,
     }
 
