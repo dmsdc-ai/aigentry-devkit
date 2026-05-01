@@ -47,6 +47,10 @@ from pathlib import Path
 
 FIXTURES: tuple[str, ...] = ("F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "Fa")
 
+# Phase 5 holdout fixtures (spec §4.2 user-approved option β set).
+# Track #329 E27 — `~/projects/aigentry-orchestrator/docs/superpowers/specs/2026-05-01-phase5-holdout-design.md`.
+FIXTURES_PHASE5: tuple[str, ...] = ("H1", "H2", "H3", "H10", "H5")
+
 # Phase 4 seed/session counts (spec §4.3).
 SEEDS_PER_FIXTURE_REPLICATION = 20
 SEEDS_PER_FIXTURE_PREUSE = 10  # not used for flat-shuffle; per-session arms use PREUSE_SESSIONS
@@ -54,6 +58,13 @@ PACC_SESSIONS_REPLICATION = 20
 PREUSE_SESSIONS = 10
 PACC_POSITIONS = 10  # unchanged from Phase 3
 PREUSE_POSITIONS = 10  # matches PACC_POSITIONS
+
+# Phase 5 holdout seed/session counts (spec §2.1 trial budget).
+# 5 fixtures × 6 modes × 10 seeds = 300 trials. Chain modes: 10 sessions ×
+# 5 positions/session — each fixture visited once per session.
+SEEDS_PER_FIXTURE_PHASE5 = 10
+PHASE5_SESSIONS = 10
+PHASE5_POSITIONS = len(FIXTURES_PHASE5)  # 5
 
 MASTER_SEED = 42
 # Phase 3 offsets preserved verbatim (spec §4.3): Pacc + Preuse arms use
@@ -70,8 +81,9 @@ _FLAT_HEADER = ["trial_idx", "fixture_id", "seed_idx"]
 PREUSE_SUBSTITUTE_COMPACT_CUTS: tuple[str, ...] = ("C1", "C2", "C3", "C4", "revised")
 
 
-def _flat_pairs(seeds_per_fixture: int) -> list[tuple[str, int]]:
-    return [(f, s) for f in FIXTURES for s in range(seeds_per_fixture)]
+def _flat_pairs(seeds_per_fixture: int,
+                fixtures: tuple[str, ...] = FIXTURES) -> list[tuple[str, int]]:
+    return [(f, s) for f in fixtures for s in range(seeds_per_fixture)]
 
 
 def _write_csv(path: Path, header: list[str], rows: list[list[object]]) -> None:
@@ -83,17 +95,19 @@ def _write_csv(path: Path, header: list[str], rows: list[list[object]]) -> None:
 
 
 def write_flat_order(mode: str, out: Path,
-                     seeds_per_fixture: int = SEEDS_PER_FIXTURE_REPLICATION) -> None:
+                     seeds_per_fixture: int = SEEDS_PER_FIXTURE_REPLICATION,
+                     fixtures: tuple[str, ...] = FIXTURES) -> None:
     """Write run_order_{D|Pfresh|S}.csv (flat shuffle keyed by MASTER_SEED + mode_offset)."""
     if mode not in _MODE_OFFSET:
         raise ValueError(f"flat mode must be one of {sorted(_MODE_OFFSET)}, got {mode!r}")
-    pairs = _flat_pairs(seeds_per_fixture)
+    pairs = _flat_pairs(seeds_per_fixture, fixtures=fixtures)
     random.Random(MASTER_SEED + _MODE_OFFSET[mode]).shuffle(pairs)
     rows = [[idx, fixture, seed] for idx, (fixture, seed) in enumerate(pairs)]
     _write_csv(out, _FLAT_HEADER, rows)
 
 
-def _per_session_rows(num_sessions: int) -> list[list[object]]:
+def _per_session_rows(num_sessions: int,
+                      fixtures: tuple[str, ...] = FIXTURES) -> list[list[object]]:
     """Per-session shuffle keyed by session_idx (Pacc + all Preuse arms).
 
     Spec §4.3: sessions 1..10 of every per-session arm visit fixtures in the
@@ -103,7 +117,7 @@ def _per_session_rows(num_sessions: int) -> list[list[object]]:
     rows: list[list[object]] = []
     trial_idx = 0
     for session_idx in range(1, num_sessions + 1):
-        order = list(FIXTURES)
+        order = list(fixtures)
         random.Random(session_idx).shuffle(order)
         for position, fixture in enumerate(order, start=1):
             rows.append([trial_idx, session_idx, position, fixture, session_idx])
@@ -150,12 +164,59 @@ def write_all(output_dir: Path) -> None:
         )
 
 
+# Phase 5 holdout mode set (6 modes — spec §3.1 default 6-mode set).
+PHASE5_MODES: tuple[str, ...] = (
+    "D", "Pfresh", "S", "Pacc",
+    "Preuse-clear", "Preuse-substitute-compact-revised",
+)
+
+
+def write_all_phase5(output_dir: Path) -> None:
+    """Write Phase 5 holdout 6-CSV set (5 fixtures × 6 modes × 10 seeds = 300 trials).
+
+    Spec: ~/projects/aigentry-orchestrator/docs/superpowers/specs/2026-05-01-phase5-holdout-design.md §2.1.
+    Tag: exec-mode-v5-holdout-preregistered-20260501.
+
+    Layout:
+      - D / Pfresh / S: flat shuffle of (H1,H2,H3,H10,H5) × seeds 0..9 = 50 trials each.
+        Keyed by MASTER_SEED + _MODE_OFFSET[mode] — orders are reproducible AND
+        distinct across the 3 modes.
+      - Pacc / Preuse-clear / Preuse-substitute-compact-revised: 10 sessions ×
+        5 positions/session = 50 trials each. Per-session shuffle keyed by
+        session_idx — sessions 1..10 of every chain arm visit fixtures in the
+        same order (same guarantee as Phase 4).
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for mode in ("D", "Pfresh", "S"):
+        write_flat_order(
+            mode,
+            output_dir / f"run_order_{mode}.csv",
+            seeds_per_fixture=SEEDS_PER_FIXTURE_PHASE5,
+            fixtures=FIXTURES_PHASE5,
+        )
+    chain_rows = _per_session_rows(
+        num_sessions=PHASE5_SESSIONS, fixtures=FIXTURES_PHASE5,
+    )
+    for mode in ("Pacc", "Preuse-clear", "Preuse-substitute-compact-revised"):
+        _write_csv(
+            output_dir / f"run_order_{mode}.csv",
+            _PER_SESSION_HEADER, chain_rows,
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--output-dir", required=True, type=Path,
                    help="Directory to write run_order_*.csv into (created if missing).")
+    p.add_argument("--phase", choices=("4", "5"), default="4",
+                   help="Trial-set generation: 4 = Phase 4+5-cuts (10 CSVs, 1400 trials, "
+                        "F2..Fa fixtures); 5 = Phase 5 holdout (6 CSVs, 300 trials, "
+                        "H1/H2/H3/H10/H5 fixtures + 6-mode set per spec §3.1).")
     args = p.parse_args(argv)
-    write_all(args.output_dir)
+    if args.phase == "5":
+        write_all_phase5(args.output_dir)
+    else:
+        write_all(args.output_dir)
     return 0
 
 
