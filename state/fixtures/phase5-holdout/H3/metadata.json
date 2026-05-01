@@ -1,0 +1,11 @@
+{
+  "fixture": "H3",
+  "domain": "translation_multilingual",
+  "name": "Multilingual Recall KO→EN",
+  "expected_difficulty": "medium",
+  "scoring_method": "entity_term_structure_composite",
+  "spec_ref": "Phase 5 spec §4.2 (H3)",
+  "primary_grader": "score_h3_multilingual_recall_ko_en",
+  "expected_winner": null,
+  "notes": "Agent translates a Korean product launch briefing to English while preserving named entities (people, products, places), technical terms (metrics, version numbers, API names), and document structure (sections, tables). Score = 0.5 * entity_preservation + 0.3 * key_term_recall + 0.2 * structure_ok."
+}

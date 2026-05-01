@@ -1,0 +1,12 @@
+[
+  {"id": 1, "keyword": "payments-svc", "sentence": "Repo 이름 payments-svc", "type": "repo", "turn": 1, "embed_variants": ["payments-svc", "payments_svc"]},
+  {"id": 2, "keyword": "test_partial_refund_within_24h", "sentence": "깨진 테스트 이름", "type": "test_name", "turn": 5, "embed_variants": ["test_partial_refund_within_24h"]},
+  {"id": 3, "keyword": "tests/test_refund.py", "sentence": "Test 파일 경로", "type": "filepath", "turn": 5, "embed_variants": ["tests/test_refund.py", "test_refund.py"]},
+  {"id": 4, "keyword": "apply_refund", "sentence": "후보 함수 apply_refund", "type": "function_name", "turn": 5, "embed_variants": ["apply_refund"]},
+  {"id": 5, "keyword": "is_within_24h", "sentence": "후보 함수 is_within_24h", "type": "function_name", "turn": 5, "embed_variants": ["is_within_24h"]},
+  {"id": 6, "keyword": "compute_refund_amount", "sentence": "후보 함수 compute_refund_amount", "type": "function_name", "turn": 5, "embed_variants": ["compute_refund_amount"]},
+  {"id": 7, "keyword": "refund.py", "sentence": "의심 파일 refund.py", "type": "filepath", "turn": 5, "embed_variants": ["refund.py"]},
+  {"id": 8, "keyword": "time_utils.py", "sentence": "의심 파일 time_utils.py", "type": "filepath", "turn": 5, "embed_variants": ["time_utils.py"]},
+  {"id": 9, "keyword": "Decimal(\"12.50\")", "sentence": "테스트 입력 amount=Decimal(\"12.50\")", "type": "test_input", "turn": 5, "embed_variants": ["Decimal(\"12.50\")", "12.50", "Decimal 12.50"]},
+  {"id": 10, "keyword": "order_id=42", "sentence": "테스트 입력 order_id=42", "type": "test_input", "turn": 5, "embed_variants": ["order_id=42", "order id 42"]}
+]

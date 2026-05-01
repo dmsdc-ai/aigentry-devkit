@@ -1,0 +1,11 @@
+{
+  "fixture": "H1",
+  "domain": "code_review",
+  "name": "Long-form Code Review",
+  "expected_difficulty": "hard",
+  "scoring_method": "weighted_f1_with_distractor_penalty",
+  "spec_ref": "Phase 5 spec §4.2 (H1)",
+  "primary_grader": "score_h1_long_form_code_review",
+  "expected_winner": null,
+  "notes": "Reviewer identifies 6 planted bugs (severity Critical/High/Medium/Low) in a 60-line Python service diff. 3 distractor patterns must NOT be flagged. Score = severity-weighted F1 (precision * recall / harmonic-mean), distractors counted as false positives at Medium weight."
+}

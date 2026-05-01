@@ -110,19 +110,20 @@ case "$mode" in
   Preuse-substitute-compact-C2) preuse_cut_id="C2"; preuse_cut_tokens=50000  ;;
   Preuse-substitute-compact-C3) preuse_cut_id="C3"; preuse_cut_tokens=100000 ;;
   Preuse-substitute-compact-C4) preuse_cut_id="C4"; preuse_cut_tokens=150000 ;;
-  *) die 5 "--mode must be one of D|S|Pfresh|Pacc|Preuse-clear|Preuse-substitute-compact-C{1,2,3,4} (got: $mode)";;
+  Preuse-substitute-compact-revised) preuse_cut_id="revised"; preuse_cut_tokens=30 ;;
+  *) die 5 "--mode must be one of D|S|Pfresh|Pacc|Preuse-clear|Preuse-substitute-compact-C{1,2,3,4}|Preuse-substitute-compact-revised (got: $mode)";;
 esac
 
 # Spec §2.3 + §2.4: Preuse arms use chain semantics (session/position required),
 # matching Pacc's CLI shape. Group all chain modes for arg-validator widening.
 is_chain_mode=0
 case "$mode" in
-  Pacc|Preuse-clear|Preuse-substitute-compact-C1|Preuse-substitute-compact-C2|Preuse-substitute-compact-C3|Preuse-substitute-compact-C4)
+  Pacc|Preuse-clear|Preuse-substitute-compact-C1|Preuse-substitute-compact-C2|Preuse-substitute-compact-C3|Preuse-substitute-compact-C4|Preuse-substitute-compact-revised)
     is_chain_mode=1
     ;;
 esac
 
-[[ "$fixture"  =~ ^F[0-9a-zA-Z]+$ ]]   || die 5 "--fixture must match ^F[0-9a-zA-Z]+$ (got: $fixture)"
+[[ "$fixture"  =~ ^[FH][0-9a-zA-Z]+$ ]] || die 5 "--fixture must match ^[FH][0-9a-zA-Z]+$ (got: $fixture)"
 [[ "$seed_idx" =~ ^[0-9]+$          ]] || die 5 "--seed-idx must be a non-negative integer"
 [[ "$run_idx"  =~ ^[12]$            ]] || die 5 "--run-idx must be 1 or 2"
 
@@ -239,7 +240,7 @@ execmode::harness_validate_fixture() {
   case "$mode" in
     D|S|Pacc) req+=( setup_history.md ) ;;
     Pfresh)   req+=( warmup_transcript.md ) ;;
-    Preuse-clear|Preuse-substitute-compact-C1|Preuse-substitute-compact-C2|Preuse-substitute-compact-C3|Preuse-substitute-compact-C4)
+    Preuse-clear|Preuse-substitute-compact-C1|Preuse-substitute-compact-C2|Preuse-substitute-compact-C3|Preuse-substitute-compact-C4|Preuse-substitute-compact-revised)
       # Spec §2.3 + §2.4: Preuse arms compose stdin from setup_history + task
       # (Preuse-clear) or impl A manifest output (Preuse-substitute-compact),
       # both require setup_history.md present in the fixture.
@@ -585,7 +586,7 @@ else
     Pfresh) execmode::harness_stage1_live_Pfresh;;
     Pacc)   execmode::harness_stage1_live_Pacc;;
     Preuse-clear) execmode::harness_stage1_live_Preuse_clear;;
-    Preuse-substitute-compact-C1|Preuse-substitute-compact-C2|Preuse-substitute-compact-C3|Preuse-substitute-compact-C4)
+    Preuse-substitute-compact-C1|Preuse-substitute-compact-C2|Preuse-substitute-compact-C3|Preuse-substitute-compact-C4|Preuse-substitute-compact-revised)
       execmode::harness_stage1_live_Preuse_substitute_compact "$preuse_cut_tokens" "$preuse_cut_id"
       ;;
   esac
@@ -695,6 +696,7 @@ is_chain = mode in (
     "Preuse-substitute-compact-C2",
     "Preuse-substitute-compact-C3",
     "Preuse-substitute-compact-C4",
+    "Preuse-substitute-compact-revised",
 )
 
 def maybe_int(s):

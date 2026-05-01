@@ -64,7 +64,10 @@ _PER_SESSION_HEADER = ["trial_idx", "session_idx", "position_in_chain", "fixture
 _FLAT_HEADER = ["trial_idx", "fixture_id", "seed_idx"]
 
 # Preuse-substitute-compact cuts (spec §2.2 cut map; INV-5 hardcoded values).
-PREUSE_SUBSTITUTE_COMPACT_CUTS: tuple[str, ...] = ("C1", "C2", "C3", "C4")
+# `revised` cut = 30 tokens per cascade-(b) sub-ADR
+# (`docs/adr/2026-05-01-substitute-compact-revised-cut.md` §4, commit f50295c).
+# Listed last so existing C1..C4 ordering is preserved (CSV filenames stable).
+PREUSE_SUBSTITUTE_COMPACT_CUTS: tuple[str, ...] = ("C1", "C2", "C3", "C4", "revised")
 
 
 def _flat_pairs(seeds_per_fixture: int) -> list[tuple[str, int]]:

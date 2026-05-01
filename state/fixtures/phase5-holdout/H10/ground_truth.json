@@ -1,0 +1,70 @@
+{
+  "fixture": "H10",
+  "name": "Strict Instruction Following",
+  "primary_grader": "score_h10_strict_instruction_following",
+  "expected_winner": null,
+  "scenario_summary": "8 independent format/structure/length/lexical constraints (C1-C8) on a retrospective memo. Primary metric is the fraction of constraints satisfied. Each constraint is mechanically checkable from output text alone (no LLM judge).",
+  "constraints": [
+    {
+      "id": "C1",
+      "label": "prose word count in [200, 300]",
+      "type": "word_count_range",
+      "min_words": 200,
+      "max_words": 300,
+      "scope": "prose_only",
+      "exclude_patterns": ["fenced_code", "tables", "h2_headers"]
+    },
+    {
+      "id": "C2",
+      "label": "exactly 4 H2 sections with fixed titles",
+      "type": "h2_section_set",
+      "required_titles": ["무슨 일이 있었나", "영향", "근본원인", "후속조치"],
+      "exact_count": 4
+    },
+    {
+      "id": "C3",
+      "label": "no markdown links",
+      "type": "regex_must_not_match",
+      "regex": "\\[[^\\]]+\\]\\([^\\)]+\\)"
+    },
+    {
+      "id": "C4",
+      "label": "no nested bullets (single level only)",
+      "type": "no_nested_bullets",
+      "indent_pattern": "^[ \\t]+- "
+    },
+    {
+      "id": "C5",
+      "label": "all integers >= 1000 use comma thousands separator",
+      "type": "thousands_comma",
+      "min_value": 1000,
+      "violation_regex": "(?<!\\d)\\d{4,}(?!\\d)(?![,\\d])"
+    },
+    {
+      "id": "C6",
+      "label": "no hedging words in prose",
+      "type": "regex_must_not_match_any",
+      "patterns": ["\\btentatively\\b", "\\bmaybe\\b", "\\barguably\\b", "\\bit seems\\b", "\\bkind of\\b"],
+      "case_insensitive": true
+    },
+    {
+      "id": "C7",
+      "label": "exact closing sentence",
+      "type": "exact_last_line",
+      "expected_line": "회고 작성자 사인오프: ops-on-call."
+    },
+    {
+      "id": "C8",
+      "label": "exactly 3 OPS-NNNN tickets cited from approved list",
+      "type": "ticket_id_set",
+      "regex": "OPS-\\d{4}",
+      "approved_ids": ["OPS-4187", "OPS-4192", "OPS-4205"],
+      "exact_count": 3
+    }
+  ],
+  "primary_metric": {
+    "description": "fraction of 8 constraints satisfied",
+    "formula": "score = sum(constraint_pass) / 8",
+    "pass_threshold": 0.875
+  }
+}

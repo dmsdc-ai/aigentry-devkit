@@ -3,9 +3,14 @@
 Spec: `docs/superpowers/specs/2026-04-26-phase4-trial-driver-wiring.md` §6.1
 Pre-reg tag: `exec-mode-v4-replication-preregistered-20260426`
 
-Verifies the 9-CSV Phase 4 set:
-- Counts per arm (200 replication, 100 Preuse) — INV-7 (1,300 total).
-- Mode set is exactly the 9 expected files (1 missing/extra → fail).
+Phase 5 extension (Track #329 E27, sub-ADR
+`docs/adr/2026-05-01-substitute-compact-revised-cut.md`, commit f50295c)
+adds a 10th mode `Preuse-substitute-compact-revised` (cut=30 tokens),
+bringing the CSV set to 10 files and total trials to 1,400 (800 + 600).
+
+Verifies the 10-CSV Phase 4+5 set:
+- Counts per arm (200 replication, 100 Preuse) — INV-7 extended (1,400 total).
+- Mode set is exactly the 10 expected files (1 missing/extra → fail).
 - Seed coverage: each fixture appears 20× per replication arm; 10× per
   Preuse arm (1 per session).
 - Pacc + Preuse arms share the per-session shuffle (sessions 1..10 of every
@@ -36,6 +41,7 @@ PREUSE_MODES = [
     "Preuse-substitute-compact-C2",
     "Preuse-substitute-compact-C3",
     "Preuse-substitute-compact-C4",
+    "Preuse-substitute-compact-revised",
 ]
 ALL_MODES = REPLICATION_MODES + PREUSE_MODES
 
@@ -45,7 +51,7 @@ PREUSE_TRIALS_PER_ARM = 100  # 10 fixtures × 10 seeds (or 10 sessions × 10 pos
 EXPECTED_TOTAL_TRIALS = (
     REPLICATION_TRIALS_PER_ARM * len(REPLICATION_MODES)
     + PREUSE_TRIALS_PER_ARM * len(PREUSE_MODES)
-)  # 800 + 500 = 1300
+)  # 800 + 600 = 1400 (Phase 4: 1,300 + Phase 5 cascade-(b) revised arm: 100)
 
 
 @pytest.fixture
@@ -66,7 +72,7 @@ def _read_csv(path: Path) -> list[dict[str, str]]:
 
 
 def test_total_trial_count_matches_pre_reg_tag(tmp_path):
-    """INV-7: total Phase 4 trial count = 1,300 across all 9 CSVs."""
+    """INV-7 (extended): total Phase 4+5 trial count = 1,400 across all 10 CSVs."""
     subprocess.run(
         [sys.executable, str(GENERATOR), "--output-dir", str(tmp_path)],
         check=True, capture_output=True, text=True,
@@ -102,7 +108,7 @@ def test_preuse_arm_row_count(tmp_path, mode):
 
 
 def test_mode_set_exact(tmp_path):
-    """Exactly 9 CSVs with the expected names — no missing, no extras."""
+    """Exactly 10 CSVs with the expected names — no missing, no extras."""
     subprocess.run(
         [sys.executable, str(GENERATOR), "--output-dir", str(tmp_path)],
         check=True, capture_output=True, text=True,

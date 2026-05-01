@@ -1,0 +1,11 @@
+{
+  "fixture": "H5",
+  "domain": "agentic_tool_use",
+  "name": "Agentic Tool-Use Plan",
+  "expected_difficulty": "hard",
+  "scoring_method": "tool_set_recall_x_sequence_correctness",
+  "spec_ref": "Phase 5 spec §4.2 (H5)",
+  "primary_grader": "score_h5_agentic_tool_use",
+  "expected_winner": null,
+  "notes": "Agent describes a tool-call sequence to diagnose, fix, and verify a failing test. Reference plan has 7 ordered steps drawn from a fixed tool palette. Score = (required_tool_recall * sequence_ordering_correctness) - phantom_tool_penalty - missing_argument_penalty."
+}

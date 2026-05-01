@@ -1,9 +1,12 @@
 node_modules/
 mcp-servers/*/node_modules/
-# root state/ is auto-generated trial output; only the JSON Schema is tracked
+# root state/ is auto-generated trial output; only schema + source fixtures tracked
 /state/*
 !/state/schema/
 !/state/schema/**
+# Phase 5 holdout fixtures (Track #329 E27) are source artifacts authored by hand
+!/state/fixtures/
+!/state/fixtures/**
 # nested state/ dirs in workspace templates remain fully ignored (pre-existing)
 templates/**/state/
 .venv-exec-mode/

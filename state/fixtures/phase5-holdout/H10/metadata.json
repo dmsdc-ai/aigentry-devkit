@@ -1,0 +1,11 @@
+{
+  "fixture": "H10",
+  "domain": "instruction_following",
+  "name": "Strict Instruction Following",
+  "expected_difficulty": "easy",
+  "scoring_method": "constraint_satisfaction_rate",
+  "spec_ref": "Phase 5 spec §4.2 (H10)",
+  "primary_grader": "score_h10_strict_instruction_following",
+  "expected_winner": null,
+  "notes": "Easiest of 5 holdout fixtures. Grader checks 8 independent format/length/structure constraints; primary score = fraction satisfied. No domain knowledge required — pure instruction-following discipline."
+}

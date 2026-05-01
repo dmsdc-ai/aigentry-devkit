@@ -1,0 +1,11 @@
+{
+  "fixture": "H2",
+  "domain": "multi_hop_reasoning",
+  "name": "Multi-hop Logic Puzzle",
+  "expected_difficulty": "medium",
+  "scoring_method": "answer_correctness_plus_step_coverage",
+  "spec_ref": "Phase 5 spec §4.2 (H2)",
+  "primary_grader": "score_h2_multi_hop_reasoning",
+  "expected_winner": null,
+  "notes": "Constraint-satisfaction puzzle (4 employees x 4 attributes, 6 clues). Agent must answer 3 sub-questions and show at least 3 intermediate inference steps. Score = 0.7 * (correct_answers/3) + 0.3 * (intermediate_steps_matched/4)."
+}

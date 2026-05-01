@@ -1,0 +1,12 @@
+[
+  {"id": 1, "keyword": "PR #5184", "sentence": "리뷰 대상은 PR #5184", "type": "pr_id", "turn": 1, "embed_variants": ["PR #5184", "PR-5184", "5184"]},
+  {"id": 2, "keyword": "OPS-4192", "sentence": "OPS-4192 incident 이후 정책 변경", "type": "ticket_id", "turn": 5, "embed_variants": ["OPS-4192", "OPS 4192"]},
+  {"id": 3, "keyword": "vault lazy load", "sentence": "Slack webhook URL은 vault lazy load 표준", "type": "policy", "turn": 3, "embed_variants": ["vault lazy load", "vault lazy-load", "lazy-load secrets"]},
+  {"id": 4, "keyword": "idempotency-key", "sentence": "retry는 idempotency-key 없으면 안 됨", "type": "policy", "turn": 3, "embed_variants": ["idempotency-key", "idempotency key", "Idempotency-Key"]},
+  {"id": 5, "keyword": "mask_pii", "sentence": "PII 로그 시 mask_pii 헬퍼 강제", "type": "helper_name", "turn": 4, "embed_variants": ["mask_pii", "PII masking", "mask PII"]},
+  {"id": 6, "keyword": "no external HTTP inside DB transaction", "sentence": "DB 트랜잭션 안에서 외부 HTTP 호출 금지", "type": "policy", "turn": 5, "embed_variants": ["no external HTTP inside DB transaction", "외부 HTTP 호출 금지", "HTTP inside transaction"]},
+  {"id": 7, "keyword": "notify_dispatcher.py", "sentence": "검토 대상 파일 services/notify_dispatcher.py", "type": "filename", "turn": 1, "embed_variants": ["notify_dispatcher.py", "services/notify_dispatcher.py", "notify_dispatcher"]},
+  {"id": 8, "keyword": "smtp.internal.example.com", "sentence": "SMTP_HOST = smtp.internal.example.com", "type": "config_value", "turn": 7, "embed_variants": ["smtp.internal.example.com", "SMTP_HOST", "smtp internal"]},
+  {"id": 9, "keyword": "AC_demo", "sentence": "Twilio auth account demo string AC_demo", "type": "code_literal", "turn": 7, "embed_variants": ["AC_demo", "AC demo", "auth=(\"AC_demo\""]},
+  {"id": 10, "keyword": "+15555550100", "sentence": "Twilio From 번호 +15555550100", "type": "phone_number", "turn": 7, "embed_variants": ["+15555550100", "15555550100", "+1 555 555 0100"]}
+]

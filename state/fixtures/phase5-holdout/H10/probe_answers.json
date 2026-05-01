@@ -1,0 +1,12 @@
+[
+  {"q_idx": 1, "fact_id": 1, "answer": "OPS-4187, OPS-4192, OPS-4205", "accept_variants": ["OPS-4187", "OPS-4192", "OPS-4205"]},
+  {"q_idx": 2, "fact_id": 4, "answer": "us-east-1", "accept_variants": ["us-east-1", "US East 1"]},
+  {"q_idx": 3, "fact_id": 5, "answer": "1,247 req/s", "accept_variants": ["1,247 req/s", "1247 req/s", "1,247"]},
+  {"q_idx": 4, "fact_id": 6, "answer": "47초", "accept_variants": ["47초", "47s", "47 seconds"]},
+  {"q_idx": 5, "fact_id": 7, "answer": "vacuum hold", "accept_variants": ["vacuum hold", "VACUUM"]},
+  {"q_idx": 6, "fact_id": 8, "answer": "3,408", "accept_variants": ["3,408", "3408", "3,408 req"]},
+  {"q_idx": 7, "fact_id": 9, "answer": "CDN 인증서 만료 누락", "accept_variants": ["CDN 인증서 만료", "CDN cert expir", "CDN certificate"]},
+  {"q_idx": 8, "fact_id": 10, "answer": "회고 작성자 사인오프: ops-on-call.", "accept_variants": ["ops-on-call", "회고 작성자 사인오프", "사인오프: ops-on-call"]},
+  {"q_idx": 9, "fact_id": null, "answer": "200 ~ 300단어", "accept_variants": ["200~300", "200-300", "200 to 300", "200 단어 이상 300 단어 이하"]},
+  {"q_idx": 10, "fact_id": null, "answer": "무슨 일이 있었나, 영향, 근본원인, 후속조치", "accept_variants": ["무슨 일이 있었나", "영향", "근본원인", "후속조치"]}
+]

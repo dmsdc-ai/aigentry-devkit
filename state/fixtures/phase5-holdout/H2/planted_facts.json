@@ -1,0 +1,12 @@
+[
+  {"id": 1, "keyword": "Alice", "sentence": "4명 중 한 명은 Alice", "type": "name", "turn": 3, "embed_variants": ["Alice"]},
+  {"id": 2, "keyword": "Bob", "sentence": "Bob은 데스크 4 + TypeScript (단서 3)", "type": "name", "turn": 5, "embed_variants": ["Bob"]},
+  {"id": 3, "keyword": "Carol", "sentence": "Carol의 모니터가 Dan보다 크다 (단서 4)", "type": "name", "turn": 5, "embed_variants": ["Carol"]},
+  {"id": 4, "keyword": "Dan", "sentence": "Dan은 Python을 쓰지 않는다 (단서 6)", "type": "name", "turn": 5, "embed_variants": ["Dan"]},
+  {"id": 5, "keyword": "27 inch", "sentence": "27\" 모니터는 데스크 2번 (단서 4)", "type": "monitor_size", "turn": 5, "embed_variants": ["27\"", "27인치", "27-inch", "27 inch"]},
+  {"id": 6, "keyword": "32 inch", "sentence": "데스크 3번 사람은 32\" 모니터 (단서 2)", "type": "monitor_size", "turn": 5, "embed_variants": ["32\"", "32인치", "32-inch", "32 inch"]},
+  {"id": 7, "keyword": "34 inch", "sentence": "모니터 종류 중 하나는 34\"", "type": "monitor_size", "turn": 3, "embed_variants": ["34\"", "34인치", "34-inch", "34 inch"]},
+  {"id": 8, "keyword": "43 inch", "sentence": "Go 사용자는 43\" 모니터 (단서 5)", "type": "monitor_size", "turn": 5, "embed_variants": ["43\"", "43인치", "43-inch", "43 inch"]},
+  {"id": 9, "keyword": "단서 1", "sentence": "단서 1: Alice는 Rust 사용자의 바로 왼쪽", "type": "clue_text", "turn": 5, "embed_variants": ["단서 1", "clue 1", "Clue 1"]},
+  {"id": 10, "keyword": "TypeScript", "sentence": "Bob은 TypeScript (단서 3)", "type": "language", "turn": 5, "embed_variants": ["TypeScript", "타입스크립트"]}
+]

@@ -1711,6 +1711,512 @@ def score_fa_false_prior(agent_output: str, ground_truth: dict) -> dict:
     }
 
 
+# ─── Phase 5 holdout: H1/H2/H3/H5/H10 primary graders ──────────────────────
+# Track #329 E27 α-step-13. Per Phase 5 spec §4.1 #2 (amended r2, commit
+# f50295c) the pre-tag grader extensions are explicitly permitted. The 5
+# graders below all conform to the F-grader contract:
+#   signature: (agent_output: str, ground_truth: dict) -> dict
+#   returned dict MUST include primary_score (float in [0,1]) + primary_pass (bool)
+# Constitution Rule 13 (객관적): rubrics are mechanically checkable without
+# LLM judges; thresholds are calibrated to fixture difficulty (see ground_truth
+# primary_metric.pass_threshold) rather than to any specific agent's output.
+
+def _h10_extract_prose(text: str) -> str:
+    """Strip fenced code blocks, markdown tables, and ATX headers from text.
+
+    Used by H10 C1 (word count) so prose-only constraint is checkable. Tables,
+    code, and headers are excluded by spec.
+    """
+    # Drop fenced code blocks first (greedy across lines).
+    no_code = re.sub(r"```.*?```", "", text or "", flags=re.DOTALL)
+    out_lines: list[str] = []
+    for line in no_code.splitlines():
+        stripped = line.strip()
+        # Drop ATX headers (#, ##, ###).
+        if re.match(r"^#{1,6}\s", stripped):
+            continue
+        # Drop table rows (anything starting with `|`).
+        if stripped.startswith("|"):
+            continue
+        out_lines.append(line)
+    return "\n".join(out_lines)
+
+
+def score_h10_strict_instruction_following(agent_output: str, ground_truth: dict) -> dict:
+    """H10 — fraction of 8 independent format/structure/lexical constraints satisfied.
+
+    Each constraint is mechanically checkable from `agent_output` alone. The
+    rubric is fixed by `ground_truth.constraints[*].type`; this function is a
+    type→checker dispatcher. No LLM judge.
+    """
+    text = agent_output or ""
+    prose = _h10_extract_prose(text)
+    constraint_results: list[dict] = []
+
+    for cfg in ground_truth.get("constraints") or []:
+        cid = cfg.get("id", "?")
+        ctype = cfg.get("type", "")
+        passed = False
+        detail: dict = {}
+
+        if ctype == "word_count_range":
+            words = re.findall(r"\S+", prose)
+            n = len(words)
+            mn = int(cfg.get("min_words", 0))
+            mx = int(cfg.get("max_words", 10**9))
+            passed = mn <= n <= mx
+            detail = {"word_count": n, "range": [mn, mx]}
+
+        elif ctype == "h2_section_set":
+            required = list(cfg.get("required_titles") or [])
+            exact = int(cfg.get("exact_count", len(required)))
+            h2_titles = [
+                m.group(1).strip()
+                for m in re.finditer(r"(?m)^##\s+(.+?)\s*$", text)
+            ]
+            missing = [t for t in required if t not in h2_titles]
+            passed = (len(h2_titles) == exact) and not missing
+            detail = {"h2_titles": h2_titles, "missing": missing, "expected_count": exact}
+
+        elif ctype == "regex_must_not_match":
+            pat = cfg.get("regex", "")
+            hits = re.findall(pat, prose)
+            passed = not hits
+            detail = {"hits": hits[:5]}
+
+        elif ctype == "regex_must_not_match_any":
+            ci = re.IGNORECASE if cfg.get("case_insensitive", True) else 0
+            offenders = [p for p in (cfg.get("patterns") or []) if re.search(p, prose, ci)]
+            passed = not offenders
+            detail = {"offenders": offenders}
+
+        elif ctype == "no_nested_bullets":
+            ipat = cfg.get("indent_pattern", r"^[ \t]+- ")
+            offenders = [
+                line for line in text.splitlines()
+                if re.match(ipat, line)
+            ]
+            passed = not offenders
+            detail = {"offender_count": len(offenders)}
+
+        elif ctype == "thousands_comma":
+            # Identifier-internal digits (OPS-4187, v3.7.2, /v1/orders) are NOT
+            # numeric values — they are part of alphanumeric tokens. The lookbehind
+            # `(?<![\w\-/])` excludes digits preceded by a letter, digit, underscore,
+            # hyphen or slash so identifiers don't false-trigger.
+            min_value = int(cfg.get("min_value", 1000))
+            min_digits = len(str(min_value))
+            violations: list[str] = []
+            for m in re.finditer(r"(?<![\w\-/])\d+(?:[,\.]\d+)*(?![\w\-/])", prose):
+                tok = m.group(0)
+                # Skip values with decimal points (decimals can stay un-commaed per spec).
+                if "." in tok:
+                    continue
+                digits_only = tok.replace(",", "")
+                if len(digits_only) < min_digits:
+                    continue
+                # If no comma at all and >= min_digits, it's a violation.
+                if "," not in tok:
+                    violations.append(tok)
+                    continue
+                # Re-check comma format: groups of 3 from the right.
+                left, *rest = tok.split(",")
+                if not (1 <= len(left) <= 3) or any(len(g) != 3 for g in rest):
+                    violations.append(tok)
+            passed = not violations
+            detail = {"violations": violations[:5]}
+
+        elif ctype == "exact_last_line":
+            expected = (cfg.get("expected_line") or "").strip()
+            non_empty = [ln.rstrip() for ln in text.splitlines() if ln.strip()]
+            actual = non_empty[-1].strip() if non_empty else ""
+            passed = actual == expected
+            detail = {"actual_last_line": actual, "expected": expected}
+
+        elif ctype == "ticket_id_set":
+            pat = cfg.get("regex", "OPS-\\d{4}")
+            approved = set(cfg.get("approved_ids") or [])
+            exact = int(cfg.get("exact_count", len(approved)))
+            found = re.findall(pat, text)
+            unique_found = sorted(set(found))
+            illegal = [t for t in unique_found if t not in approved]
+            passed = (len(unique_found) == exact) and not illegal
+            detail = {"found": unique_found, "illegal": illegal, "expected_count": exact}
+
+        else:  # pragma: no cover — unknown constraint type, treat as fail
+            passed = False
+            detail = {"error": f"unknown_constraint_type:{ctype}"}
+
+        constraint_results.append({
+            "id": cid,
+            "type": ctype,
+            "label": cfg.get("label", ""),
+            "passed": bool(passed),
+            **detail,
+        })
+
+    n = len(constraint_results) or 1
+    n_pass = sum(1 for c in constraint_results if c["passed"])
+    primary_score = round(_clamp01(n_pass / n), 4)
+    pass_threshold = float(((ground_truth.get("primary_metric") or {}).get("pass_threshold")) or 1.0)
+
+    return {
+        "fixture": ground_truth.get("fixture", "H10"),
+        "constraints_total": n,
+        "constraints_passed": n_pass,
+        "constraint_results": constraint_results,
+        "primary_pass": primary_score >= pass_threshold,
+        "primary_score": primary_score,
+    }
+
+
+def score_h1_long_form_code_review(agent_output: str, ground_truth: dict) -> dict:
+    """H1 — severity-weighted F1 on planted bugs vs distractor flags in code review table.
+
+    Mirrors F3's contract but with a code-review fixture (instead of writing
+    review). TP weight = sum of severity weights of matched issues. FP weight =
+    (#flagged distractors) * Medium weight. FN weight = sum of severity weights
+    of missed issues. Score = 2PR/(P+R).
+    """
+    text = agent_output or ""
+    rows = [
+        {
+            "id": cols[0] if len(cols) > 0 else "",
+            "line": cols[1] if len(cols) > 1 else "",
+            "severity": cols[2] if len(cols) > 2 else "",
+            "issue": cols[3] if len(cols) > 3 else "",
+            "fix": "|".join(cols[4:]) if len(cols) > 4 else "",
+        }
+        for cols in _parse_markdown_table_rows(text)
+        if cols and cols[0].strip().lower() not in {"id", "#"}
+    ]
+
+    weights = ground_truth.get("severity_weights") or {}
+    medium_weight = float(weights.get("Medium", 1.0))
+    issues = list(ground_truth.get("ground_truth_issues") or [])
+
+    matched_ids: list[str] = []
+    missed_ids: list[str] = []
+    tp_weight = 0.0
+    fn_weight = 0.0
+
+    for issue in issues:
+        candidate_lines = [int(x) for x in (issue.get("must_cite_line_any_of") or []) if x is not None]
+        match = False
+        for row in rows:
+            row_text = f"{row['issue']} {row['fix']}"
+            line_field = row["line"] or ""
+            line_ok = (
+                not candidate_lines
+                or any(
+                    re.search(rf"(?<!\d){ln}(?!\d)", line_field)
+                    for ln in candidate_lines
+                )
+            )
+            content_ok = bool(_regex_any_hit(row_text, issue.get("match_regex_any_of") or []))
+            if line_ok and content_ok:
+                match = True
+                break
+        weight = float(weights.get(issue.get("severity"), 1.0))
+        if match:
+            matched_ids.append(issue.get("id", ""))
+            tp_weight += weight
+        else:
+            missed_ids.append(issue.get("id", ""))
+            fn_weight += weight
+
+    flagged_distractors: list[str] = []
+    fp_weight = 0.0
+    for distractor in ground_truth.get("distractors_must_not_flag") or []:
+        line = distractor.get("line")
+        for row in rows:
+            row_text = f"{row['issue']} {row['fix']}"
+            line_ok = (
+                line is None
+                or re.search(rf"(?<!\d){int(line)}(?!\d)", row["line"] or "")
+            )
+            if line_ok and _regex_any_hit(row_text, distractor.get("fp_regex_any_of") or []):
+                flagged_distractors.append(distractor.get("id", ""))
+                fp_weight += medium_weight
+                break
+
+    precision = _safe_div(tp_weight, tp_weight + fp_weight)
+    recall = _safe_div(tp_weight, tp_weight + fn_weight)
+    f1 = _safe_div(2 * precision * recall, precision + recall)
+    primary_score = round(_clamp01(f1), 4)
+
+    struct_cfg = ground_truth.get("output_structure_checks") or {}
+    must_all_tokens = [str(s).lower() for s in struct_cfg.get("must_contain_all") or []]
+    structure_ok = all(tok in text.lower() for tok in must_all_tokens) and bool(rows)
+
+    pass_threshold = float(((ground_truth.get("primary_metric") or {}).get("pass_threshold")) or 1.0)
+
+    return {
+        "fixture": ground_truth.get("fixture", "H1"),
+        "matched_issue_ids": matched_ids,
+        "missed_issue_ids": missed_ids,
+        "flagged_distractors": flagged_distractors,
+        "tp_weight": round(tp_weight, 4),
+        "fp_weight": round(fp_weight, 4),
+        "fn_weight": round(fn_weight, 4),
+        "precision": round(precision, 4),
+        "recall": round(recall, 4),
+        "structure_ok": structure_ok,
+        "primary_pass": primary_score >= pass_threshold and structure_ok,
+        "primary_score": primary_score,
+    }
+
+
+def score_h2_multi_hop_reasoning(agent_output: str, ground_truth: dict) -> dict:
+    """H2 — answer correctness + intermediate-step coverage.
+
+    Score = 0.7 * (sub_question_correct / 3) + 0.3 * (intermediate_steps / 4).
+    Sub-question answers are checked via expected_answer_regex_any_of (treated
+    OR-wise). Intermediate steps are checked the same way.
+    """
+    text = agent_output or ""
+
+    sub_qs = list(ground_truth.get("sub_questions") or [])
+    correct_q = 0
+    sub_q_results: list[dict] = []
+    total_q_weight = 0.0
+    correct_q_weight = 0.0
+    for sq in sub_qs:
+        weight = float(sq.get("weight", 1.0))
+        total_q_weight += weight
+        hits = _regex_any_hit(text, sq.get("expected_answer_regex_any_of") or [])
+        ok = bool(hits)
+        if ok:
+            correct_q += 1
+            correct_q_weight += weight
+        sub_q_results.append({"id": sq.get("id"), "label": sq.get("label"), "passed": ok, "hits": hits})
+    answer_rate = _safe_div(correct_q_weight, total_q_weight) if total_q_weight else 0.0
+
+    steps = list(ground_truth.get("intermediate_steps") or [])
+    matched_steps: list[str] = []
+    step_results: list[dict] = []
+    for st in steps:
+        hits = _regex_any_hit(text, st.get("regex_any_of") or [])
+        ok = bool(hits)
+        if ok:
+            matched_steps.append(st.get("id", ""))
+        step_results.append({"id": st.get("id"), "label": st.get("label"), "passed": ok})
+    step_rate = _safe_div(len(matched_steps), len(steps)) if steps else 0.0
+
+    primary_score = round(_clamp01(0.7 * answer_rate + 0.3 * step_rate), 4)
+    pass_threshold = float(((ground_truth.get("primary_metric") or {}).get("pass_threshold")) or 1.0)
+
+    return {
+        "fixture": ground_truth.get("fixture", "H2"),
+        "sub_question_results": sub_q_results,
+        "sub_question_correct_count": correct_q,
+        "sub_question_total": len(sub_qs),
+        "answer_rate": round(answer_rate, 4),
+        "intermediate_step_results": step_results,
+        "matched_steps": matched_steps,
+        "step_rate": round(step_rate, 4),
+        "primary_pass": primary_score >= pass_threshold,
+        "primary_score": primary_score,
+    }
+
+
+def score_h3_multilingual_recall_ko_en(agent_output: str, ground_truth: dict) -> dict:
+    """H3 — entity preservation + key term recall + structure + no fabrication.
+
+    score = 0.5 * entity_rate + 0.3 * term_rate + 0.2 * structure_score
+            - 0.20 if any forbidden_patterns matched.
+    """
+    text = agent_output or ""
+
+    entities = list(ground_truth.get("named_entities") or [])
+    matched_entities: list[str] = []
+    missing_entities: list[str] = []
+    for ent in entities:
+        candidates = list(ent.get("en_required") or [])
+        if any(c in text for c in candidates):
+            matched_entities.append(ent.get("id", ""))
+        else:
+            missing_entities.append(ent.get("id", ""))
+    entity_rate = _safe_div(len(matched_entities), len(entities)) if entities else 0.0
+
+    terms = list(ground_truth.get("key_terms") or [])
+    matched_terms: list[str] = []
+    missing_terms: list[str] = []
+    for term in terms:
+        token = term.get("token") or ""
+        regexes = term.get("regex_any_of") or []
+        ok = (token and token in text) or bool(_regex_any_hit(text, regexes))
+        if ok:
+            matched_terms.append(term.get("id", ""))
+        else:
+            missing_terms.append(term.get("id", ""))
+    term_rate = _safe_div(len(matched_terms), len(terms)) if terms else 0.0
+
+    struct_cfg = ground_truth.get("structure_checks") or {}
+    h2_min = int(struct_cfg.get("h2_count_min", 0))
+    h3_min = int(struct_cfg.get("h3_count_min", 0))
+    table_required = bool(struct_cfg.get("table_required", False))
+    bullet_required = bool(struct_cfg.get("bullet_list_required", False))
+    eng_min = float((struct_cfg.get("english_dominant") or {}).get("min_ratio", 0.0))
+
+    h2_count = len(re.findall(r"(?m)^##\s+\S", text))
+    h3_count = len(re.findall(r"(?m)^###\s+\S", text))
+    has_table = bool(re.search(r"(?m)^\|.+\|", text))
+    has_bullet = bool(re.search(r"(?m)^\s*[-*]\s+\S", text))
+
+    alpha = [c for c in text if c.isalpha()]
+    if alpha:
+        ascii_count = sum(1 for c in alpha if ord(c) < 128)
+        ascii_ratio = ascii_count / len(alpha)
+    else:
+        ascii_ratio = 1.0
+
+    structure_components = {
+        "h2_ok": h2_count >= h2_min,
+        "h3_ok": h3_count >= h3_min,
+        "table_ok": (not table_required) or has_table,
+        "bullet_ok": (not bullet_required) or has_bullet,
+        "english_ratio_ok": ascii_ratio >= eng_min,
+    }
+    structure_score = _safe_div(
+        sum(1 for v in structure_components.values() if v),
+        len(structure_components),
+    )
+
+    forbidden_cfg = ground_truth.get("no_fabrication_check") or {}
+    fabrication_hits = _regex_any_hit(text, forbidden_cfg.get("forbidden_patterns") or [])
+    fabrication_penalty = 0.20 if fabrication_hits else 0.0
+
+    raw_score = 0.5 * entity_rate + 0.3 * term_rate + 0.2 * structure_score - fabrication_penalty
+    primary_score = round(_clamp01(raw_score), 4)
+    pass_threshold = float(((ground_truth.get("primary_metric") or {}).get("pass_threshold")) or 1.0)
+
+    return {
+        "fixture": ground_truth.get("fixture", "H3"),
+        "matched_entity_ids": matched_entities,
+        "missing_entity_ids": missing_entities,
+        "entity_rate": round(entity_rate, 4),
+        "matched_term_ids": matched_terms,
+        "missing_term_ids": missing_terms,
+        "term_rate": round(term_rate, 4),
+        "structure_components": structure_components,
+        "structure_score": round(structure_score, 4),
+        "ascii_ratio": round(ascii_ratio, 4),
+        "fabrication_hits": fabrication_hits,
+        "fabrication_penalty": fabrication_penalty,
+        "primary_pass": primary_score >= pass_threshold and not fabrication_hits,
+        "primary_score": primary_score,
+    }
+
+
+def score_h5_agentic_tool_use(agent_output: str, ground_truth: dict) -> dict:
+    """H5 — tool-set recall * sequence ordering, with phantom-tool penalty.
+
+    score = (required_tool_recall * ordering_correctness) + 0.10 * argument_citation_rate
+            - phantom_tool_penalty - step_count_violation_penalty.
+    """
+    text = agent_output or ""
+
+    palette = {t.get("name") for t in (ground_truth.get("tool_palette") or []) if t.get("name")}
+
+    required_tools = list(ground_truth.get("required_tools") or [])
+    matched_required: list[str] = []
+    missed_required: list[str] = []
+    matched_weight = 0.0
+    total_weight = 0.0
+    for rt in required_tools:
+        name = rt.get("name", "")
+        weight = float(rt.get("weight", 1.0))
+        total_weight += weight
+        if re.search(rf"\b{re.escape(name)}\s*\(", text):
+            matched_required.append(name)
+            matched_weight += weight
+        else:
+            missed_required.append(name)
+    required_recall = _safe_div(matched_weight, total_weight) if total_weight else 0.0
+
+    def _first_pos(name: str) -> int:
+        m = re.search(rf"\b{re.escape(name)}\s*\(", text)
+        return m.start() if m else -1
+
+    def _all_positions(name: str) -> list[int]:
+        return [m.start() for m in re.finditer(rf"\b{re.escape(name)}\s*\(", text)]
+
+    invariants = list(ground_truth.get("ordering_invariants") or [])
+    invariant_results: list[dict] = []
+    invariants_passed = 0
+    for inv in invariants:
+        earlier = inv.get("earlier_tool_regex", "")
+        later = inv.get("later_tool_regex", "")
+        twice_required = inv.get("must_appear_twice")
+        ok = False
+        if twice_required:
+            positions = _all_positions(twice_required)
+            if len(positions) >= 2:
+                # must_appear_twice means: a `later` call AFTER an `earlier` call.
+                e_pos = _first_pos(earlier)
+                later_after = [p for p in positions if p > e_pos]
+                ok = bool(later_after) and e_pos != -1
+            else:
+                ok = False
+        else:
+            e_pos = _first_pos(earlier)
+            l_pos = _first_pos(later)
+            ok = e_pos != -1 and l_pos != -1 and e_pos < l_pos
+        invariant_results.append({"id": inv.get("id"), "label": inv.get("label"), "passed": ok})
+        if ok:
+            invariants_passed += 1
+    ordering_rate = _safe_div(invariants_passed, len(invariants)) if invariants else 1.0
+
+    citation_cfg = ground_truth.get("argument_citation_checks") or {}
+    test_target_hit = bool(_regex_any_hit(text, citation_cfg.get("test_target_regex_any_of") or []))
+    candidate_fn_hit = bool(_regex_any_hit(text, citation_cfg.get("candidate_function_any_of") or []))
+    candidate_file_hit = bool(_regex_any_hit(text, citation_cfg.get("candidate_file_any_of") or []))
+    citation_components = [test_target_hit, candidate_fn_hit, candidate_file_hit]
+    citation_rate = _safe_div(sum(citation_components), len(citation_components))
+
+    phantom_cfg = ground_truth.get("phantom_tool_check") or {}
+    phantom_pat = phantom_cfg.get("candidate_pattern") or r"(?:^|\d\.\s+|`)([a-z_][a-z0-9_]*)\s*\("
+    candidate_calls = re.findall(phantom_pat, text, re.MULTILINE)
+    phantom_calls = sorted({c for c in candidate_calls if c not in palette})
+    per = float(phantom_cfg.get("penalty_per", 0.10))
+    cap = float(phantom_cfg.get("max_penalty", 0.40))
+    phantom_penalty = min(cap, per * len(phantom_calls))
+
+    step_range = ground_truth.get("step_count_range") or {}
+    step_min = int(step_range.get("min", 0))
+    step_max = int(step_range.get("max", 10**6))
+    numbered_steps = re.findall(r"(?m)^\s*\d+\.\s+\S", text)
+    step_count = len(numbered_steps)
+    step_violation_penalty = 0.0 if step_min <= step_count <= step_max else 0.10
+
+    raw_score = (required_recall * ordering_rate) + 0.10 * citation_rate - phantom_penalty - step_violation_penalty
+    primary_score = round(_clamp01(raw_score), 4)
+    pass_threshold = float(((ground_truth.get("primary_metric") or {}).get("pass_threshold")) or 1.0)
+
+    return {
+        "fixture": ground_truth.get("fixture", "H5"),
+        "matched_required_tools": matched_required,
+        "missed_required_tools": missed_required,
+        "required_recall": round(required_recall, 4),
+        "ordering_invariant_results": invariant_results,
+        "ordering_rate": round(ordering_rate, 4),
+        "citation": {
+            "test_target": test_target_hit,
+            "candidate_function": candidate_fn_hit,
+            "candidate_file": candidate_file_hit,
+            "rate": round(citation_rate, 4),
+        },
+        "phantom_tool_calls": phantom_calls,
+        "phantom_penalty": round(phantom_penalty, 4),
+        "step_count": step_count,
+        "step_count_range": [step_min, step_max],
+        "step_violation_penalty": step_violation_penalty,
+        "primary_pass": primary_score >= pass_threshold,
+        "primary_score": primary_score,
+    }
+
+
 PRIMARY_GRADERS: dict[str, "callable"] = {
     "F2": score_f2_invariants,
     "F3": score_f3_severity_f1,
@@ -1722,6 +2228,11 @@ PRIMARY_GRADERS: dict[str, "callable"] = {
     "F9": score_f9_root_cause,
     "F10": score_f10_checklist,
     "Fa": score_fa_false_prior,
+    "H1":  score_h1_long_form_code_review,
+    "H2":  score_h2_multi_hop_reasoning,
+    "H3":  score_h3_multilingual_recall_ko_en,
+    "H5":  score_h5_agentic_tool_use,
+    "H10": score_h10_strict_instruction_following,
 }
 
 

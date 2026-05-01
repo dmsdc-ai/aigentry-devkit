@@ -184,10 +184,16 @@ def _cases():
 
 
 def test_primary_graders_registry_has_all_expected_entries():
-    assert set(g.PRIMARY_GRADERS) == {"F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "Fa"}
+    # Phase 4 F-fixtures (10) + Phase 5 holdout H-fixtures (5, Track #329 E27).
+    assert set(g.PRIMARY_GRADERS) == {
+        "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "Fa",
+        "H1", "H2", "H3", "H5", "H10",
+    }
     assert g.PRIMARY_GRADERS["F2"] is g.score_f2_invariants
     assert g.PRIMARY_GRADERS["F10"] is g.score_f10_checklist
     assert g.PRIMARY_GRADERS["Fa"] is g.score_fa_false_prior
+    assert g.PRIMARY_GRADERS["H1"] is g.score_h1_long_form_code_review
+    assert g.PRIMARY_GRADERS["H10"] is g.score_h10_strict_instruction_following
 
 
 def test_score_primary_dispatch_matches_direct_call(monkeypatch):

@@ -1,0 +1,12 @@
+[
+  {"q_idx": 1, "fact_id": 1, "answer": "PR #5184", "accept_variants": ["PR #5184", "PR-5184", "5184"]},
+  {"q_idx": 2, "fact_id": 2, "answer": "OPS-4192", "accept_variants": ["OPS-4192", "OPS 4192"]},
+  {"q_idx": 3, "fact_id": 3, "answer": "vault lazy load", "accept_variants": ["vault lazy load", "vault lazy-load", "lazy-load from vault"]},
+  {"q_idx": 4, "fact_id": 4, "answer": "idempotency-key", "accept_variants": ["idempotency-key", "idempotency key", "Idempotency-Key"]},
+  {"q_idx": 5, "fact_id": 5, "answer": "mask_pii", "accept_variants": ["mask_pii", "mask PII helper"]},
+  {"q_idx": 6, "fact_id": 6, "answer": "DB 트랜잭션 안에서 외부 HTTP 호출 금지", "accept_variants": ["no external HTTP inside DB transaction", "외부 HTTP 호출 금지", "HTTP inside transaction"]},
+  {"q_idx": 7, "fact_id": 7, "answer": "services/notify_dispatcher.py", "accept_variants": ["services/notify_dispatcher.py", "notify_dispatcher.py", "notify_dispatcher"]},
+  {"q_idx": 8, "fact_id": 8, "answer": "smtp.internal.example.com", "accept_variants": ["smtp.internal.example.com", "smtp internal"]},
+  {"q_idx": 9, "fact_id": 9, "answer": "AC_demo", "accept_variants": ["AC_demo"]},
+  {"q_idx": 10, "fact_id": 10, "answer": "+15555550100", "accept_variants": ["+15555550100", "15555550100"]}
+]

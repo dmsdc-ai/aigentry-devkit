@@ -1,0 +1,12 @@
+[
+  {"id": 1, "keyword": "OPS-4187", "sentence": "OPS-4187은 2026-04-03 03:14 KST 인시던트", "type": "ticket_id", "turn": 7, "embed_variants": ["OPS-4187", "OPS 4187", "ticket OPS-4187"]},
+  {"id": 2, "keyword": "OPS-4192", "sentence": "OPS-4192는 2026-04-11 11:02 KST 인시던트", "type": "ticket_id", "turn": 7, "embed_variants": ["OPS-4192", "OPS 4192", "ticket OPS-4192"]},
+  {"id": 3, "keyword": "OPS-4205", "sentence": "OPS-4205는 2026-04-22 02:30 KST 인시던트", "type": "ticket_id", "turn": 7, "embed_variants": ["OPS-4205", "OPS 4205", "ticket OPS-4205"]},
+  {"id": 4, "keyword": "us-east-1", "sentence": "OPS-4187 영향 region은 us-east-1", "type": "region_code", "turn": 7, "embed_variants": ["us-east-1", "US East 1", "us east 1"]},
+  {"id": 5, "keyword": "1,247 req/s", "sentence": "OPS-4187 peak 트래픽 1,247 req/s", "type": "metric", "turn": 7, "embed_variants": ["1,247 req/s", "1247 req/s", "1,247"]},
+  {"id": 6, "keyword": "47초", "sentence": "OPS-4192에서 PostgreSQL replica lag 47초", "type": "duration", "turn": 7, "embed_variants": ["47초", "47s", "47 seconds"]},
+  {"id": 7, "keyword": "vacuum hold", "sentence": "OPS-4192 root cause: vacuum hold", "type": "root_cause", "turn": 7, "embed_variants": ["vacuum hold", "VACUUM hold", "vacuum-hold"]},
+  {"id": 8, "keyword": "3,408", "sentence": "OPS-4205 401 응답 카운트 3,408 req", "type": "metric", "turn": 7, "embed_variants": ["3,408", "3408", "3,408 req"]},
+  {"id": 9, "keyword": "CDN 인증서 만료", "sentence": "OPS-4205 원인은 CDN 인증서 만료 누락", "type": "root_cause", "turn": 7, "embed_variants": ["CDN 인증서 만료", "CDN cert expir", "CDN certificate"]},
+  {"id": 10, "keyword": "ops-on-call", "sentence": "회고 작성자 사인오프는 ops-on-call", "type": "signoff", "turn": 5, "embed_variants": ["ops-on-call", "ops on call"]}
+]

@@ -1,0 +1,12 @@
+[
+  {"id": 1, "keyword": "Park Seoyeon", "sentence": "발표자는 박서연 PM (Park Seoyeon)", "type": "person_name_romanized", "turn": 3, "embed_variants": ["Park Seoyeon", "박서연"]},
+  {"id": 2, "keyword": "Kim Dohyeon", "sentence": "지원 엔지니어 김도현 (Kim Dohyeon)", "type": "person_name_romanized", "turn": 3, "embed_variants": ["Kim Dohyeon", "김도현"]},
+  {"id": 3, "keyword": "Carla Rivera", "sentence": "글로벌 PM Carla Rivera", "type": "person_name", "turn": 3, "embed_variants": ["Carla Rivera"]},
+  {"id": 4, "keyword": "Nova 3", "sentence": "제품명 Nova 3 (스페이스 포함)", "type": "product_name", "turn": 3, "embed_variants": ["Nova 3", "노바3"]},
+  {"id": 5, "keyword": "v3.7.2", "sentence": "GA 버전 v3.7.2", "type": "version", "turn": 7, "embed_variants": ["v3.7.2", "version 3.7.2"]},
+  {"id": 6, "keyword": "p99 < 80ms", "sentence": "성능 SLO p99 < 80ms", "type": "slo", "turn": 7, "embed_variants": ["p99 < 80ms", "p99<80ms", "p99 80ms"]},
+  {"id": 7, "keyword": "4,200 RPS", "sentence": "throughput 4,200 RPS", "type": "metric", "turn": 7, "embed_variants": ["4,200 RPS", "4200 RPS", "4,200 rps"]},
+  {"id": 8, "keyword": "/v1/orders", "sentence": "API route /v1/orders", "type": "api_route", "turn": 7, "embed_variants": ["/v1/orders"]},
+  {"id": 9, "keyword": "2026-06-15", "sentence": "발표일 2026-06-15", "type": "date", "turn": 7, "embed_variants": ["2026-06-15", "June 15 2026", "June 15, 2026"]},
+  {"id": 10, "keyword": "PSP", "sentence": "PSP (Payment Service Provider) 통합", "type": "abbreviation", "turn": 7, "embed_variants": ["PSP", "Payment Service Provider"]}
+]
