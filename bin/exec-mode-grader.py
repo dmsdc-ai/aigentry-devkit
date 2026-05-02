@@ -2660,6 +2660,574 @@ def score_h5_agentic_tool_use(agent_output: str, ground_truth: dict) -> dict:
     }
 
 
+# ─── Phase 6 holdout graders (H11–H14) ──────────────────────────────────────
+# Per Phase 6 spec §6.2 + §6.3 (output-style guard) + Q3 ADR §2.4 r2, each
+# H11–H14 grader (a) implements a fixture-local canonicalization step that
+# strips/normalizes structurally-equivalent output-style variants before
+# scoring, (b) emits the five-field `formatting_exempt_*` block via
+# `_emit_formatting_exempt_status` with status `implemented`, and (c) gives
+# partial credit on intermediate-quality outputs (the Phase 6 q ∈ [0.5, 0.85]
+# difficulty band — binary scoring would degenerate at the floor or ceiling).
+
+_FENCE_RE = re.compile(
+    r"\A\s*```[\w\-]*\s*\n(?P<body>.*?)\n```\s*\Z",
+    re.DOTALL,
+)
+
+
+def _strip_outer_code_fence(text: str) -> str:
+    """Strip a single outer ``` fence wrapping the entire text, else passthrough.
+
+    Shared canonicalization primitive across H11–H14 — every fixture's task
+    prompt allows the agent to wrap its answer in a markdown code-fence,
+    which is the ADR §2.1 "JSON inside markdown ``` json fence vs raw JSON"
+    surface. Stripping here renders all four graders fence-invariant.
+    """
+    if not text:
+        return text
+    m = _FENCE_RE.match(text)
+    if m:
+        return m.group("body")
+    return text
+
+
+# ─── H11: structured-data-extraction (incident-report Component+Cause pairs)
+# Domain: extract three (Component, Root-Cause) pairs from a one-paragraph
+# incident report. Output format is unconstrained per task_prompt.md (JSON,
+# markdown table, bullet list — all equivalent). Partial credit by pair.
+_H11_PAIRS = (
+    {
+        "id": "P1",
+        "component_regex": r"\bCheckoutService\b",
+        "root_cause_regex_any_of": [
+            r"PaymentGateway",
+            r"\btimeout\b.{0,40}\bshort\b",
+            r"\btoo\s+short\b",
+        ],
+    },
+    {
+        "id": "P2",
+        "component_regex": r"\bOrderQueue\b",
+        "root_cause_regex_any_of": [
+            r"\bOOM\b",
+            r"out[\s\-]of[\s\-]memory",
+            r"\bmemory\s+(?:exhaust|exhausted|exceeded)\b",
+        ],
+    },
+    {
+        "id": "P3",
+        "component_regex": r"\bNotificationWorker\b",
+        "root_cause_regex_any_of": [
+            r"malformed.{0,30}API[\s\-]?key",
+            r"\bAPI[\s\-]?key\b.{0,30}(?:malformed|invalid|misconfigured|configuration)",
+            r"\bmalformed\b.{0,40}\bconfiguration\b",
+        ],
+    },
+)
+_H11_VARIANTS: tuple[str, ...] = (
+    "raw_text",
+    "fenced_code_block",
+    "json_array",
+    "markdown_table",
+    "bullet_or_numbered_list",
+)
+
+
+def _canonicalize_h11_pairs_text(text: str) -> tuple[str, str]:
+    """Return (normalized_text, source_format) suitable for regex pair matching.
+
+    H11 grader compares per-pair tokens (Component name + Root-Cause keyword),
+    not the wire format. Normalization concatenates all candidate text so the
+    pair-regex matches independent of structural typography.
+
+    Equivalence-surface declaration:
+      Variants normalized: raw_text, fenced_code_block, json_array,
+        markdown_table, bullet_or_numbered_list.
+      Variants intentionally NOT normalized: component name spelling
+        (CheckoutService etc. are meaning); cause keyword phrasing.
+    """
+    if not text:
+        return "", "raw_text"
+    inner = _strip_outer_code_fence(text)
+    if inner is not text:
+        return inner, "fenced_code_block"
+    stripped = text.strip()
+    if stripped.startswith(("[", "{")):
+        try:
+            json.loads(stripped)
+            return text, "json_array"
+        except (ValueError, TypeError):
+            pass
+    if any(line.lstrip().startswith("|") for line in text.splitlines()):
+        return text, "markdown_table"
+    if any(re.match(r"\s*(?:[-*•]|\d+[.)])\s", line) for line in text.splitlines()):
+        return text, "bullet_or_numbered_list"
+    return text, "raw_text"
+
+
+def score_h11_structured_data_extraction(agent_output: str, ground_truth: dict) -> dict:
+    """H11 — count of (Component, Root-Cause) pairs recovered from any format.
+
+    primary_score = matched_pairs / 3 (continuous fraction; fixture target
+    band μq ∈ [0.5, 0.85] is naturally hit at 2/3 partial credit).
+    """
+    text = agent_output or ""
+    canonical_text, source_format = _canonicalize_h11_pairs_text(text)
+
+    pair_results: list[dict] = []
+    matched_ids: list[str] = []
+    for pair in _H11_PAIRS:
+        comp_hit = bool(re.search(pair["component_regex"], canonical_text, re.IGNORECASE))
+        cause_hit = comp_hit and bool(_regex_any_hit(
+            canonical_text, pair["root_cause_regex_any_of"]
+        ))
+        passed = comp_hit and cause_hit
+        if passed:
+            matched_ids.append(pair["id"])
+        pair_results.append({
+            "id": pair["id"],
+            "component_hit": comp_hit,
+            "cause_hit": cause_hit,
+            "passed": passed,
+        })
+
+    n_pairs = len(_H11_PAIRS)
+    primary_score = round(_clamp01(len(matched_ids) / n_pairs), 4)
+    pass_threshold = float(
+        ((ground_truth or {}).get("primary_metric") or {}).get("pass_threshold", 0.66)
+    )
+    primary_pass = primary_score >= pass_threshold
+
+    result = {
+        "fixture": (ground_truth or {}).get("fixture", "H11"),
+        "pair_results": pair_results,
+        "matched_pair_ids": matched_ids,
+        "pairs_total": n_pairs,
+        "pairs_matched": len(matched_ids),
+        "output_format_source": source_format,
+        "primary_pass": primary_pass,
+        "primary_score": primary_score,
+    }
+    result.update(_emit_formatting_exempt_status(
+        "implemented",
+        canonicalizer="_canonicalize_h11_pairs_text",
+        variants=list(_H11_VARIANTS),
+        tests=[
+            "test_h11_canonicalizer_detects_variants",
+            "test_h11_grader_full_credit_on_three_pairs",
+            "test_h11_grader_partial_credit_on_two_pairs",
+            "test_h11_grader_format_invariant_json_vs_markdown",
+        ],
+    ))
+    return result
+
+
+# ─── H12: multilingual-summarization (3 semantic takeaways, ko+en mixed)
+_H12_TAKEAWAYS = (
+    {
+        "id": "T1",
+        "label": "Redis memory evictions / latency spikes",
+        "regex_any_of": [
+            r"Redis.{0,40}(?:max\s+memory|memory\s+eviction|out\s+of\s+memory|evict)",
+            r"Redis.{0,30}(?:latency|지연)",
+            r"(?:max\s+memory\s+eviction|memory\s+eviction).{0,30}Redis",
+            r"메모리\s*(?:evict|증발|소진|초과)",
+        ],
+    },
+    {
+        "id": "T2",
+        "label": "TTL reduced to 6 hours as initial mitigation",
+        "regex_any_of": [
+            r"TTL.{0,40}(?:6\s*(?:hours?|hrs?|h)|6시간|6\s*hour)",
+            r"(?:6\s*(?:hours?|hrs?|h)|6시간).{0,30}TTL",
+            r"reduce.{0,20}TTL.{0,30}6",
+            r"TTL.{0,20}(?:줄|reduce|cut|lower)",
+        ],
+    },
+    {
+        "id": "T3",
+        "label": "Scale Redis cluster if DB load increases",
+        "regex_any_of": [
+            r"(?:scal|확장|증설).{0,40}Redis",
+            r"Redis.{0,40}(?:scal|확장|증설|cluster)",
+            r"DB\s*load.{0,40}(?:scal|확장|증설|증가)",
+            r"(?:DB|database).{0,40}(?:load|부하).{0,40}(?:scal|확장|증설)",
+        ],
+    },
+)
+_H12_VARIANTS: tuple[str, ...] = (
+    "raw_text",
+    "fenced_code_block",
+    "bullet_list",
+    "numbered_list",
+    "paragraph_prose",
+)
+
+
+def _canonicalize_h12_summary_text(text: str) -> tuple[str, str]:
+    """Return (normalized_text, source_format) for H12 takeaway-presence regex.
+
+    Per ADR §2.1: bullet-vs-numbered-list (same items) is structurally
+    equivalent. The H12 fixture's metadata `format_exemption_rules` field
+    additionally states "Any list marker (*, -, 1.) or paragraph structure
+    containing the 3 facts is equivalent" — this canonicalizer enforces that.
+
+    Equivalence-surface declaration:
+      Variants normalized: raw_text, fenced_code_block, bullet_list,
+        numbered_list, paragraph_prose.
+      Variants intentionally NOT normalized: the takeaway tokens themselves
+        (Redis / TTL / 6 hours / scaling / DB load) are meaning.
+    """
+    if not text:
+        return "", "raw_text"
+    inner = _strip_outer_code_fence(text)
+    if inner is not text:
+        return inner, "fenced_code_block"
+    lines = text.splitlines()
+    if any(re.match(r"\s*[-*•]\s+\S", ln) for ln in lines):
+        return text, "bullet_list"
+    if any(re.match(r"\s*\d+[.)]\s+\S", ln) for ln in lines):
+        return text, "numbered_list"
+    return text, "paragraph_prose"
+
+
+def score_h12_multilingual_summarization(agent_output: str, ground_truth: dict) -> dict:
+    """H12 — count of 3 semantic takeaways present in any list/prose form.
+
+    primary_score = matched_takeaways / 3 (continuous fraction). The grader
+    is format-agnostic so a Korean+English mixed summary scored equivalently
+    to an English-only one as long as the regex hits.
+    """
+    text = agent_output or ""
+    canonical_text, source_format = _canonicalize_h12_summary_text(text)
+
+    takeaway_results: list[dict] = []
+    matched_ids: list[str] = []
+    for tk in _H12_TAKEAWAYS:
+        hit = bool(_regex_any_hit(canonical_text, tk["regex_any_of"]))
+        if hit:
+            matched_ids.append(tk["id"])
+        takeaway_results.append({
+            "id": tk["id"],
+            "label": tk["label"],
+            "passed": hit,
+        })
+
+    n_takeaways = len(_H12_TAKEAWAYS)
+    primary_score = round(_clamp01(len(matched_ids) / n_takeaways), 4)
+    pass_threshold = float(
+        ((ground_truth or {}).get("primary_metric") or {}).get("pass_threshold", 0.66)
+    )
+    primary_pass = primary_score >= pass_threshold
+
+    result = {
+        "fixture": (ground_truth or {}).get("fixture", "H12"),
+        "takeaway_results": takeaway_results,
+        "matched_takeaway_ids": matched_ids,
+        "takeaways_total": n_takeaways,
+        "takeaways_matched": len(matched_ids),
+        "output_format_source": source_format,
+        "primary_pass": primary_pass,
+        "primary_score": primary_score,
+    }
+    result.update(_emit_formatting_exempt_status(
+        "implemented",
+        canonicalizer="_canonicalize_h12_summary_text",
+        variants=list(_H12_VARIANTS),
+        tests=[
+            "test_h12_canonicalizer_detects_variants",
+            "test_h12_grader_full_credit_three_takeaways",
+            "test_h12_grader_partial_credit_two_takeaways",
+            "test_h12_grader_korean_english_mixed_input",
+        ],
+    ))
+    return result
+
+
+# ─── H13: schema-strict-output (routes config in JSON or YAML)
+_H13_REQUIRED_ROUTES = (
+    {"path": "/api/v1", "backend": "api-svc"},
+    {"path": "/assets",  "backend": "cdn-svc"},
+)
+_H13_VARIANTS: tuple[str, ...] = (
+    "raw_json",
+    "fenced_json",
+    "raw_yaml",
+    "fenced_yaml",
+)
+
+
+def _try_parse_h13_json(candidate: str) -> dict | None:
+    candidate = candidate.strip()
+    if not candidate or candidate[0] not in "[{":
+        return None
+    try:
+        return json.loads(candidate)
+    except (ValueError, TypeError):
+        return None
+
+
+_H13_YAML_PATH_RE = re.compile(
+    r"(?:^|\n)\s*-?\s*path\s*:\s*[\"']?(?P<path>\S+?)[\"']?\s*(?:\n|$)",
+    re.IGNORECASE,
+)
+_H13_YAML_BACKEND_RE = re.compile(
+    r"(?:^|\n)\s*-?\s*backend\s*:\s*[\"']?(?P<backend>\S+?)[\"']?\s*(?:\n|$)",
+    re.IGNORECASE,
+)
+
+
+def _try_parse_h13_yaml(candidate: str) -> list[dict] | None:
+    """Tiny YAML reader for the H13 routes shape (Article 17: no PyYAML).
+
+    Recovers `path`/`backend` pairs in source order. The two regexes hit
+    independently so we zip by position. Robust against either flow style
+    (`- path: /x`) or block style across multiple lines.
+    """
+    if not candidate or "routes" not in candidate.lower():
+        return None
+    paths = [m.group("path") for m in _H13_YAML_PATH_RE.finditer(candidate)]
+    backends = [m.group("backend") for m in _H13_YAML_BACKEND_RE.finditer(candidate)]
+    if not paths or not backends:
+        return None
+    return [{"path": p, "backend": b} for p, b in zip(paths, backends)]
+
+
+def _canonicalize_h13_routes(text: str) -> tuple[list[dict], str]:
+    """Parse routes from JSON or YAML, with or without code-fence wrappers.
+
+    Returns (routes, source_format) where routes is the list of route dicts
+    (each with 'path' and 'backend' keys) and source_format ∈ _H13_VARIANTS.
+
+    Equivalence-surface declaration:
+      Variants normalized: raw_json, fenced_json, raw_yaml, fenced_yaml.
+      Variants intentionally NOT normalized: path strings ('/api/v1'
+        vs '/api/v2' are different) and backend names — these are the
+        scoring surface itself.
+    """
+    if not text:
+        return [], "raw_json"
+    fenced = _FENCE_RE.match(text)
+    inner = fenced.group("body") if fenced else text
+
+    parsed_json = _try_parse_h13_json(inner)
+    if parsed_json:
+        routes = parsed_json.get("routes") if isinstance(parsed_json, dict) else parsed_json
+        if isinstance(routes, list):
+            normalized = [
+                {"path": str(r.get("path", "")).strip(), "backend": str(r.get("backend", "")).strip()}
+                for r in routes if isinstance(r, dict)
+            ]
+            return normalized, ("fenced_json" if fenced else "raw_json")
+
+    yaml_routes = _try_parse_h13_yaml(inner)
+    if yaml_routes:
+        return yaml_routes, ("fenced_yaml" if fenced else "raw_yaml")
+
+    return [], ("fenced_json" if fenced else "raw_json")
+
+
+def score_h13_schema_strict_routes(agent_output: str, ground_truth: dict) -> dict:
+    """H13 — routes-array correctness, JSON or YAML accepted as equivalent.
+
+    primary_score = matched_routes / 2 (two required routes; partial credit
+    of 0.5 for one route correct hits the q ∈ [0.5, 0.85] band).
+    """
+    text = agent_output or ""
+    routes, source_format = _canonicalize_h13_routes(text)
+
+    route_results: list[dict] = []
+    matched: list[dict] = []
+    for required in _H13_REQUIRED_ROUTES:
+        ok = any(
+            r.get("path") == required["path"] and r.get("backend") == required["backend"]
+            for r in routes
+        )
+        if ok:
+            matched.append(required)
+        route_results.append({
+            "required_path": required["path"],
+            "required_backend": required["backend"],
+            "passed": ok,
+        })
+
+    n_routes = len(_H13_REQUIRED_ROUTES)
+    primary_score = round(_clamp01(len(matched) / n_routes), 4)
+    pass_threshold = float(
+        ((ground_truth or {}).get("primary_metric") or {}).get("pass_threshold", 0.5)
+    )
+    primary_pass = primary_score >= pass_threshold and bool(routes)
+
+    result = {
+        "fixture": (ground_truth or {}).get("fixture", "H13"),
+        "route_results": route_results,
+        "routes_parsed": routes,
+        "routes_total": n_routes,
+        "routes_matched": len(matched),
+        "output_format_source": source_format,
+        "primary_pass": primary_pass,
+        "primary_score": primary_score,
+    }
+    result.update(_emit_formatting_exempt_status(
+        "implemented",
+        canonicalizer="_canonicalize_h13_routes",
+        variants=list(_H13_VARIANTS),
+        tests=[
+            "test_h13_canonicalizer_json_and_yaml_variants",
+            "test_h13_grader_full_credit_both_routes",
+            "test_h13_grader_partial_credit_one_route",
+            "test_h13_grader_yaml_equivalent_to_json",
+        ],
+    ))
+    return result
+
+
+# ─── H14: agentic-multi-step-tool-use (4-tool ordered sequence)
+_H14_REQUIRED_SEQUENCE = ("grep_logs", "read_metrics", "list_threads", "restart_process")
+_H14_TOOL_PATTERN = re.compile(
+    r"\b(read_metrics|restart_process|list_threads|grep_logs)\b"
+)
+_H14_VARIANTS: tuple[str, ...] = (
+    "raw_text",
+    "fenced_code_block",
+    "comma_separated",
+    "numbered_list",
+    "json_array",
+    "backtick_wrapped",
+)
+
+
+def _canonicalize_h14_tool_sequence(text: str) -> tuple[list[str], str]:
+    """Extract ordered tool-name sequence from any wrapper format.
+
+    The H14 task prompt explicitly invites the agent to format the answer
+    however they like — comma-separated, numbered list, backticks, raw text.
+    Per ADR §2.1 tool-call rendering: `tool_name(arg)` vs ``` `tool_name` ```
+    vs fenced code-block are structurally equivalent when the grader checks
+    palette membership / ordering.
+
+    Returns (tool_names_in_order, source_format).
+
+    Equivalence-surface declaration:
+      Variants normalized: raw_text, fenced_code_block, comma_separated,
+        numbered_list, json_array, backtick_wrapped.
+      Variants intentionally NOT normalized: tool name spelling
+        (`grep_logs` vs `grep-logs` — underscore is meaning here), and
+        order itself (the scoring surface).
+    """
+    if not text:
+        return [], "raw_text"
+    fenced = _FENCE_RE.match(text)
+    inner = fenced.group("body") if fenced else text
+
+    stripped = inner.strip()
+    if stripped.startswith(("[", "{")):
+        try:
+            blob = json.loads(stripped)
+            items = blob if isinstance(blob, list) else None
+            if items is not None:
+                names: list[str] = []
+                for entry in items:
+                    if isinstance(entry, str):
+                        m = _H14_TOOL_PATTERN.search(entry)
+                        if m:
+                            names.append(m.group(1))
+                    elif isinstance(entry, dict):
+                        for v in entry.values():
+                            if isinstance(v, str):
+                                m = _H14_TOOL_PATTERN.search(v)
+                                if m:
+                                    names.append(m.group(1))
+                                    break
+                if names:
+                    return names, ("fenced_code_block" if fenced else "json_array")
+        except (ValueError, TypeError):
+            pass
+
+    matches = [m.group(1) for m in _H14_TOOL_PATTERN.finditer(inner)]
+    if not matches:
+        return [], ("fenced_code_block" if fenced else "raw_text")
+
+    if fenced:
+        return matches, "fenced_code_block"
+    # Priority: backtick wrappers around tool names dominate over comma/list
+    # cosmetics — an output like "Use `grep_logs`, then `read_metrics`" is
+    # meaningfully a backtick-wrapped variant per ADR §2.1 tool-call examples.
+    if re.search(r"`(?:grep_logs|read_metrics|list_threads|restart_process)`", inner):
+        return matches, "backtick_wrapped"
+    if re.search(r"(?m)^\s*\d+[.)]\s", inner):
+        return matches, "numbered_list"
+    if "," in inner and re.search(r",\s*\w", inner):
+        return matches, "comma_separated"
+    return matches, "raw_text"
+
+
+def score_h14_agentic_tool_sequence(agent_output: str, ground_truth: dict) -> dict:
+    """H14 — sequence-of-4 tool plan, ordered correctness with partial credit.
+
+    Component scores:
+      - palette_recall: |required ∩ extracted| / 4
+      - order_correct:  longest-matching-prefix(extracted_unique, required) / 4
+    primary_score = 0.5 * palette_recall + 0.5 * order_correct.
+
+    Partial-credit shape lands the q ∈ [0.5, 0.85] band: a 4/4 set in any
+    order ≈ 0.5 (palette only); a 4/4 set in correct order = 1.0; a 3/4
+    palette + 3/4 prefix ≈ 0.75.
+    """
+    text = agent_output or ""
+    extracted, source_format = _canonicalize_h14_tool_sequence(text)
+
+    extracted_unique: list[str] = []
+    seen: set[str] = set()
+    for name in extracted:
+        if name not in seen:
+            extracted_unique.append(name)
+            seen.add(name)
+
+    n_required = len(_H14_REQUIRED_SEQUENCE)
+    palette_hits = [name for name in _H14_REQUIRED_SEQUENCE if name in seen]
+    palette_recall = _safe_div(len(palette_hits), n_required)
+
+    prefix_match = 0
+    for i, expected in enumerate(_H14_REQUIRED_SEQUENCE):
+        if i < len(extracted_unique) and extracted_unique[i] == expected:
+            prefix_match += 1
+        else:
+            break
+    order_score = _safe_div(prefix_match, n_required)
+
+    primary_score = round(_clamp01(0.5 * palette_recall + 0.5 * order_score), 4)
+    pass_threshold = float(
+        ((ground_truth or {}).get("primary_metric") or {}).get("pass_threshold", 0.75)
+    )
+    primary_pass = primary_score >= pass_threshold
+
+    result = {
+        "fixture": (ground_truth or {}).get("fixture", "H14"),
+        "extracted_tool_sequence": extracted_unique,
+        "palette_hits": palette_hits,
+        "palette_recall": round(palette_recall, 4),
+        "order_prefix_match": prefix_match,
+        "order_score": round(order_score, 4),
+        "required_sequence": list(_H14_REQUIRED_SEQUENCE),
+        "output_format_source": source_format,
+        "primary_pass": primary_pass,
+        "primary_score": primary_score,
+    }
+    result.update(_emit_formatting_exempt_status(
+        "implemented",
+        canonicalizer="_canonicalize_h14_tool_sequence",
+        variants=list(_H14_VARIANTS),
+        tests=[
+            "test_h14_canonicalizer_extracts_across_wrappers",
+            "test_h14_grader_full_credit_correct_order",
+            "test_h14_grader_partial_credit_unordered",
+            "test_h14_grader_format_invariant_json_vs_text",
+        ],
+    ))
+    return result
+
+
 PRIMARY_GRADERS: dict[str, "callable"] = {
     "F2": score_f2_invariants,
     "F3": score_f3_severity_f1,
@@ -2676,6 +3244,10 @@ PRIMARY_GRADERS: dict[str, "callable"] = {
     "H3":  score_h3_multilingual_recall_ko_en,
     "H5":  score_h5_agentic_tool_use,
     "H10": score_h10_strict_instruction_following,
+    "H11": score_h11_structured_data_extraction,
+    "H12": score_h12_multilingual_summarization,
+    "H13": score_h13_schema_strict_routes,
+    "H14": score_h14_agentic_tool_sequence,
 }
 
 

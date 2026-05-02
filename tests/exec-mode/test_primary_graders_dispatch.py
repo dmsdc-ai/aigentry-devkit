@@ -184,16 +184,22 @@ def _cases():
 
 
 def test_primary_graders_registry_has_all_expected_entries():
-    # Phase 4 F-fixtures (10) + Phase 5 holdout H-fixtures (5, Track #329 E27).
+    # Phase 4 F-fixtures (10) + Phase 5 holdout H-fixtures (5, Track #329 E27)
+    # + Phase 6 holdout H11–H14 (Q3 ADR §10.6 + Phase 6 spec §6.2).
     assert set(g.PRIMARY_GRADERS) == {
         "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "Fa",
         "H1", "H2", "H3", "H5", "H10",
+        "H11", "H12", "H13", "H14",
     }
     assert g.PRIMARY_GRADERS["F2"] is g.score_f2_invariants
     assert g.PRIMARY_GRADERS["F10"] is g.score_f10_checklist
     assert g.PRIMARY_GRADERS["Fa"] is g.score_fa_false_prior
     assert g.PRIMARY_GRADERS["H1"] is g.score_h1_long_form_code_review
     assert g.PRIMARY_GRADERS["H10"] is g.score_h10_strict_instruction_following
+    assert g.PRIMARY_GRADERS["H11"] is g.score_h11_structured_data_extraction
+    assert g.PRIMARY_GRADERS["H12"] is g.score_h12_multilingual_summarization
+    assert g.PRIMARY_GRADERS["H13"] is g.score_h13_schema_strict_routes
+    assert g.PRIMARY_GRADERS["H14"] is g.score_h14_agentic_tool_sequence
 
 
 def test_score_primary_dispatch_matches_direct_call(monkeypatch):
