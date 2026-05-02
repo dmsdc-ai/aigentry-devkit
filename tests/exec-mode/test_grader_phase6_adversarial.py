@@ -114,6 +114,26 @@ def test_h1_empty_string_emits_status_with_zero_score():
 
 # ─── H11 — swap-test (BLOCKER 2) + per-variant negative coverage ─────────────
 
+def test_h11_grader_raw_text_palette_only_passes():
+    """Positive raw_text variant for H11: prose-only multi-line without table /
+    JSON / bullet markers MUST canonicalize to `raw_text` AND credit the three
+    (Component, Root-Cause) pairs (one per line). Pairs the existing negative
+    `test_h11_grader_negative_unrelated_prose_scores_zero` so the declared
+    `raw_text` variant has both positive AND negative coverage per condition 4
+    (codex r2 §6 N3 / §3 condition 4)."""
+    payload = (
+        "CheckoutService had a PaymentGateway timeout that was too short.\n"
+        "OrderQueue went OOM under backlog pressure.\n"
+        "NotificationWorker had a malformed API key configuration.\n"
+    )
+    _, src = g._canonicalize_h11_pairs_text(payload)
+    assert src == "raw_text"
+    s = g.score_h11_structured_data_extraction(payload, {})
+    assert s["pairs_matched"] == 3
+    assert s["primary_score"] == 1.0
+    assert s["primary_pass"] is True
+
+
 def test_h11_grader_swapped_pairs_score_below_one_table():
     """codex BLOCKER 2 / triage B2: a swapped (component, cause) markdown
     table must NOT score 1.0. Each row's component + its mis-paired cause
@@ -457,3 +477,132 @@ def test_h14_empty_input_scores_zero_with_status():
     s = g.score_h14_agentic_tool_sequence("", {})
     assert s["primary_score"] == 0.0
     assert s["formatting_exempt_status"] == "implemented"
+
+
+# ─── H14 r3: codex r2 N1 + M3 / M6 — raw-text + connector-text surfaces ─────
+# Codex r2 §6 N1 + §2 M6: `_detect_h14_unknown_tools` previously only scanned
+# backtick / list-line / narrow CSV positions, while `_canonicalize_h14_tool_
+# sequence` extracted palette tools globally. r3 aligns the detector's
+# pass-set to the canonicalizer's so the palette-only constraint surface
+# holds across every output style the canonicalizer accepts.
+
+def test_h14_grader_raw_text_palette_only_passes():
+    """Positive raw-text variant — palette tools in space-separated raw text
+    must reach primary_pass=True. Codex r2 M3 PARTIAL completion (raw-text
+    positive was missing from the declared-variant matrix)."""
+    payload = "grep_logs read_metrics list_threads restart_process"
+    s = g.score_h14_agentic_tool_sequence(payload, {})
+    assert s["unknown_tools"] == []
+    assert s["palette_recall"] == 1.0
+    assert s["order_score"] == 1.0
+    assert s["primary_score"] == 1.0
+    assert s["primary_pass"] is True
+    assert s["output_format_source"] == "raw_text"
+
+
+def test_h14_grader_raw_text_unknown_tool_blocks_pass():
+    """Codex r2 §6 N1.a: unknown snake_case tool embedded in raw text must
+    surface in `unknown_tools` and block primary_pass — the prior detector
+    missed this because it only scanned backtick / list-line / narrow CSV
+    positions."""
+    payload = "grep_logs inspect_config read_metrics list_threads restart_process"
+    s = g.score_h14_agentic_tool_sequence(payload, {})
+    assert "inspect_config" in s["unknown_tools"]
+    assert s["primary_pass"] is False
+    assert s["primary_score"] < 1.0
+
+
+def test_h14_grader_comma_connector_unknown_tool_blocks_pass():
+    """Codex r2 §6 N1.b: unknown snake_case tool in comma-with-connector text
+    (`Call X, then Y, then Z, ...`) must surface in `unknown_tools` and block
+    primary_pass. Connector words ("Call", "then") fall outside the narrow
+    CSV regex; the global snake_case scan is what catches the unknown id."""
+    payload = (
+        "Call grep_logs, then inspect_config, then read_metrics, "
+        "then list_threads, then restart_process."
+    )
+    s = g.score_h14_agentic_tool_sequence(payload, {})
+    assert "inspect_config" in s["unknown_tools"]
+    assert s["primary_pass"] is False
+    assert s["primary_score"] < 1.0
+
+
+def test_h14_grader_uppercase_unknown_token_blocks_pass():
+    """Defensive: any snake_case identifier outside the palette blocks pass.
+    Lowercase-only regex still catches `unknown_tool` / `inspect_config`;
+    a literal UPPERCASE_TOKEN is intentionally NOT a snake_case tool by H14
+    contract (palette is lowercase). Pin the surface so a future regex
+    widening doesn't silently re-introduce the gap."""
+    payload = (
+        "grep_logs unknown_tool read_metrics list_threads restart_process"
+    )
+    s = g.score_h14_agentic_tool_sequence(payload, {})
+    assert "unknown_tool" in s["unknown_tools"]
+    assert s["primary_pass"] is False
+
+
+def test_h14_detector_scans_global_body_codex_n1():
+    """Direct unit on `_detect_h14_unknown_tools` proving the r3 rewrite:
+    every snake_case identifier outside the palette must surface regardless
+    of position (raw-text, comma-connector, multi-line). Pin the post-r3
+    detector contract so a regression to position-narrow scanning is caught
+    at unit layer, not only via the integration grader test."""
+    raw = "grep_logs inspect_config read_metrics list_threads restart_process"
+    comma = (
+        "Call grep_logs, then inspect_config, then read_metrics, "
+        "then list_threads, then restart_process."
+    )
+    multiline = (
+        "First grep_logs.\n"
+        "Then inspect_config and read_metrics.\n"
+        "Finally list_threads then restart_process.\n"
+    )
+    assert "inspect_config" in g._detect_h14_unknown_tools(raw)
+    assert "inspect_config" in g._detect_h14_unknown_tools(comma)
+    assert "inspect_config" in g._detect_h14_unknown_tools(multiline)
+    # palette-only inputs must still report no unknowns
+    palette = "grep_logs read_metrics list_threads restart_process"
+    assert g._detect_h14_unknown_tools(palette) == []
+
+
+def test_h14_canonicalizer_emits_raw_text_for_space_separated_palette():
+    """Pin canonicalizer contract for the raw-text variant so the declared
+    variant `raw_text` has both a positive variant detection (here) AND a
+    primary_pass positive (above). Required by condition 4 declared-variant
+    matrix."""
+    extracted, src = g._canonicalize_h14_tool_sequence(
+        "grep_logs read_metrics list_threads restart_process"
+    )
+    assert extracted == [
+        "grep_logs", "read_metrics", "list_threads", "restart_process",
+    ]
+    assert src == "raw_text"
+
+
+# ─── H12 r3: codex r2 N3 — declared-variant alignment after raw_text drop ──
+
+def test_h12_canonicalizer_empty_input_emits_paragraph_prose_post_n3():
+    """Codex r2 §6 N3 fix: empty input previously returned `raw_text` while
+    non-empty prose returned `paragraph_prose` and `_H12_VARIANTS` declared
+    `raw_text`. r3 option (a): both empty and non-empty prose now emit
+    `paragraph_prose`, matching the declared variants tuple."""
+    text, src = g._canonicalize_h12_summary_text("")
+    assert text == ""
+    assert src == "paragraph_prose"
+
+
+def test_h12_declared_variants_match_canonicalizer_outputs():
+    """For every declared H12 variant there exists at least one input that
+    canonicalizes to that variant — proves the declaration is grounded in
+    implementation, not aspirational. Codex §6 N3 schema-drift guard."""
+    declared = set(g._H12_VARIANTS)
+    samples = {
+        "fenced_code_block": "```\nThe team lowered TTL.\n```",
+        "bullet_list": "* Redis hits eviction\n* TTL\n",
+        "numbered_list": "1. Redis\n2. TTL\n3. Scale\n",
+        "paragraph_prose": "Just a single line of free-form prose.",
+    }
+    for variant, text in samples.items():
+        _, src = g._canonicalize_h12_summary_text(text)
+        assert src == variant, (variant, src)
+    assert declared == set(samples), (declared, set(samples))

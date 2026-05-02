@@ -827,8 +827,9 @@ def _emit_formatting_exempt_status(
     canonicalizer: str | None = None,
     variants: Sequence[str] = (),
     tests: Sequence[str] = (),
+    test_matrix: dict[str, dict[str, list[str]]] | None = None,
 ) -> dict:
-    """Build the five `formatting_exempt_*` fields per ADR §2.4.2 r2.
+    """Build the six `formatting_exempt_*` fields per ADR §2.4.2 r2 + r3.
 
     The returned dict is merged into a primary grader's return value. Companion
     field semantics are enforced per the §2.4.2 status table:
@@ -845,6 +846,17 @@ def _emit_formatting_exempt_status(
     walking the grader source — it expects the canonicalizer function name
     and adversarial test names to resolve. Keep `canonicalizer` aligned with
     the actual `_canonicalize_*` symbol the grader calls.
+
+    Codex r2 §6 N3 + condition 4 fix (r3): the `test_matrix` parameter
+    pairs each declared variant with explicit positive + negative test
+    name lists. When `implemented` and `test_matrix` is non-None, every
+    declared variant MUST have ≥1 positive AND ≥1 negative entry, AND every
+    test name must already appear in `tests`. The emitted
+    `formatting_exempt_test_matrix` field lets a downstream walker prove
+    positive+negative-per-variant directly, instead of inferring from name
+    convention. Test names referenced here MUST exist as Python test
+    functions (lint check 2 already enforces this for the flat `tests`
+    list, transitively covering the matrix because it is a subset).
     """
     if status not in _FORMATTING_EXEMPT_STATUS_VALUES:
         raise ValueError(
@@ -867,6 +879,34 @@ def _emit_formatting_exempt_status(
                 "formatting_exempt_status='implemented' requires a non-empty "
                 "tests list (lint check 2)"
             )
+        if test_matrix is not None:
+            tests_set = set(tests)
+            for variant in variants:
+                bucket = test_matrix.get(variant)
+                if not isinstance(bucket, dict):
+                    raise ValueError(
+                        f"test_matrix missing entry for declared variant "
+                        f"{variant!r} (codex r2 §6 N3 / condition 4)"
+                    )
+                positives = bucket.get("positive") or []
+                negatives = bucket.get("negative") or []
+                if not isinstance(positives, list) or not positives:
+                    raise ValueError(
+                        f"test_matrix[{variant!r}].positive must list ≥1 test"
+                    )
+                if not isinstance(negatives, list) or not negatives:
+                    raise ValueError(
+                        f"test_matrix[{variant!r}].negative must list ≥1 test"
+                    )
+                missing = (
+                    [t for t in positives if t not in tests_set]
+                    + [t for t in negatives if t not in tests_set]
+                )
+                if missing:
+                    raise ValueError(
+                        f"test_matrix[{variant!r}] references test names not "
+                        f"in `tests`: {missing}"
+                    )
     else:
         # not_applicable and grandfathered use null canonicalizer + empty lists
         # per §2.4.2 status-table companion-field rules.
@@ -880,11 +920,24 @@ def _emit_formatting_exempt_status(
                 f"formatting_exempt_status={status!r} requires empty "
                 "variants and tests lists (lint check 2)"
             )
+        if test_matrix:
+            raise ValueError(
+                f"formatting_exempt_status={status!r} requires empty "
+                "test_matrix"
+            )
+    matrix_payload: dict[str, dict[str, list[str]]] = {}
+    if test_matrix:
+        for variant, bucket in test_matrix.items():
+            matrix_payload[variant] = {
+                "positive": list(bucket.get("positive") or []),
+                "negative": list(bucket.get("negative") or []),
+            }
     return {
         "formatting_exempt_status": status,
         "formatting_exempt_canonicalizer": canonicalizer,
         "formatting_exempt_variants": list(variants),
         "formatting_exempt_tests": list(tests),
+        "formatting_exempt_test_matrix": matrix_payload,
         "formatting_exempt_rule_adr": FORMATTING_EXEMPT_RULE_ADR,
     }
 
@@ -2370,7 +2423,48 @@ def score_h1_long_form_code_review(agent_output: str, ground_truth: dict) -> dic
             "test_h1_canonicalizer_bullet_list_equivalent",
             "test_h1_canonicalizer_negative_prose_does_not_yield_rows",
             "test_h1_canonicalizer_negative_json_array_with_distractors",
+            "test_h1_grader_markdown_table_baseline_pass",
+            "test_h1_grader_fenced_markdown_table_grades_identically",
+            "test_h1_grader_json_array_grades_equivalently_to_markdown_table",
+            "test_h1_grader_bullet_list_grades_equivalently",
+            "test_h1_negative_markdown_table_only_distractors_does_not_pass",
+            "test_h1_negative_fenced_markdown_table_only_distractors_does_not_pass",
+            "test_h1_negative_json_array_with_only_distractors_does_not_pass",
+            "test_h1_negative_bullet_list_only_distractors_does_not_pass",
         ],
+        test_matrix={
+            "markdown_pipe_table": {
+                "positive": [
+                    "test_h1_canonicalizer_markdown_pipe_table_baseline",
+                    "test_h1_grader_markdown_table_baseline_pass",
+                ],
+                "negative": ["test_h1_negative_markdown_table_only_distractors_does_not_pass"],
+            },
+            "markdown_pipe_table_in_code_fence": {
+                "positive": [
+                    "test_h1_canonicalizer_fenced_markdown_table_equivalent",
+                    "test_h1_grader_fenced_markdown_table_grades_identically",
+                ],
+                "negative": ["test_h1_negative_fenced_markdown_table_only_distractors_does_not_pass"],
+            },
+            "json_array_of_review_rows": {
+                "positive": [
+                    "test_h1_canonicalizer_json_array_equivalent",
+                    "test_h1_grader_json_array_grades_equivalently_to_markdown_table",
+                ],
+                "negative": [
+                    "test_h1_canonicalizer_negative_json_array_with_distractors",
+                    "test_h1_negative_json_array_with_only_distractors_does_not_pass",
+                ],
+            },
+            "bullet_or_numbered_list_of_review_rows": {
+                "positive": [
+                    "test_h1_canonicalizer_bullet_list_equivalent",
+                    "test_h1_grader_bullet_list_grades_equivalently",
+                ],
+                "negative": ["test_h1_negative_bullet_list_only_distractors_does_not_pass"],
+            },
+        },
     ))
     return result
 
@@ -2951,7 +3045,52 @@ def score_h11_structured_data_extraction(agent_output: str, ground_truth: dict) 
             "test_h11_grader_swapped_pairs_score_below_one_json",
             "test_h11_grader_swapped_pairs_score_below_one_bullets",
             "test_h11_grader_negative_unrelated_prose_scores_zero",
+            "test_h11_grader_raw_text_palette_only_passes",
+            "test_h11_negative_markdown_table_unrelated_components",
+            "test_h11_negative_json_array_with_no_palette_components",
+            "test_h11_negative_fenced_code_block_unrelated_text",
+            "test_h11_negative_bullet_list_unrelated_items",
         ],
+        test_matrix={
+            "raw_text": {
+                "positive": ["test_h11_grader_raw_text_palette_only_passes"],
+                "negative": ["test_h11_grader_negative_unrelated_prose_scores_zero"],
+            },
+            "fenced_code_block": {
+                "positive": ["test_h11_canonicalizer_detects_variants"],
+                "negative": ["test_h11_negative_fenced_code_block_unrelated_text"],
+            },
+            "json_array": {
+                "positive": [
+                    "test_h11_canonicalizer_detects_variants",
+                    "test_h11_grader_format_invariant_json_vs_markdown",
+                ],
+                "negative": [
+                    "test_h11_grader_swapped_pairs_score_below_one_json",
+                    "test_h11_negative_json_array_with_no_palette_components",
+                ],
+            },
+            "markdown_table": {
+                "positive": [
+                    "test_h11_canonicalizer_detects_variants",
+                    "test_h11_grader_full_credit_on_three_pairs",
+                ],
+                "negative": [
+                    "test_h11_grader_swapped_pairs_score_below_one_table",
+                    "test_h11_negative_markdown_table_unrelated_components",
+                ],
+            },
+            "bullet_or_numbered_list": {
+                "positive": [
+                    "test_h11_canonicalizer_detects_variants",
+                    "test_h11_grader_format_invariant_json_vs_markdown",
+                ],
+                "negative": [
+                    "test_h11_grader_swapped_pairs_score_below_one_bullets",
+                    "test_h11_negative_bullet_list_unrelated_items",
+                ],
+            },
+        },
     ))
     return result
 
@@ -2996,7 +3135,6 @@ _H12_TAKEAWAYS = (
     },
 )
 _H12_VARIANTS: tuple[str, ...] = (
-    "raw_text",
     "fenced_code_block",
     "bullet_list",
     "numbered_list",
@@ -3013,13 +3151,18 @@ def _canonicalize_h12_summary_text(text: str) -> tuple[str, str]:
     containing the 3 facts is equivalent" — this canonicalizer enforces that.
 
     Equivalence-surface declaration:
-      Variants normalized: raw_text, fenced_code_block, bullet_list,
-        numbered_list, paragraph_prose.
+      Variants normalized: fenced_code_block, bullet_list, numbered_list,
+        paragraph_prose.
       Variants intentionally NOT normalized: the takeaway tokens themselves
         (Redis / TTL / 6 hours / scaling / DB load) are meaning.
+
+    Codex r2 N3 fix (option a): the `raw_text` declaration was previously
+    listed but never returned for non-empty text — non-empty prose maps to
+    `paragraph_prose`, so the declared name now matches what the
+    canonicalizer actually emits for empty and non-empty prose alike.
     """
     if not text:
-        return "", "raw_text"
+        return "", "paragraph_prose"
     inner = _strip_outer_code_fence(text)
     if inner is not text:
         return inner, "fenced_code_block"
@@ -3079,7 +3222,38 @@ def score_h12_multilingual_summarization(agent_output: str, ground_truth: dict) 
             "test_h12_grader_full_credit_three_takeaways",
             "test_h12_grader_partial_credit_two_takeaways",
             "test_h12_grader_korean_english_mixed_input",
+            "test_h12_canonicalizer_empty_input_emits_paragraph_prose_post_n3",
+            "test_h12_declared_variants_match_canonicalizer_outputs",
+            "test_h12_negative_paragraph_prose_without_takeaways",
+            "test_h12_negative_bullet_list_with_unrelated_items",
+            "test_h12_negative_numbered_list_unrelated",
+            "test_h12_negative_fenced_code_block_unrelated",
         ],
+        test_matrix={
+            "fenced_code_block": {
+                "positive": ["test_h12_canonicalizer_detects_variants"],
+                "negative": ["test_h12_negative_fenced_code_block_unrelated"],
+            },
+            "bullet_list": {
+                "positive": ["test_h12_canonicalizer_detects_variants"],
+                "negative": ["test_h12_negative_bullet_list_with_unrelated_items"],
+            },
+            "numbered_list": {
+                "positive": [
+                    "test_h12_canonicalizer_detects_variants",
+                    "test_h12_grader_full_credit_three_takeaways",
+                ],
+                "negative": ["test_h12_negative_numbered_list_unrelated"],
+            },
+            "paragraph_prose": {
+                "positive": [
+                    "test_h12_canonicalizer_detects_variants",
+                    "test_h12_canonicalizer_empty_input_emits_paragraph_prose_post_n3",
+                    "test_h12_declared_variants_match_canonicalizer_outputs",
+                ],
+                "negative": ["test_h12_negative_paragraph_prose_without_takeaways"],
+            },
+        },
     ))
     return result
 
@@ -3262,7 +3436,35 @@ def score_h13_schema_strict_routes(agent_output: str, ground_truth: dict) -> dic
             "test_h13_grader_inline_backtick_json_strips_to_full_credit",
             "test_h13_grader_extra_route_penalized_under_schema_strict",
             "test_h13_grader_invalid_input_yields_zero",
+            "test_h13_negative_raw_json_with_wrong_paths",
+            "test_h13_negative_fenced_json_with_wrong_paths",
+            "test_h13_negative_raw_yaml_with_wrong_paths",
+            "test_h13_negative_fenced_yaml_with_wrong_paths",
         ],
+        test_matrix={
+            "raw_json": {
+                "positive": [
+                    "test_h13_canonicalizer_json_and_yaml_variants",
+                    "test_h13_grader_full_credit_both_routes",
+                ],
+                "negative": ["test_h13_negative_raw_json_with_wrong_paths"],
+            },
+            "fenced_json": {
+                "positive": ["test_h13_canonicalizer_json_and_yaml_variants"],
+                "negative": ["test_h13_negative_fenced_json_with_wrong_paths"],
+            },
+            "raw_yaml": {
+                "positive": [
+                    "test_h13_canonicalizer_json_and_yaml_variants",
+                    "test_h13_grader_yaml_equivalent_to_json",
+                ],
+                "negative": ["test_h13_negative_raw_yaml_with_wrong_paths"],
+            },
+            "fenced_yaml": {
+                "positive": ["test_h13_canonicalizer_json_and_yaml_variants"],
+                "negative": ["test_h13_negative_fenced_yaml_with_wrong_paths"],
+            },
+        },
     ))
     return result
 
@@ -3273,20 +3475,25 @@ _H14_KNOWN_TOOLS = frozenset(_H14_REQUIRED_SEQUENCE)
 _H14_TOOL_PATTERN = re.compile(
     r"\b(read_metrics|restart_process|list_threads|grep_logs)\b"
 )
-_H14_BACKTICK_TOKEN_RE = re.compile(r"`([a-z][a-z0-9_]+)`")
-_H14_LIST_LINE_RE = re.compile(r"^\s*(?:\d+[.)]|[-*•])\s+([a-z][a-z0-9_]+)", re.MULTILINE)
-_H14_CSV_TOKEN_RE = re.compile(r"(?:^|[,\n])\s*([a-z][a-z0-9_]+)\s*(?:,|$)", re.MULTILINE)
+_H14_SNAKE_TOKEN_RE = re.compile(r"\b([a-z][a-z0-9_]+)\b")
 
 
 def _detect_h14_unknown_tools(text: str) -> list[str]:
     """Return distinct snake_case tool-call-shaped tokens NOT in H14 palette.
 
-    Scans backtick-wrapped tokens, numbered/bulleted line-starts, comma-
-    separated runs, and JSON array entries. Tokens without an underscore are
-    excluded to avoid false-positives on prose words ("first", "then"). Any
-    multi-token identifier outside {grep_logs, read_metrics, list_threads,
-    restart_process} is flagged so the grader can apply the palette-only
-    penalty (codex MAJOR 6 / triage M6 fix).
+    Scans the entire fence-stripped body for snake_case identifiers — same
+    pass-set as the canonicalizer's `_H14_TOOL_PATTERN.finditer(inner)` over
+    `inner`. Tokens without an underscore are excluded so prose words
+    ("first", "then", "Call") never collide; only multi-token identifiers
+    outside {grep_logs, read_metrics, list_threads, restart_process} survive.
+    A JSON-array body is parsed first so structured entry strings/values
+    contribute identifiers from every entry (not just the first per entry).
+
+    Codex r2 N1 / M6: prior detector relied on backtick / list-line / narrow
+    CSV positions, missing raw-text and comma-with-connector surfaces where
+    the canonicalizer happily extracted known tools. Detector and
+    canonicalizer must classify the same surface or palette-only enforcement
+    has a hole. This rewrite aligns them.
     """
     if not text:
         return []
@@ -3296,33 +3503,24 @@ def _detect_h14_unknown_tools(text: str) -> list[str]:
         body = fenced.group("body")
 
     candidates: list[str] = []
-    for m in _H14_BACKTICK_TOKEN_RE.finditer(body):
-        candidates.append(m.group(1))
-    for m in _H14_LIST_LINE_RE.finditer(body):
-        candidates.append(m.group(1))
-    for m in _H14_CSV_TOKEN_RE.finditer(body):
-        candidates.append(m.group(1))
 
     stripped = body.strip()
     if stripped.startswith(("[", "{")):
         try:
             blob = json.loads(stripped)
             items = blob if isinstance(blob, list) else None
-            if items:
+            if items is not None:
                 for entry in items:
                     if isinstance(entry, str):
-                        m = re.search(r"\b([a-z][a-z0-9_]+)\b", entry)
-                        if m:
-                            candidates.append(m.group(1))
+                        candidates.extend(_H14_SNAKE_TOKEN_RE.findall(entry))
                     elif isinstance(entry, dict):
                         for v in entry.values():
                             if isinstance(v, str):
-                                m = re.search(r"\b([a-z][a-z0-9_]+)\b", v)
-                                if m:
-                                    candidates.append(m.group(1))
-                                    break
+                                candidates.extend(_H14_SNAKE_TOKEN_RE.findall(v))
         except (ValueError, TypeError):
             pass
+
+    candidates.extend(_H14_SNAKE_TOKEN_RE.findall(body))
 
     unknown: list[str] = []
     seen: set[str] = set()
@@ -3491,7 +3689,62 @@ def score_h14_agentic_tool_sequence(agent_output: str, ground_truth: dict) -> di
             "test_h14_grader_duplicate_call_penalized",
             "test_h14_grader_unknown_tool_penalized",
             "test_h14_grader_excess_length_blocks_pass",
+            "test_h14_grader_raw_text_palette_only_passes",
+            "test_h14_grader_raw_text_unknown_tool_blocks_pass",
+            "test_h14_grader_comma_connector_unknown_tool_blocks_pass",
+            "test_h14_canonicalizer_emits_raw_text_for_space_separated_palette",
+            "test_h14_detector_scans_global_body_codex_n1",
+            "test_h14_negative_raw_text_only_unrelated_words",
+            "test_h14_negative_fenced_unrelated",
+            "test_h14_negative_comma_separated_unrelated",
+            "test_h14_negative_numbered_list_unrelated",
+            "test_h14_negative_json_array_unrelated",
+            "test_h14_negative_backtick_wrapped_unrelated",
         ],
+        test_matrix={
+            "raw_text": {
+                "positive": [
+                    "test_h14_grader_raw_text_palette_only_passes",
+                    "test_h14_canonicalizer_emits_raw_text_for_space_separated_palette",
+                ],
+                "negative": [
+                    "test_h14_grader_raw_text_unknown_tool_blocks_pass",
+                    "test_h14_negative_raw_text_only_unrelated_words",
+                ],
+            },
+            "fenced_code_block": {
+                "positive": ["test_h14_canonicalizer_extracts_across_wrappers"],
+                "negative": ["test_h14_negative_fenced_unrelated"],
+            },
+            "comma_separated": {
+                "positive": ["test_h14_canonicalizer_extracts_across_wrappers"],
+                "negative": [
+                    "test_h14_grader_comma_connector_unknown_tool_blocks_pass",
+                    "test_h14_negative_comma_separated_unrelated",
+                ],
+            },
+            "numbered_list": {
+                "positive": [
+                    "test_h14_grader_full_credit_correct_order",
+                    "test_h14_canonicalizer_extracts_across_wrappers",
+                ],
+                "negative": [
+                    "test_h14_grader_unknown_tool_penalized",
+                    "test_h14_negative_numbered_list_unrelated",
+                ],
+            },
+            "json_array": {
+                "positive": [
+                    "test_h14_canonicalizer_extracts_across_wrappers",
+                    "test_h14_grader_format_invariant_json_vs_text",
+                ],
+                "negative": ["test_h14_negative_json_array_unrelated"],
+            },
+            "backtick_wrapped": {
+                "positive": ["test_h14_canonicalizer_extracts_across_wrappers"],
+                "negative": ["test_h14_negative_backtick_wrapped_unrelated"],
+            },
+        },
     ))
     return result
 
