@@ -10,6 +10,12 @@
 #     [--session-idx S]          # Pacc only
 #     [--position-in-chain P]    # Pacc only
 #     --run-idx N                # replication 1|2
+#     [--cut N]                  # Preuse-substitute-compact-revised cut_tokens
+#                                # override (default 30; range 5..50000).
+#                                # Phase 6 Q1 §3.1 binding: cut grid {5,10,15,20,30}.
+#                                # NOTE: trial-path uniqueness across cuts is the
+#                                # caller's concern — use distinct --state-root per
+#                                # cut cell when running multiple cuts back-to-back.
 #     [--dry-run]                # skip all LLM calls; emit synthetic metrics
 #     [--resume]                 # skip when metrics.json already exists
 #     [--state-root PATH]        # override XDG_STATE_HOME-based default
@@ -61,6 +67,8 @@ position_in_chain=""
 run_idx=""
 dry_run=0
 resume=0
+cut_arg=""
+cut_explicit=0
 state_root="${AIGENTRY_EXEC_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/aigentry/exec-mode-experiment}"
 fixtures_root="${AIGENTRY_EXEC_FIXTURES:-$HOME/projects/aigentry-orchestrator/fixtures/exec-mode-experiment}"
 
@@ -84,6 +92,7 @@ while [ $# -gt 0 ]; do
     --run-idx)           run_idx="$2"; shift 2;;
     --dry-run)           dry_run=1; shift;;
     --resume)            resume=1; shift;;
+    --cut)               cut_arg="$2"; cut_explicit=1; shift 2;;
     --state-root)        state_root="$2"; shift 2;;
     --fixtures-root)     fixtures_root="$2"; shift 2;;
     -h|--help)           usage; exit 0;;
@@ -99,6 +108,12 @@ done
 # Phase 4 mode set per spec §2.1: 4 Phase 3 modes preserved; 5 new modes added
 # (Preuse-clear + Preuse-substitute-compact-C{1..4}). The cut suffix is parsed
 # from the mode string to derive cut_tokens (spec §2.2 cut map; INV-5).
+#
+# Phase 6 Q1 §3.1 (post-tag harness extension, ref BLOCKER 2026-05-02):
+# `--cut N` overrides cut_tokens for Preuse-substitute-compact-revised only.
+# Default 30 reproduces sub-ADR 2026-05-01-substitute-compact-revised-cut.md
+# behavior exactly when --cut is omitted. C1..C4 cut values stay locked
+# (those are mode-encoded per Phase 4 spec §2.2).
 preuse_cut_tokens=""
 preuse_cut_id=""
 case "$mode" in
@@ -113,6 +128,27 @@ case "$mode" in
   Preuse-substitute-compact-revised) preuse_cut_id="revised"; preuse_cut_tokens=30 ;;
   *) die 5 "--mode must be one of D|S|Pfresh|Pacc|Preuse-clear|Preuse-substitute-compact-C{1,2,3,4}|Preuse-substitute-compact-revised (got: $mode)";;
 esac
+
+# `--cut N` validation + dispatch.
+if [ "$cut_explicit" -eq 1 ]; then
+  if [ "$mode" != "Preuse-substitute-compact-revised" ]; then
+    die 5 "--cut only valid for --mode Preuse-substitute-compact-revised (got mode: $mode); C1..C4 cut values are locked"
+  fi
+  [[ "$cut_arg" =~ ^[1-9][0-9]*$ ]] \
+    || die 5 "--cut must be a positive integer (got: $cut_arg)"
+  if [ "$cut_arg" -lt 5 ] || [ "$cut_arg" -gt 50000 ]; then
+    die 5 "--cut out of range [5..50000] (got: $cut_arg)"
+  fi
+  preuse_cut_tokens="$cut_arg"
+fi
+
+# Stderr echo so per-cell aggregation + smoke verification can split by cut.
+# Cut value is also recorded in $trial_dir/.preuse_inputs/manifest.json for
+# every trial that crosses the cut (lib::preuse_build_manifest, schema_version
+# 1, field cut_tokens). Below-cut trials reuse Pacc semantics with no manifest.
+if [ -n "$preuse_cut_tokens" ]; then
+  echo "exec-mode-experiment: mode=$mode cut_id=$preuse_cut_id cut_tokens=$preuse_cut_tokens" >&2
+fi
 
 # Spec §2.3 + §2.4: Preuse arms use chain semantics (session/position required),
 # matching Pacc's CLI shape. Group all chain modes for arg-validator widening.
