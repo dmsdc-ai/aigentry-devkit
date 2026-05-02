@@ -1,0 +1,46 @@
+{
+  "schema_version": "1",
+  "rule_adr": "2026-05-02-output-style-fixture-design-rule",
+  "comment": "Fixture Exemption Registry. Per ADR 2026-05-02-output-style-fixture-design-rule.md §2.3 + §11. Lint consumer: bin/lint-formatting-exemption.py (§2.4.3 check 3). JSON does not support inline comments; field semantics in ADR §11 required-fields table.",
+  "entries": [
+    {
+      "fixture_id": "H1",
+      "fixture_slug": "long-form-code-review",
+      "status": "pending-migration",
+      "grader_path": "tests/exec-mode/graders/score_h1_long_form_code_review.py",
+      "pre_patch_grader_sha": null,
+      "rationale": "Pre-Phase 6 fixture reused per Phase 6 spec §4.1 line 266 + §10.4 line 358. NB3 patch in-flight per Phase 6 spec line 271 — required BEFORE Phase 6 pre-reg tag. The NB3 patch session ALSO satisfies §2.4 (status flips to `implemented` in same iteration; pre_patch_grader_sha + migration_commit populated; status flips to `migrated`).",
+      "expiry": "2026-05-30",
+      "tracking_ticket": "task-#329 E27 (Phase 6 Q3 follow-up + Phase 6 §10.4 NB3 patch)",
+      "approving_session": "aigentry-orchestrator-claude (per Phase 6 spec acceptance 2026-05-02)",
+      "migration_commit": null,
+      "lint_allow_status_grandfathered": false
+    },
+    {
+      "fixture_id": "H10",
+      "fixture_slug": "strict-instruction-following",
+      "status": "grandfathered",
+      "grader_path": "tests/exec-mode/graders/score_h10_strict_instruction_following.py",
+      "pre_patch_grader_sha": null,
+      "rationale": "Pre-Phase 6 fixture reused per Phase 6 spec §4.1; no in-flight patch in Phase 6. Migration deferred to next natural patch occasion or Phase 7 deadline, whichever first.",
+      "expiry": "2026-08-01",
+      "tracking_ticket": "task-#329 E27 (Phase 6 Q3 follow-up)",
+      "approving_session": "aigentry-orchestrator-claude (per Phase 6 spec acceptance 2026-05-02)",
+      "migration_commit": null,
+      "lint_allow_status_grandfathered": true
+    },
+    {
+      "fixture_id": "H5",
+      "fixture_slug": "agentic-tool-use",
+      "status": "retired",
+      "grader_path": "tests/exec-mode/graders/score_h5_agentic_tool_use.py",
+      "pre_patch_grader_sha": null,
+      "rationale": "Phase 5 NB3 case study (analyst §7). Fixture replaced in Phase 6 per spec §4.2 line 281. If un-retired in any future phase, treat as NEW per ADR §2.3 row 1 (status MUST become `implemented` or `not_applicable`; cannot fallback to `grandfathered`).",
+      "expiry": null,
+      "tracking_ticket": "analyst-report `2026-05-01-phase5-final-analysis.md` §7",
+      "approving_session": "aigentry-orchestrator-claude (per Phase 5 final ADR + Phase 6 spec)",
+      "migration_commit": null,
+      "lint_allow_status_grandfathered": false
+    }
+  ]
+}
