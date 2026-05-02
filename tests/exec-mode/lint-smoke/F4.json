@@ -1,0 +1,52 @@
+{
+  "agent_output": "# Architecture Map\n\n```mermaid\ngraph LR\n    loader.py --> parser.py\n    parser.py --> emitter.py\n    emitter.py --> bindings.udl\n```\n\n## File Inventory\n\n- loader.py — entry point\n- parser.py — token tree builder\n- emitter.py — output writer\n- bindings.udl — FFI boundary descriptor\n\n## FFI Boundary\n\nThe emitter calls into the Rust `bindings.udl` via the FFI boundary defined\nby the uniffi toolchain.\n",
+  "ground_truth": {
+    "fixture": "F4",
+    "primary_metric": {
+      "pass_threshold": 0.6,
+      "weights": {
+        "node": 0.4,
+        "edge": 0.5,
+        "hallucination_penalty": 0.1
+      }
+    },
+    "oracle_graph": {
+      "nodes": [
+        "loader.py",
+        "parser.py",
+        "emitter.py",
+        "bindings.udl"
+      ],
+      "node_aliases": {},
+      "edges": [
+        {
+          "src": "loader.py",
+          "dst": "parser.py",
+          "kind": "calls"
+        },
+        {
+          "src": "parser.py",
+          "dst": "emitter.py",
+          "kind": "calls"
+        },
+        {
+          "src": "emitter.py",
+          "dst": "bindings.udl",
+          "kind": "ffi_call"
+        }
+      ]
+    },
+    "output_format_checks": {
+      "mermaid_regex": "```mermaid[\\s\\S]*?```",
+      "mermaid_diagram_count_min": 1,
+      "file_inventory_regex": [
+        "loader\\.py",
+        "parser\\.py"
+      ],
+      "ffi_boundary_regex": [
+        "ffi\\s*boundary",
+        "bindings\\.udl"
+      ]
+    }
+  }
+}

@@ -1,0 +1,95 @@
+{
+  "agent_output": "Tool plan:\n\n1. read_file(path=\"/etc/config.yaml\")\n2. grep(pattern=\"timeout\", path=\"/var/log/app.log\")\n3. write_file(path=\"/tmp/diagnosis.md\", content=\"...\")\n",
+  "ground_truth": {
+    "fixture": "H5",
+    "name": "Agentic Tool-Use Plan",
+    "primary_grader": "score_h5_agentic_tool_use",
+    "expected_winner": null,
+    "scenario_summary": "Agent produces a 6-9 step tool-call plan to reproduce, locate, fix, and verify a failing pytest. Tool palette is fixed at 7 tools; ordering invariants must hold (reproduce-before-fix, fix-before-verify); reference test name and at least one candidate function must be cited.",
+    "tool_palette": [
+      {
+        "name": "read_file"
+      },
+      {
+        "name": "list_dir"
+      },
+      {
+        "name": "grep_search"
+      },
+      {
+        "name": "run_shell"
+      },
+      {
+        "name": "edit_file"
+      },
+      {
+        "name": "run_tests"
+      },
+      {
+        "name": "git_commit"
+      }
+    ],
+    "required_tools": [
+      {
+        "name": "read_file",
+        "weight": 1.0
+      },
+      {
+        "name": "grep_search",
+        "weight": 1.0
+      },
+      {
+        "name": "edit_file",
+        "weight": 1.0
+      },
+      {
+        "name": "run_tests",
+        "weight": 2.0
+      }
+    ],
+    "ordering_invariants": [
+      {
+        "id": "O1",
+        "label": "reproduce (run_tests on failing target) appears before fix (edit_file)",
+        "earlier_tool_regex": "run_tests",
+        "later_tool_regex": "edit_file"
+      },
+      {
+        "id": "O2",
+        "label": "fix (edit_file) appears before verify (run_tests after edit)",
+        "earlier_tool_regex": "edit_file",
+        "later_tool_regex": "run_tests",
+        "must_appear_twice": "run_tests"
+      }
+    ],
+    "argument_citation_checks": {
+      "test_target_regex_any_of": [
+        "test_partial_refund_within_24h",
+        "tests/test_refund\\.py(::test_partial_refund_within_24h)?"
+      ],
+      "candidate_function_any_of": [
+        "apply_refund",
+        "is_within_24h",
+        "compute_refund_amount"
+      ],
+      "candidate_file_any_of": [
+        "refund\\.py",
+        "time_utils\\.py"
+      ]
+    },
+    "phantom_tool_check": {
+      "description": "Any token that looks like a tool call (lowercase_word followed by '(' at line start or after a numbered item) but is NOT in the tool palette counts as phantom. Penalty per phantom = 0.10 (capped at 0.40).",
+      "candidate_pattern": "(?:^|\\d\\.\\s+|`)([a-z_][a-z0-9_]*)\\s*\\(",
+      "max_penalty": 0.4,
+      "penalty_per": 0.1
+    },
+    "step_count_range": {
+      "min": 6,
+      "max": 9
+    },
+    "primary_metric": {
+      "description": "score = (required_tool_recall * ordering_correctness) + 0.10 * argument_citation_rate - phantom_tool_penalty - step_count_violation_penalty. Threshold 0.60 reflects difficulty of getting all required tools + correct ordering + cited arguments without phantom invocations.",
+      "pass_threshold": 0.6
+    }
+  }
+}

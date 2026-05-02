@@ -1,0 +1,14 @@
+{
+  "agent_output": "## Build Result\n\nThe build passes after 3 fix iterations.\n\n```\n$ cargo build\n   Compiling voxlite-core v0.1.0\n    Finished release [optimized] target(s) in 14.21s\n```\n\nTotal turns: 3\nBuild status: PASS\n",
+  "ground_truth": {
+    "fixture": "F6",
+    "primary_metric": {
+      "pass_threshold": 0.5
+    },
+    "build_pass_regex_any_of": [
+      "build\\s*status\\s*:\\s*pass",
+      "Finished\\s+release"
+    ],
+    "turn_extraction_regex": "Total\\s*turns\\s*:\\s*(\\d+)"
+  }
+}

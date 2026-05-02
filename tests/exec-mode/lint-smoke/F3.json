@@ -1,0 +1,61 @@
+{
+  "agent_output": "# Code Review\n\n| ID | Severity | File:Line | Issue | Recommendation |\n|----|----------|-----------|-------|----------------|\n| 1 | High | dispatcher.py:42 | Race condition on shared state | Use a lock around the increment |\n| 2 | Medium | dispatcher.py:78 | Logging missing request id | Add request_id to log line |\n| 3 | Critical | dispatcher.py:120 | SQL injection via unsanitized input | Use parameterized queries |\n\n## Verdict\n\nThe patch is not ready for merge. Fix the SQL injection before re-review.\n",
+  "ground_truth": {
+    "fixture": "F3",
+    "primary_metric": {
+      "pass_threshold": 0.6
+    },
+    "severity_weights": {
+      "Critical": 3.0,
+      "High": 2.0,
+      "Medium": 1.0,
+      "Low": 0.5
+    },
+    "ground_truth_issues": [
+      {
+        "id": "B1",
+        "severity": "Critical",
+        "must_cite_line_any_of": [
+          120
+        ],
+        "match_regex_any_of": [
+          "sql\\s*injection",
+          "parameterized"
+        ]
+      },
+      {
+        "id": "B2",
+        "severity": "High",
+        "must_cite_line_any_of": [
+          42
+        ],
+        "match_regex_any_of": [
+          "race\\s*condition",
+          "shared\\s*state"
+        ]
+      }
+    ],
+    "distractors_must_not_flag": [
+      {
+        "id": "D1",
+        "line": 200,
+        "fp_regex_any_of": [
+          "unused\\s*import"
+        ]
+      }
+    ],
+    "secondary_signals": {
+      "table_format": {
+        "regex_any_of": [
+          "\\|.*Severity.*\\|"
+        ]
+      },
+      "verdict_paragraph": {
+        "regex_any_of": [
+          "verdict",
+          "ready\\s*for\\s*merge"
+        ]
+      }
+    }
+  }
+}

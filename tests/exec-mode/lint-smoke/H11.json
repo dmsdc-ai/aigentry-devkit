@@ -1,0 +1,35 @@
+{
+  "agent_output": "The post-mortem identifies three (component, root-cause) pairs:\n\n1. (CheckoutService, PaymentGateway timeout was too short)\n2. (OrderQueue, OOM / Out of Memory on burst traffic)\n3. (NotificationWorker, malformed API key configuration after rotation)\n",
+  "ground_truth": {
+    "fixture": "H11",
+    "primary_metric": {
+      "pass_threshold": 0.5
+    },
+    "expected_pairs": [
+      {
+        "id": "P1",
+        "component": "CheckoutService",
+        "root_cause_regex_any_of": [
+          "payment\\s*gateway",
+          "timeout"
+        ]
+      },
+      {
+        "id": "P2",
+        "component": "OrderQueue",
+        "root_cause_regex_any_of": [
+          "oom",
+          "out\\s*of\\s*memory"
+        ]
+      },
+      {
+        "id": "P3",
+        "component": "NotificationWorker",
+        "root_cause_regex_any_of": [
+          "api\\s*key",
+          "malformed"
+        ]
+      }
+    ]
+  }
+}

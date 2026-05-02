@@ -1,0 +1,32 @@
+{
+  "agent_output": "3 takeaways from the deliberation:\n\n1. Redis is hitting max memory evictions and causing latency spikes.\n2. TTL will be reduced to 6 hours as an initial mitigation.\n3. If DB load becomes too high due to the TTL change, the Redis cluster will\n   be scaled up (additional cost ~$200/mo).\n",
+  "ground_truth": {
+    "fixture": "H12",
+    "primary_metric": {
+      "pass_threshold": 0.5
+    },
+    "expected_takeaways": [
+      {
+        "id": "T1",
+        "regex_any_of": [
+          "redis.{0,30}max\\s*memory",
+          "max\\s*memory.{0,30}eviction"
+        ]
+      },
+      {
+        "id": "T2",
+        "regex_any_of": [
+          "ttl.{0,30}6\\s*hour",
+          "ttl.{0,30}reduce"
+        ]
+      },
+      {
+        "id": "T3",
+        "regex_any_of": [
+          "scale.{0,20}up",
+          "redis\\s*cluster.{0,30}scale"
+        ]
+      }
+    ]
+  }
+}

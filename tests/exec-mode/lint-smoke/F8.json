@@ -1,0 +1,21 @@
+{
+  "agent_output": "## Implementation\n\n```python\ndef normalize_email(addr: str) -> str:\n    return addr.strip().lower()\n```\n\nAll hidden tests pass.\n\n```\ntest_normalize_lowercase ........ PASS\ntest_normalize_strip_whitespace . PASS\ntest_normalize_unicode_nfc ...... PASS\n```\n",
+  "ground_truth": {
+    "fixture": "F8",
+    "primary_metric": {
+      "pass_threshold": 0.6
+    },
+    "hidden_tests": [
+      {
+        "id": "T1",
+        "name": "test_normalize_lowercase",
+        "match_regex": "test_normalize_lowercase\\s*\\.+\\s*PASS"
+      },
+      {
+        "id": "T2",
+        "name": "test_normalize_strip_whitespace",
+        "match_regex": "test_normalize_strip_whitespace\\s*\\.+\\s*PASS"
+      }
+    ]
+  }
+}

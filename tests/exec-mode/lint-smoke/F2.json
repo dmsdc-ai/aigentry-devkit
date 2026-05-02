@@ -1,0 +1,55 @@
+{
+  "agent_output": "# Slimmed ENGINEERING.md Proposal\n\nThe new ENGINEERING.md preserves all hidden invariants from the legacy doc.\n\n## Invariants Mapping\n\n| Invariant | Original Section | New Section |\n|-----------|------------------|-------------|\n| p95 latency < 120ms SLO | §4 Performance | §2 SLOs |\n| 8 architectural invariants | §6 Architecture | §3 Constraints |\n| changelog policy | §9 Changelog | §5 Process |\n\n## Past Failure Acknowledgment\n\nThe Q2 incident exposed a gap in invariant tracking. We add explicit citations\nto all 8 invariants and the p95<120ms SLO so reviewers can trace each claim.\n\n## Structure\n\n- §1 Overview\n- §2 SLOs (p95<120ms)\n- §3 Constraints (8 invariants)\n- §4 Operations\n- §5 Process\n\nThe slim version is 178 lines (down from 453) and passes CI with --skip-changelog.\n",
+  "ground_truth": {
+    "fixture": "F2",
+    "primary_metric": {
+      "pass_threshold": 0.7
+    },
+    "invariants_checklist": {
+      "case_insensitive": true,
+      "invariants": [
+        {
+          "id": "INV1",
+          "label": "p95<120ms SLO",
+          "regex_any_of": [
+            "p95.{0,10}<.{0,10}120"
+          ]
+        },
+        {
+          "id": "INV2",
+          "label": "8 invariants",
+          "regex_any_of": [
+            "8\\s*invariants"
+          ]
+        },
+        {
+          "id": "INV3",
+          "label": "changelog policy",
+          "regex_any_of": [
+            "changelog\\s*policy",
+            "skip-changelog"
+          ]
+        }
+      ]
+    },
+    "output_structure_checks": {
+      "must_contain_all": [
+        "slo",
+        "invariant"
+      ],
+      "must_contain_any_of": [
+        "\\|.*invariant.*\\|"
+      ]
+    },
+    "secondary_signals": {
+      "past_failure_acknowledgment": {
+        "regex_any_of": [
+          "q2\\s*incident",
+          "past\\s*failure",
+          "exposed\\s*a\\s*gap"
+        ],
+        "min_hits": 1
+      }
+    }
+  }
+}

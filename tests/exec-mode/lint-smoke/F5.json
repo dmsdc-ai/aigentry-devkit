@@ -1,0 +1,38 @@
+{
+  "agent_output": "# Research Brief: Async Codec Adoption\n\n## Context\n\nAudio codec ecosystems have converged on async-first APIs over the last 18 months.\n\n## Findings\n\n> \"AV1 reference encoder achieved real-time on commodity hardware in 2025.\" — [AOMedia release notes](https://aomedia.org/notes/2025)\n\n## Sources\n\n- https://aomedia.org/notes/2025\n- https://www.ietf.org/rfc/rfc9000.txt\n",
+  "ground_truth": {
+    "fixture": "F5",
+    "primary_metric": {
+      "pass_threshold": 0.5
+    },
+    "trial_seed": 42,
+    "word_count_bounds": {
+      "min": 30,
+      "max": 5000
+    },
+    "section_requirements": {
+      "required_heading_regex_any_of": [
+        [
+          "^#+\\s*context"
+        ],
+        [
+          "^#+\\s*findings"
+        ],
+        [
+          "^#+\\s*sources"
+        ]
+      ]
+    },
+    "primary_source_allowlist": {
+      "domains": [],
+      "blocklist_hint": []
+    },
+    "citation_quota": {
+      "min_primary_citations": 1
+    },
+    "sources_section_requirement": {
+      "heading_regex": "^##\\s*Sources",
+      "min_urls_in_section": 1
+    }
+  }
+}

@@ -1,0 +1,135 @@
+{
+  "agent_output": "원문에서 핵심 정보를 보존한 요약:\n\n- 김도현 엔지니어는 새로운 캐시 정책을 2026년 4월 도입했다.\n- The cache hit rate improved from 71% to 89% after the change.\n- 다음 단계는 다른 서비스에도 같은 패턴을 적용하는 것이다.\n",
+  "ground_truth": {
+    "fixture": "H3",
+    "name": "Multilingual Recall KO→EN",
+    "primary_grader": "score_h3_multilingual_recall_ko_en",
+    "expected_winner": null,
+    "scenario_summary": "Translate Korean launch briefing to English while preserving 6 named entities (people + product), 5 technical tokens (version/SLO/metric/API/date), and document structure (3 H3 sections + 1 markdown table).",
+    "named_entities": [
+      {
+        "id": "E1",
+        "kr": "박서연",
+        "en_required": [
+          "Park Seoyeon"
+        ],
+        "category": "person"
+      },
+      {
+        "id": "E2",
+        "kr": "김도현",
+        "en_required": [
+          "Kim Dohyeon"
+        ],
+        "category": "person"
+      },
+      {
+        "id": "E3",
+        "kr": "Carla Rivera",
+        "en_required": [
+          "Carla Rivera"
+        ],
+        "category": "person"
+      },
+      {
+        "id": "E4",
+        "kr": "노바3",
+        "en_required": [
+          "Nova 3"
+        ],
+        "category": "product"
+      },
+      {
+        "id": "E5",
+        "kr": "한국지사",
+        "en_required": [
+          "Korea office",
+          "Korea Office"
+        ],
+        "category": "place"
+      },
+      {
+        "id": "E6",
+        "kr": "Payment Service Provider",
+        "en_required": [
+          "Payment Service Provider"
+        ],
+        "category": "abbreviation_full"
+      }
+    ],
+    "key_terms": [
+      {
+        "id": "T1",
+        "token": "v3.7.2"
+      },
+      {
+        "id": "T2",
+        "token": "p99",
+        "regex_any_of": [
+          "p99\\s*<\\s*80\\s*ms",
+          "p99\\s*[:=]\\s*80\\s*ms"
+        ]
+      },
+      {
+        "id": "T3",
+        "token": "4,200 RPS",
+        "regex_any_of": [
+          "4[,.]200\\s*RPS"
+        ]
+      },
+      {
+        "id": "T4",
+        "token": "/v1/orders"
+      },
+      {
+        "id": "T5",
+        "token": "2026-06-15",
+        "regex_any_of": [
+          "2026-06-15",
+          "June\\s*15,?\\s*2026"
+        ]
+      },
+      {
+        "id": "T6",
+        "token": "PSP"
+      },
+      {
+        "id": "T7",
+        "token": "118ms",
+        "regex_any_of": [
+          "118\\s*ms"
+        ]
+      },
+      {
+        "id": "T8",
+        "token": "v3.7.3",
+        "regex_any_of": [
+          "v?3\\.7\\.3"
+        ]
+      }
+    ],
+    "structure_checks": {
+      "h2_count_min": 1,
+      "h3_count_min": 3,
+      "table_required": true,
+      "bullet_list_required": true,
+      "english_dominant": {
+        "description": "At least 95% of alphabetic characters in output should be ASCII Latin (Korean chars allowed only in person-name attribution lines).",
+        "min_ratio": 0.95
+      }
+    },
+    "no_fabrication_check": {
+      "description": "Output must NOT contain any of these regex patterns (claims absent from source).",
+      "forbidden_patterns": [
+        "(market|시장)\\s*(leader|leading|1\\s*위|first\\s*place)",
+        "best[-\\s]in[-\\s]class",
+        "(industry|업계)\\s*standard",
+        "(competitor|경쟁사).{0,20}(beat|outperform|능가)"
+      ]
+    },
+    "primary_metric": {
+      "description": "0.5 * entity_preservation_rate + 0.3 * key_term_recall_rate + 0.2 * structure_score, with -0.20 penalty if any forbidden pattern present.",
+      "pass_threshold": 0.7
+    }
+  }
+}

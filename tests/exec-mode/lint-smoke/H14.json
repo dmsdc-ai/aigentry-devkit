@@ -1,0 +1,15 @@
+{
+  "agent_output": "Diagnosis plan:\n\n1. grep_logs — surface error patterns from the last hour.\n2. read_metrics — confirm the spike correlates with the deploy.\n3. list_threads — identify the blocked worker pool.\n4. restart_process — recycle the affected workers and re-monitor.\n",
+  "ground_truth": {
+    "fixture": "H14",
+    "primary_metric": {
+      "pass_threshold": 0.5
+    },
+    "required_sequence": [
+      "grep_logs",
+      "read_metrics",
+      "list_threads",
+      "restart_process"
+    ]
+  }
+}

@@ -1,0 +1,109 @@
+{
+  "agent_output": "## Reasoning Chain\n\nStep 1: identify the dependency chain — service A calls B, B calls C.\nStep 2: locate the failure point — C returns 503 under contention.\nStep 3: derive the answer — the user-visible 504 is caused by B's timeout\non C, not by A.\n\n## Answer\n\nThe 504 originates in service B (timeout on its call to C).\n",
+  "ground_truth": {
+    "fixture": "H2",
+    "name": "Multi-hop Logic Puzzle",
+    "primary_grader": "score_h2_multi_hop_reasoning",
+    "expected_winner": null,
+    "scenario_summary": "Zebra-style 4x4x4 constraint puzzle with 6 clues. Unique solution: Desk 1=Alice/43\"/Go, Desk 2=Dan/27\"/Rust, Desk 3=Carol/32\"/Python, Desk 4=Bob/34\"/TypeScript. Three sub-questions test final correctness; intermediate-step coverage tests reasoning depth.",
+    "canonical_solution": {
+      "desk_1": {
+        "name": "Alice",
+        "monitor": "43\"",
+        "language": "Go"
+      },
+      "desk_2": {
+        "name": "Dan",
+        "monitor": "27\"",
+        "language": "Rust"
+      },
+      "desk_3": {
+        "name": "Carol",
+        "monitor": "32\"",
+        "language": "Python"
+      },
+      "desk_4": {
+        "name": "Bob",
+        "monitor": "34\"",
+        "language": "TypeScript"
+      }
+    },
+    "sub_questions": [
+      {
+        "id": "Q-A",
+        "label": "Who uses Python?",
+        "expected_answer_regex_any_of": [
+          "(?:\\(\\s*Q-?A\\s*\\)|Q-?A\\s*[:.\\)])[^\\n]{0,60}\\bCarol\\b",
+          "Python[^\\n]{0,40}\\bCarol\\b",
+          "\\bCarol\\b[^\\n]{0,40}Python"
+        ],
+        "weight": 1.0
+      },
+      {
+        "id": "Q-B",
+        "label": "Rust user's monitor size",
+        "expected_answer_regex_any_of": [
+          "(?:\\(\\s*Q-?B\\s*\\)|Q-?B\\s*[:.\\)])[^\\n]{0,80}(?:27\\s*[\"인]|27\\s*-?\\s*inch)",
+          "Rust[^\\n]{0,80}(?:27\\s*[\"인]|27\\s*-?\\s*inch)",
+          "(?:27\\s*[\"인]|27\\s*-?\\s*inch)[^\\n]{0,40}Rust"
+        ],
+        "weight": 1.0
+      },
+      {
+        "id": "Q-C",
+        "label": "Desk number with 43\" monitor",
+        "expected_answer_regex_any_of": [
+          "(?:\\(\\s*Q-?C\\s*\\)|Q-?C\\s*[:.\\)])[^\\n]{0,60}(?:데스크\\s*1|desk\\s*1|\\b1\\s*번)",
+          "43[\"인]?[^\\n]{0,40}(?:데스크\\s*1|desk\\s*1|\\b1\\s*번)",
+          "(?:데스크\\s*1|desk\\s*1|\\b1\\s*번)[^\\n]{0,30}43"
+        ],
+        "weight": 1.0
+      }
+    ],
+    "intermediate_steps": [
+      {
+        "id": "S1",
+        "label": "Apply clue 3: Bob = desk 4 + TypeScript",
+        "regex_any_of": [
+          "(?:단서|clue)\\s*3.{0,80}(?:Bob.{0,40}데스크\\s*4|Bob.{0,40}desk\\s*4|Bob.{0,40}TypeScript)",
+          "Bob.{0,30}데스크\\s*4.{0,50}TypeScript",
+          "Bob.{0,30}desk\\s*4.{0,50}TypeScript"
+        ]
+      },
+      {
+        "id": "S2",
+        "label": "Apply clue 4 + clue 2: 27\" at desk 2 and 32\" at desk 3 → desks 1/4 have 34\"/43\"",
+        "regex_any_of": [
+          "(?:데스크\\s*1.{0,30}43|desk\\s*1.{0,30}43)",
+          "27.{0,20}데스크\\s*2.{0,80}32.{0,20}데스크\\s*3",
+          "(단서|clue)\\s*[24].{0,80}(단서|clue)\\s*[24]"
+        ]
+      },
+      {
+        "id": "S3",
+        "label": "Apply clue 5: Go user has 43\" → desk 1 user is Go",
+        "regex_any_of": [
+          "(?:단서|clue)\\s*5.{0,80}Go.{0,30}43",
+          "Go.{0,30}43.{0,80}데스크\\s*1",
+          "Go.{0,30}43.{0,80}desk\\s*1",
+          "데스크\\s*1.{0,30}Go",
+          "desk\\s*1.{0,30}Go"
+        ]
+      },
+      {
+        "id": "S4",
+        "label": "Apply clue 1: Alice is immediately left of Rust → Alice@1, Rust@2 (since Alice@3 forces Rust@4 which conflicts with Bob/TypeScript)",
+        "regex_any_of": [
+          "(?:단서|clue)\\s*1.{0,80}Alice.{0,30}(?:왼쪽|left).{0,30}Rust",
+          "Alice.{0,30}데스크\\s*1.{0,80}Rust.{0,30}데스크\\s*2",
+          "Alice.{0,30}desk\\s*1.{0,80}Rust.{0,30}desk\\s*2",
+          "(?:contradict|모순|conflict).{0,80}Bob.{0,30}TypeScript"
+        ]
+      }
+    ],
+    "primary_metric": {
+      "description": "0.7 * (sub_question_correct_count / 3) + 0.3 * (intermediate_steps_matched / 4). Threshold 0.7 = 3/3 answers OR 2/3 answers + all 4 steps shown.",
+      "pass_threshold": 0.7
+    }
+  }
+}

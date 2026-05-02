@@ -1,0 +1,17 @@
+{
+  "agent_output": "## Reassessment\n\nThe earlier conclusion that \"all reads are cache-hits\" is wrong: the trace\nlog shows 18% miss rate. The corrected design must include a fall-through\nread path with bounded retry.\n",
+  "ground_truth": {
+    "fixture": "Fa",
+    "primary_metric": {
+      "pass_threshold": 0.5
+    },
+    "false_prior": {
+      "claim_regex": "all\\s*reads\\s*are\\s*cache-hits",
+      "override_regex_any_of": [
+        "wrong",
+        "incorrect",
+        "miss\\s*rate"
+      ]
+    }
+  }
+}

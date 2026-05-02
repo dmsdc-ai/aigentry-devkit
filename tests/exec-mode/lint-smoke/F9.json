@@ -1,0 +1,17 @@
+{
+  "agent_output": "## Root Cause\n\nThe intermittent failure stems from a race condition in `cache.py:88` where two\ngoroutines write to the shared map without holding the lock. Reproduces under\nload > 4,200 RPS.\n",
+  "ground_truth": {
+    "fixture": "F9",
+    "primary_metric": {
+      "pass_threshold": 0.5
+    },
+    "expected_root_cause": {
+      "regex_any_of": [
+        "race\\s*condition",
+        "cache\\.py",
+        "shared\\s*map"
+      ],
+      "min_hits": 2
+    }
+  }
+}

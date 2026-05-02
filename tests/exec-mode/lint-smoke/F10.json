@@ -1,0 +1,29 @@
+{
+  "agent_output": "## Pre-merge Checklist\n\n- [x] Tests added\n- [x] Docs updated\n- [x] Changelog entry written\n- [x] Migration plan documented\n- [x] Rollback path verified\n",
+  "ground_truth": {
+    "fixture": "F10",
+    "primary_metric": {
+      "pass_threshold": 0.6
+    },
+    "checklist_items": [
+      {
+        "id": "C1",
+        "regex_any_of": [
+          "\\[x\\]\\s*tests\\s*added"
+        ]
+      },
+      {
+        "id": "C2",
+        "regex_any_of": [
+          "\\[x\\]\\s*docs\\s*updated"
+        ]
+      },
+      {
+        "id": "C3",
+        "regex_any_of": [
+          "\\[x\\]\\s*changelog"
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "agent_output": "The most recent decision in the deliberation log is:\n\n> Decision D-042 (2026-04-29): Adopt outbox pattern for cross-service event\n> dispatch. Rationale: avoids HTTP-in-tx pattern flagged in incident #14.\n",
+  "ground_truth": {
+    "fixture": "F7",
+    "primary_metric": {
+      "pass_threshold": 0.5
+    },
+    "expected_decision": {
+      "id": "D-042",
+      "date": "2026-04-29",
+      "regex_any_of": [
+        "d-?042",
+        "outbox\\s*pattern"
+      ]
+    }
+  }
+}

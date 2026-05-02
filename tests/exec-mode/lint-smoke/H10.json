@@ -1,0 +1,92 @@
+{
+  "agent_output": "## 무슨 일이 있었나\n\n지난주 결제 서비스에서 4,231건의 트랜잭션이 지연되었다. p99 응답시간이\n2.3초까지 상승하면서 알림이 발화했고 OPS-4187 인시던트가 등록되었다.\n배포 직후 약 18분 동안 영향이 지속되었으며 고객 약 1,200명이 결제 화면에서\n스피너를 보았다고 보고했다. 모니터링 대시보드는 캐시 적중률 급락을 보여\n주었고 동시에 데이터베이스 커넥션 풀 점유율이 평소의 두 배에 도달했다.\n\n## 영향\n\n총 4,231건의 트랜잭션 중 약 2,100건이 5초를 초과하여 사용자 입장에서\n체감 가능한 지연으로 분류된다. 환불 요청은 12건 접수되었고 매출 영향은\n즉각적이지 않지만 장기 신뢰도에 부정적이다.\n\n## 근본원인\n\n새 배포에서 캐시 TTL을 5분에서 30초로 줄이면서 캐시 미스율이 9배 늘었고\n이로 인해 데이터베이스 호출이 폭증했다. TTL 변경은 사양에 명시되어 있었\n으나 부하 영향은 사전에 시뮬레이션되지 않았다.\n\n## 후속조치\n\n다음 배포 이전에 부하 시뮬레이션을 통과해야 한다. TTL은 6분으로 잠정\n복귀시키며 모니터링 임계값을 재설정한다.\nEND_OF_MEMO\n",
+  "ground_truth": {
+    "fixture": "H10",
+    "name": "Strict Instruction Following",
+    "primary_grader": "score_h10_strict_instruction_following",
+    "expected_winner": null,
+    "scenario_summary": "8 independent format/structure/length/lexical constraints (C1-C8) on a retrospective memo. Primary metric is the fraction of constraints satisfied. Each constraint is mechanically checkable from output text alone (no LLM judge).",
+    "constraints": [
+      {
+        "id": "C1",
+        "label": "prose word count in [200, 300]",
+        "type": "word_count_range",
+        "min_words": 200,
+        "max_words": 300,
+        "scope": "prose_only",
+        "exclude_patterns": [
+          "fenced_code",
+          "tables",
+          "h2_headers"
+        ]
+      },
+      {
+        "id": "C2",
+        "label": "exactly 4 H2 sections with fixed titles",
+        "type": "h2_section_set",
+        "required_titles": [
+          "무슨 일이 있었나",
+          "영향",
+          "근본원인",
+          "후속조치"
+        ],
+        "exact_count": 4
+      },
+      {
+        "id": "C3",
+        "label": "no markdown links",
+        "type": "regex_must_not_match",
+        "regex": "\\[[^\\]]+\\]\\([^\\)]+\\)"
+      },
+      {
+        "id": "C4",
+        "label": "no nested bullets (single level only)",
+        "type": "no_nested_bullets",
+        "indent_pattern": "^[ \\t]+- "
+      },
+      {
+        "id": "C5",
+        "label": "all integers >= 1000 use comma thousands separator",
+        "type": "thousands_comma",
+        "min_value": 1000,
+        "violation_regex": "(?<!\\d)\\d{4,}(?!\\d)(?![,\\d])"
+      },
+      {
+        "id": "C6",
+        "label": "no hedging words in prose",
+        "type": "regex_must_not_match_any",
+        "patterns": [
+          "\\btentatively\\b",
+          "\\bmaybe\\b",
+          "\\barguably\\b",
+          "\\bit seems\\b",
+          "\\bkind of\\b"
+        ],
+        "case_insensitive": true
+      },
+      {
+        "id": "C7",
+        "label": "exact closing sentence",
+        "type": "exact_last_line",
+        "expected_line": "회고 작성자 사인오프: ops-on-call."
+      },
+      {
+        "id": "C8",
+        "label": "exactly 3 OPS-NNNN tickets cited from approved list",
+        "type": "ticket_id_set",
+        "regex": "OPS-\\d{4}",
+        "approved_ids": [
+          "OPS-4187",
+          "OPS-4192",
+          "OPS-4205"
+        ],
+        "exact_count": 3
+      }
+    ],
+    "primary_metric": {
+      "description": "fraction of 8 constraints satisfied",
+      "formula": "score = sum(constraint_pass) / 8",
+      "pass_threshold": 0.875
+    }
+  }
+}

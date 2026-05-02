@@ -1,0 +1,19 @@
+{
+  "agent_output": "```json\n{\n  \"routes\": [\n    {\"path\": \"/api/v1\", \"backend\": \"api-svc\"},\n    {\"path\": \"/assets\", \"backend\": \"cdn-svc\"}\n  ]\n}\n```\n",
+  "ground_truth": {
+    "fixture": "H13",
+    "primary_metric": {
+      "pass_threshold": 0.5
+    },
+    "expected_routes": [
+      {
+        "path": "/api/v1",
+        "backend": "api-svc"
+      },
+      {
+        "path": "/assets",
+        "backend": "cdn-svc"
+      }
+    ]
+  }
+}
