@@ -805,6 +805,90 @@ def _extract_urls(text: str) -> list[str]:
     return re.findall(r"https?://[^\s)>\]]+", text or "")
 
 
+# ─── Output-style formatting-exemption (Q3 ADR §2.4.2 r2 contract) ──────────
+# ADR: docs/adr/2026-05-02-output-style-fixture-design-rule.md (orchestrator
+# repo). Every primary grader's return dict — which the harness lands at
+# `metrics.json::quality.primary_components` per
+# `bin/exec-mode-experiment.sh:825` — MUST carry the five
+# `formatting_exempt_*` fields below. See §2.4.2 status semantics:
+#   implemented     — grader normalizes structurally-equivalent variants
+#                     (canonicalizer named, variants listed, tests listed).
+#   not_applicable  — formatting IS the scoring surface (e.g., strict-format
+#                     JSON validation); canonicalization would defeat the test.
+#   grandfathered   — pre-Phase-6 fixture per §11 exemption registry; reserved
+#                     for the registry's listed entries (currently H10).
+FORMATTING_EXEMPT_RULE_ADR = "2026-05-02-output-style-fixture-design-rule"
+_FORMATTING_EXEMPT_STATUS_VALUES = ("implemented", "not_applicable", "grandfathered")
+
+
+def _emit_formatting_exempt_status(
+    status: str,
+    *,
+    canonicalizer: str | None = None,
+    variants: Sequence[str] = (),
+    tests: Sequence[str] = (),
+) -> dict:
+    """Build the five `formatting_exempt_*` fields per ADR §2.4.2 r2.
+
+    The returned dict is merged into a primary grader's return value. Companion
+    field semantics are enforced per the §2.4.2 status table:
+
+      * `implemented`    — caller MUST pass `canonicalizer` (function name),
+                           non-empty `variants`, non-empty `tests`.
+      * `not_applicable` — caller MUST omit/None the canonicalizer + leave
+                           variants/tests empty; grader docstring carries the
+                           `formatting_exempt_justification` section.
+      * `grandfathered`  — same as `not_applicable` (no canonicalizer); the
+                           grader's fixture_id MUST appear in the §11 registry.
+
+    Lint check 2 (§2.4.3) cross-checks companion-field consistency by AST
+    walking the grader source — it expects the canonicalizer function name
+    and adversarial test names to resolve. Keep `canonicalizer` aligned with
+    the actual `_canonicalize_*` symbol the grader calls.
+    """
+    if status not in _FORMATTING_EXEMPT_STATUS_VALUES:
+        raise ValueError(
+            f"formatting_exempt_status must be one of "
+            f"{_FORMATTING_EXEMPT_STATUS_VALUES}; got {status!r}"
+        )
+    if status == "implemented":
+        if not canonicalizer:
+            raise ValueError(
+                "formatting_exempt_status='implemented' requires a non-empty "
+                "canonicalizer function name (lint check 2)"
+            )
+        if not variants:
+            raise ValueError(
+                "formatting_exempt_status='implemented' requires a non-empty "
+                "variants list (lint check 2)"
+            )
+        if not tests:
+            raise ValueError(
+                "formatting_exempt_status='implemented' requires a non-empty "
+                "tests list (lint check 2)"
+            )
+    else:
+        # not_applicable and grandfathered use null canonicalizer + empty lists
+        # per §2.4.2 status-table companion-field rules.
+        if canonicalizer is not None:
+            raise ValueError(
+                f"formatting_exempt_status={status!r} requires "
+                "canonicalizer=None (lint check 2)"
+            )
+        if variants or tests:
+            raise ValueError(
+                f"formatting_exempt_status={status!r} requires empty "
+                "variants and tests lists (lint check 2)"
+            )
+    return {
+        "formatting_exempt_status": status,
+        "formatting_exempt_canonicalizer": canonicalizer,
+        "formatting_exempt_variants": list(variants),
+        "formatting_exempt_tests": list(tests),
+        "formatting_exempt_rule_adr": FORMATTING_EXEMPT_RULE_ADR,
+    }
+
+
 def _parse_markdown_table_rows(text: str) -> list[list[str]]:
     rows: list[list[str]] = []
     for line in (text or "").splitlines():
