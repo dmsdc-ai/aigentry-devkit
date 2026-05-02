@@ -1,1 +1,30 @@
-[]
+[
+  {
+    "q_idx": 1,
+    "fact_id": 1,
+    "answer": "Node.js",
+    "accept_variants": [
+      "Node.js",
+      "Node",
+      "nodejs"
+    ]
+  },
+  {
+    "q_idx": 2,
+    "fact_id": 2,
+    "answer": "90%",
+    "accept_variants": [
+      "90%",
+      "90"
+    ]
+  },
+  {
+    "q_idx": 3,
+    "fact_id": 3,
+    "answer": "RB-884",
+    "accept_variants": [
+      "RB-884",
+      "RB884"
+    ]
+  }
+]

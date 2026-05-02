@@ -1,1 +1,30 @@
-[]
+[
+  {
+    "q_idx": 1,
+    "fact_id": 1,
+    "answer": "Conference Room B",
+    "accept_variants": [
+      "Conference Room B",
+      "Room B"
+    ]
+  },
+  {
+    "q_idx": 2,
+    "fact_id": 2,
+    "answer": "$4,500",
+    "accept_variants": [
+      "$4,500",
+      "$4500",
+      "4500"
+    ]
+  },
+  {
+    "q_idx": 3,
+    "fact_id": 3,
+    "answer": "PostgreSQL 15",
+    "accept_variants": [
+      "PostgreSQL 15",
+      "Postgres 15"
+    ]
+  }
+]

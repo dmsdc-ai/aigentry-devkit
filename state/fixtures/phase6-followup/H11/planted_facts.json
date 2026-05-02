@@ -1,1 +1,34 @@
-[]
+[
+  {
+    "id": 1,
+    "keyword": "https://dash.internal/ops",
+    "sentence": "The monitoring dashboard URL is https://dash.internal/ops",
+    "type": "url",
+    "turn": 3,
+    "embed_variants": [
+      "dash.internal",
+      "ops dashboard"
+    ]
+  },
+  {
+    "id": 2,
+    "keyword": "Alice",
+    "sentence": "The on-call engineer was Alice",
+    "type": "person",
+    "turn": 5,
+    "embed_variants": [
+      "Alice"
+    ]
+  },
+  {
+    "id": 3,
+    "keyword": "09:45 AM",
+    "sentence": "The incident started at 09:45 AM",
+    "type": "time",
+    "turn": 7,
+    "embed_variants": [
+      "09:45",
+      "9:45"
+    ]
+  }
+]

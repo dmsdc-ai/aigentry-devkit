@@ -1,1 +1,32 @@
-[]
+[
+  {
+    "id": 1,
+    "keyword": "v1.2.3",
+    "sentence": "The ingress controller version is v1.2.3",
+    "type": "version",
+    "turn": 3,
+    "embed_variants": [
+      "1.2.3"
+    ]
+  },
+  {
+    "id": 2,
+    "keyword": "prod-k8s-us-west",
+    "sentence": "The cluster name is prod-k8s-us-west",
+    "type": "name",
+    "turn": 5,
+    "embed_variants": [
+      "prod-k8s"
+    ]
+  },
+  {
+    "id": 3,
+    "keyword": "Cloudflare",
+    "sentence": "The CDN provider is Cloudflare",
+    "type": "provider",
+    "turn": 7,
+    "embed_variants": [
+      "cloudflare"
+    ]
+  }
+]

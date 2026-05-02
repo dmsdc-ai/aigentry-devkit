@@ -1,1 +1,34 @@
-[]
+[
+  {
+    "id": 1,
+    "keyword": "Node.js",
+    "sentence": "The worker process is written in Node.js",
+    "type": "software",
+    "turn": 3,
+    "embed_variants": [
+      "nodejs",
+      "Node"
+    ]
+  },
+  {
+    "id": 2,
+    "keyword": "90%",
+    "sentence": "The CPU alert threshold is 90%",
+    "type": "metric",
+    "turn": 5,
+    "embed_variants": [
+      "90"
+    ]
+  },
+  {
+    "id": 3,
+    "keyword": "RB-884",
+    "sentence": "The runbook ID is RB-884",
+    "type": "id",
+    "turn": 7,
+    "embed_variants": [
+      "RB884",
+      "RB-884"
+    ]
+  }
+]

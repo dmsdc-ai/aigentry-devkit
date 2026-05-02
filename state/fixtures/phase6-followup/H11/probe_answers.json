@@ -1,1 +1,29 @@
-[]
+[
+  {
+    "q_idx": 1,
+    "fact_id": 1,
+    "answer": "https://dash.internal/ops",
+    "accept_variants": [
+      "dash.internal/ops",
+      "https://dash.internal/ops"
+    ]
+  },
+  {
+    "q_idx": 2,
+    "fact_id": 2,
+    "answer": "Alice",
+    "accept_variants": [
+      "Alice"
+    ]
+  },
+  {
+    "q_idx": 3,
+    "fact_id": 3,
+    "answer": "09:45 AM",
+    "accept_variants": [
+      "09:45 AM",
+      "09:45",
+      "9:45"
+    ]
+  }
+]
