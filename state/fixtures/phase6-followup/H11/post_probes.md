@@ -4,23 +4,22 @@
 
 위 대화 history에 기반해서만 답하세요. 추측 금지, 모르면 "unknown".
 
-Q1. What is the URL or related identifier from turn 3?
+Q1. What is the finalized URL for the monitoring dashboard mentioned in turn 3?
 
-Q2. Who or what was mentioned in turn 5?
+Q2. Who was the primary on-call engineer?
 
-Q3. What is the specific value or ID from turn 7?
+Q3. When did the incident officially start?
 
-
-Q4. What was the affected service?
+Q4. What is the specific affected service?
 
 Q5. Which AWS region experienced the incident?
 
-Q6. What type of errors spiked during the incident?
+Q6. What type of errors spiked and masked the underlying timeouts?
 
 Q7. How long was the total downtime?
 
-Q8. What was the identified root cause?
+Q8. What was the actual identified root cause?
 
-Q9. Which Slack channel was used for communication?
+Q9. Which Slack channel was used for incident communication?
 
-Q10. What is the tracking ticket number?
+Q10. What is the specific tracking ticket number for the incident?

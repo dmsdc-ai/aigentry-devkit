@@ -1,108 +1,121 @@
 [
   {
     "id": 1,
-    "keyword": "Conference Room B",
-    "sentence": "The meeting room was Conference Room B",
+    "keyword": "Conference Room B-v2",
+    "sentence": "The meeting room was Conference Room B-v2, which is adjacent to the old Conference Room B.",
     "type": "location",
     "turn": 3,
     "embed_variants": [
-      "Room B"
+      "Room B-v2",
+      "Room B",
+      "Conference Room B"
     ]
   },
   {
     "id": 2,
-    "keyword": "$4,500",
-    "sentence": "The current monthly AWS bill is $4,500",
+    "keyword": "$4,550",
+    "sentence": "The current monthly AWS bill is exactly $4,550, though the estimate was $4,500.",
     "type": "metric",
     "turn": 5,
     "embed_variants": [
-      "4500",
-      "$4500"
+      "4550",
+      "$4550",
+      "4500"
     ]
   },
   {
     "id": 3,
-    "keyword": "PostgreSQL 15",
-    "sentence": "The database engine is PostgreSQL 15",
+    "keyword": "PostgreSQL 15.4",
+    "sentence": "The database engine is PostgreSQL 15.4, upgraded from 15.2 last month.",
     "type": "software",
     "turn": 7,
     "embed_variants": [
-      "Postgres 15",
+      "Postgres 15.4",
+      "Postgres 15.2",
       "PostgreSQL"
     ]
   },
   {
     "id": 4,
-    "keyword": "October 12th",
-    "sentence": "The next board meeting is on October 12th.",
+    "keyword": "October 14th",
+    "sentence": "The next board meeting is on October 14th, rescheduled from October 12th.",
     "type": "date",
     "turn": 9,
     "embed_variants": [
-      "October 12th",
-      "Oct 12"
+      "October 14th",
+      "Oct 14",
+      "October 12th"
     ]
   },
   {
     "id": 5,
-    "keyword": "250 TB",
-    "sentence": "Our current S3 storage usage is 250 TB.",
+    "keyword": "255 TB",
+    "sentence": "Our current S3 storage usage is 255 TB, exceeding the 250 TB soft limit.",
     "type": "metric",
     "turn": 11,
     "embed_variants": [
-      "250 TB",
-      "250TB"
+      "255 TB",
+      "255TB",
+      "250 TB"
     ]
   },
   {
     "id": 6,
-    "keyword": "David",
-    "sentence": "The new CFO is David.",
+    "keyword": "David Miller",
+    "sentence": "The new CFO is David Miller, often confused with David Smith in Engineering.",
     "type": "person",
     "turn": 13,
     "embed_variants": [
+      "David Miller",
+      "David Smith",
       "David"
     ]
   },
   {
     "id": 7,
-    "keyword": "12%",
-    "sentence": "Q3 revenue growth was 12%.",
+    "keyword": "12.5%",
+    "sentence": "Q3 revenue growth was 12.5%, narrowly beating the 12% target.",
     "type": "metric",
     "turn": 15,
     "embed_variants": [
+      "12.5%",
       "12%"
     ]
   },
   {
     "id": 8,
-    "keyword": "Tableau",
-    "sentence": "We use Tableau for BI reporting.",
+    "keyword": "Tableau Cloud",
+    "sentence": "We use Tableau Cloud for BI reporting, moving away from Tableau Server.",
     "type": "software",
     "turn": 17,
     "embed_variants": [
+      "Tableau Cloud",
+      "Tableau Server",
       "Tableau"
     ]
   },
   {
     "id": 9,
-    "keyword": "SOC2 compliance",
-    "sentence": "The Q4 security goal is SOC2 compliance.",
+    "keyword": "SOC2 Type II compliance",
+    "sentence": "The Q4 security goal is SOC2 Type II compliance, as SOC2 Type I is already complete.",
     "type": "goal",
     "turn": 19,
     "embed_variants": [
-      "SOC2 compliance",
-      "SOC2"
+      "SOC2 Type II compliance",
+      "SOC2 Type II",
+      "SOC2 Type I"
     ]
   },
   {
     "id": 10,
-    "keyword": "Project Phoenix",
-    "sentence": "The internal code name is Project Phoenix.",
+    "keyword": "Project Phoenix-Alpha",
+    "sentence": "The internal code name is Project Phoenix-Alpha, distinct from the legacy Project Phoenix.",
     "type": "project",
     "turn": 21,
     "embed_variants": [
-      "Project Phoenix",
-      "Phoenix"
+      "Project Phoenix-Alpha",
+      "Phoenix-Alpha",
+      "Project Phoenix"
     ]
   }
 ]

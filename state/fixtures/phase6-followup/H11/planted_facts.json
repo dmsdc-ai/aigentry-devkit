@@ -2,105 +2,115 @@
   {
     "id": 1,
     "keyword": "https://dash.internal/ops",
-    "sentence": "The monitoring dashboard URL is https://dash.internal/ops",
+    "sentence": "The primary monitoring dashboard URL is https://dash.internal/ops, though we initially considered https://dash.internal/status before finalizing.",
     "type": "url",
     "turn": 3,
     "embed_variants": [
-      "dash.internal",
-      "ops dashboard"
+      "dash.internal/ops",
+      "ops dashboard",
+      "dash.internal/status"
     ]
   },
   {
     "id": 2,
     "keyword": "Alice",
-    "sentence": "The on-call engineer was Alice",
+    "sentence": "The primary on-call engineer was Alice, who took over from Bob after the shift change.",
     "type": "person",
     "turn": 5,
     "embed_variants": [
-      "Alice"
+      "Alice",
+      "Bob"
     ]
   },
   {
     "id": 3,
     "keyword": "09:45 AM",
-    "sentence": "The incident started at 09:45 AM",
+    "sentence": "The incident officially started at 09:45 AM, not 09:30 AM when the first alerts triggered.",
     "type": "time",
     "turn": 7,
     "embed_variants": [
       "09:45",
-      "9:45"
+      "9:45",
+      "09:30"
     ]
   },
   {
     "id": 4,
-    "keyword": "auth-api",
-    "sentence": "The affected service is auth-api.",
+    "keyword": "auth-api-v2",
+    "sentence": "The affected service is auth-api-v2, which replaced auth-api-legacy last week.",
     "type": "service",
     "turn": 9,
     "embed_variants": [
-      "auth-api"
+      "auth-api-v2",
+      "auth-api-legacy"
     ]
   },
   {
     "id": 5,
     "keyword": "us-west-2",
-    "sentence": "The incident occurred in the us-west-2 region.",
+    "sentence": "The incident occurred in the us-west-2 region, while us-east-1 remained stable.",
     "type": "region",
     "turn": 11,
     "embed_variants": [
-      "us-west-2"
+      "us-west-2",
+      "us-east-1"
     ]
   },
   {
     "id": 6,
     "keyword": "503 errors",
-    "sentence": "We saw a spike in 503 errors.",
+    "sentence": "We saw a spike in 503 errors, masking the underlying 502 gateway timeouts.",
     "type": "metric",
     "turn": 13,
     "embed_variants": [
       "503 errors",
-      "503"
+      "503",
+      "502"
     ]
   },
   {
     "id": 7,
     "keyword": "45 minutes",
-    "sentence": "The total downtime was 45 minutes.",
+    "sentence": "The total downtime was 45 minutes, significantly worse than our 15-minute SLA.",
     "type": "duration",
     "turn": 15,
     "embed_variants": [
       "45 minutes",
-      "45 mins"
+      "45 mins",
+      "15-minute"
     ]
   },
   {
     "id": 8,
     "keyword": "bad deployment",
-    "sentence": "The root cause was identified as a bad deployment.",
+    "sentence": "The root cause was identified as a bad deployment, originally misattributed to a database failover.",
     "type": "root_cause",
     "turn": 17,
     "embed_variants": [
-      "bad deployment"
+      "bad deployment",
+      "database failover"
     ]
   },
   {
     "id": 9,
     "keyword": "#incidents-p1",
-    "sentence": "Communication happened in the #incidents-p1 Slack channel.",
+    "sentence": "Communication happened in the #incidents-p1 Slack channel, moving away from #alerts-general.",
     "type": "channel",
     "turn": 19,
     "embed_variants": [
-      "#incidents-p1"
+      "#incidents-p1",
+      "#alerts-general"
     ]
   },
   {
     "id": 10,
     "keyword": "JIRA-8891",
-    "sentence": "The tracking ticket is JIRA-8891.",
+    "sentence": "The tracking ticket is JIRA-8891, linked to the epic JIRA-8800.",
     "type": "ticket",
     "turn": 21,
     "embed_variants": [
-      "JIRA-8891"
+      "JIRA-8891",
+      "JIRA-8800"
     ]
   }
 ]

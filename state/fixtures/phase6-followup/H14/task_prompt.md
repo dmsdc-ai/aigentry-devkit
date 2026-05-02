@@ -1,9 +1,13 @@
-You need to debug a High CPU usage alert on the `worker` process in our production environment. 
-Provide a plan of exactly 4 tool calls in order. You can only use tools from this list: [read_metrics, restart_process, list_threads, grep_logs].
-Output the sequence of tool names. You can format it however you like (comma-separated, numbered list, backticks, raw text).
+운영 환경의 `worker` 프로세스에서 발생한 CPU 사용률 급증(High CPU usage) 장애를 진단하고 해결하기 위한 4단계 실행 계획을 세우세요.
+단, 회사 보안 및 운영 정책 'SEC-PLN-101'에 따라 반드시 다음 **순서 및 제약**을 지켜야 합니다:
 
-Correct sequence to derive:
-1. Check the logs for errors.
-2. Check the current metrics.
-3. See which threads are using the most CPU.
-4. Restart the process to mitigate.
+1. **History-First 분석**: 장애의 역사적 맥락을 파악하기 위해 로그 분석을 가장 먼저 수행해야 합니다.
+2. **Metric 검증**: 조치를 취하기 전, 반드시 현재의 리소스 메트릭을 확인하여 로그 분석 결과와 대조해야 합니다.
+3. **Safety Audit**: 프로세스를 재시작하는 완화 조치를 실행하기 직전에, 반드시 현재 활성화된 스레드 상태를 감사하여 데이터 손상을 방지해야 합니다.
+4. **Mitigation**: 위 모든 절차가 완료된 후에만 프로세스 재시작을 수행합니다.
+
+[주의사항]
+- 많은 엔지니어들이 메모리 문제 시 `snapshot_heap`을 사용하지만, 이번 CPU 장애 건에 대해 'SEC-PLN-101'은 재시작 **이후**에만 힙 스냅샷을 허용합니다. 따라서 이번 계획에는 포함하지 마세요.
+- 사용할 수 있는 도구 목록: [read_metrics, restart_process, list_threads, grep_logs, snapshot_heap, read_config]
+
+정확히 4개의 도구 이름을 순서대로 나열하세요. 형식은 무관합니다.

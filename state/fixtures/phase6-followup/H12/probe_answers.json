@@ -2,89 +2,97 @@
   {
     "q_idx": 1,
     "fact_id": 1,
-    "answer": "Conference Room B",
+    "answer": "Conference Room B-v2",
     "accept_variants": [
-      "Conference Room B",
-      "Room B"
+      "Room B-v2",
+      "Conference Room B-v2"
     ]
   },
   {
     "q_idx": 2,
     "fact_id": 2,
-    "answer": "$4,500",
+    "answer": "$4,550",
     "accept_variants": [
-      "$4,500",
-      "$4500",
-      "4500"
+      "4550",
+      "$4550"
     ]
   },
   {
     "q_idx": 3,
     "fact_id": 3,
-    "answer": "PostgreSQL 15",
+    "answer": "PostgreSQL 15.4",
     "accept_variants": [
-      "PostgreSQL 15",
-      "Postgres 15"
+      "Postgres 15.4",
+      "PostgreSQL 15.4"
     ]
   },
   {
     "q_idx": 4,
     "fact_id": 4,
-    "answer": "October 12th",
+    "answer": "October 14th",
     "accept_variants": [
-      "October 12th",
-      "Oct 12"
+      "October 14th",
+      "Oct 14"
     ]
   },
   {
     "q_idx": 5,
     "fact_id": 5,
-    "answer": "250 TB",
+    "answer": "255 TB",
     "accept_variants": [
-      "250 TB",
-      "250TB"
+      "255 TB",
+      "255TB"
     ]
   },
   {
     "q_idx": 6,
     "fact_id": 6,
-    "answer": "David",
+    "answer": "David Miller",
     "accept_variants": [
-      "David"
+      "David Miller"
     ]
   },
   {
     "q_idx": 7,
     "fact_id": 7,
-    "answer": "12%",
+    "answer": "12.5%",
     "accept_variants": [
-      "12%"
+      "12.5%"
     ]
   },
   {
     "q_idx": 8,
     "fact_id": 8,
-    "answer": "Tableau",
+    "answer": "Tableau Cloud",
     "accept_variants": [
-      "Tableau"
+      "Tableau Cloud"
+    ]
+  },
+  {
+    "q_idx": 9,
+    "fact_id": 10,
+    "answer": "SOC2 Type II compliance",
+    "accept_variants": [
+      "SOC2 Type II",
+      "SOC2 Type II compliance"
     ]
   },
   {
     "q_idx": 9,
     "fact_id": 9,
-    "answer": "SOC2 compliance",
+    "answer": "SOC2 Type II compliance",
     "accept_variants": [
-      "SOC2 compliance",
-      "SOC2"
+      "SOC2 Type II",
+      "SOC2 Type II compliance"
     ]
   },
   {
     "q_idx": 10,
     "fact_id": 10,
-    "answer": "Project Phoenix",
+    "answer": "Project Phoenix-Alpha",
     "accept_variants": [
-      "Project Phoenix",
-      "Phoenix"
+      "Project Phoenix-Alpha",
+      "Phoenix-Alpha"
     ]
   }
 ]

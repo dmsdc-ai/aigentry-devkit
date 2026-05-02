@@ -29,9 +29,9 @@
   {
     "q_idx": 4,
     "fact_id": 4,
-    "answer": "auth-api",
+    "answer": "auth-api-v2",
     "accept_variants": [
-      "auth-api"
+      "auth-api-v2"
     ]
   },
   {

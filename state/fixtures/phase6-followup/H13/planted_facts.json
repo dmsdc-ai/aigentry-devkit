@@ -1,104 +1,119 @@
 [
   {
     "id": 1,
-    "keyword": "v1.2.3",
-    "sentence": "The ingress controller version is v1.2.3",
+    "keyword": "v1.2.3-hotfix",
+    "sentence": "The ingress controller version is v1.2.3-hotfix, patched from v1.2.3 yesterday.",
     "type": "version",
     "turn": 3,
     "embed_variants": [
-      "1.2.3"
+      "v1.2.3-hotfix",
+      "1.2.3-hotfix",
+      "v1.2.3"
     ]
   },
   {
     "id": 2,
-    "keyword": "prod-k8s-us-west",
-    "sentence": "The cluster name is prod-k8s-us-west",
+    "keyword": "prod-k8s-us-west-2",
+    "sentence": "The cluster name is prod-k8s-us-west-2, following the prod-k8s-us-west-1 naming.",
     "type": "name",
     "turn": 5,
     "embed_variants": [
-      "prod-k8s"
+      "prod-k8s-us-west-2",
+      "us-west-2",
+      "us-west-1"
     ]
   },
   {
     "id": 3,
-    "keyword": "Cloudflare",
-    "sentence": "The CDN provider is Cloudflare",
+    "keyword": "Cloudflare Enterprise",
+    "sentence": "The CDN provider is Cloudflare Enterprise, upgraded from the Pro plan.",
     "type": "provider",
     "turn": 7,
     "embed_variants": [
-      "cloudflare"
+      "Cloudflare Enterprise",
+      "Cloudflare",
+      "Pro plan"
     ]
   },
   {
     "id": 4,
-    "keyword": "150 nodes",
-    "sentence": "The current node count is 150 nodes.",
+    "keyword": "152 nodes",
+    "sentence": "The current node count is 152 nodes, up from 150 after the scale-out.",
     "type": "metric",
     "turn": 9,
     "embed_variants": [
-      "150 nodes",
+      "152 nodes",
+      "152",
       "150"
     ]
   },
   {
     "id": 5,
-    "keyword": "m5.2xlarge",
-    "sentence": "Worker nodes use the m5.2xlarge instance type.",
+    "keyword": "m5.2xlarge-spot",
+    "sentence": "Worker nodes use the m5.2xlarge-spot instance type for cost savings, not regular m5.2xlarge.",
     "type": "instance",
     "turn": 11,
     "embed_variants": [
+      "m5.2xlarge-spot",
       "m5.2xlarge"
     ]
   },
   {
     "id": 6,
-    "keyword": "1.27",
-    "sentence": "The control plane is running K8s version 1.27.",
+    "keyword": "1.27.4",
+    "sentence": "The control plane is running K8s version 1.27.4, strictly required for the new CNI.",
     "type": "version",
     "turn": 13,
     "embed_variants": [
+      "1.27.4",
       "1.27"
     ]
   },
   {
     "id": 7,
-    "keyword": "Cilium",
-    "sentence": "We use Cilium as our network plugin.",
+    "keyword": "Cilium v1.14",
+    "sentence": "We use Cilium v1.14 as our network plugin, which replaced Calico.",
     "type": "software",
     "turn": 15,
     "embed_variants": [
-      "Cilium"
+      "Cilium v1.14",
+      "Cilium",
+      "Calico"
     ]
   },
   {
     "id": 8,
-    "keyword": "4Gi",
-    "sentence": "The default pod memory limit is 4Gi.",
+    "keyword": "4Gi (fixed)",
+    "sentence": "The default pod memory limit is 4Gi (fixed), though we considered 8Gi.",
     "type": "metric",
     "turn": 17,
     "embed_variants": [
+      "4Gi (fixed)",
       "4Gi",
-      "4 GB"
+      "8Gi"
     ]
   },
   {
     "id": 9,
-    "keyword": "infra-manifests",
-    "sentence": "The GitOps repo name is infra-manifests.",
+    "keyword": "infra-manifests-v2",
+    "sentence": "The GitOps repo name is infra-manifests-v2, migrated from infra-manifests-legacy.",
     "type": "repo",
     "turn": 19,
     "embed_variants": [
-      "infra-manifests"
+      "infra-manifests-v2",
+      "infra-manifests-legacy"
     ]
   },
   {
     "id": 10,
-    "keyword": "ArgoCD",
-    "sentence": "We use ArgoCD for deployments.",
+    "keyword": "ArgoCD v2.8",
+    "sentence": "We use ArgoCD v2.8 for deployments, which introduced the new UI.",
     "type": "software",
     "turn": 21,
     "embed_variants": [
-      "ArgoCD"
+      "ArgoCD v2.8",
+      "ArgoCD",
+      "v2.8"
     ]
   }
 ]

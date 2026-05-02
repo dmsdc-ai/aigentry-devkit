@@ -1,26 +1,23 @@
 # H13 — Post-task Loss Probes
 
-(Stage 2 isolated session only. Stage 1 task session에 노출되지 않는다.)
-
 위 대화 history에 기반해서만 답하세요. 추측 금지, 모르면 "unknown".
 
-Q1. What is the URL or related identifier from turn 3?
+Q1. What is the specific hotfix version of the ingress controller?
 
-Q2. Who or what was mentioned in turn 5?
+Q2. What is the full name of the cluster, including the region suffix?
 
-Q3. What is the specific value or ID from turn 7?
+Q3. What specific tier of Cloudflare is being used?
 
+Q4. What is the current node count after scale-out?
 
-Q4. What is the current node count in the cluster?
+Q5. What specific instance type variant is used for worker nodes?
 
-Q5. What instance type do the worker nodes use?
+Q6. What is the exact control plane K8s version, including the patch number?
 
-Q6. What Kubernetes version is the control plane running?
+Q7. Which specific version of Cilium is used as the network plugin?
 
-Q7. Which network plugin (CNI) is used?
+Q8. What is the default pod memory limit, including the status in parentheses?
 
-Q8. What is the default pod memory limit?
+Q9. What is the exact name of the new GitOps repository?
 
-Q9. What is the name of the GitOps repository?
-
-Q10. What tool is used for deployments?
+Q10. Which specific version of ArgoCD is used for deployments?

@@ -1,106 +1,118 @@
 [
   {
     "id": 1,
-    "keyword": "Node.js",
-    "sentence": "The worker process is written in Node.js",
+    "keyword": "Node.js v20",
+    "sentence": "The worker process is written in Node.js v20, recently upgraded from v18.",
     "type": "software",
     "turn": 3,
     "embed_variants": [
-      "nodejs",
-      "Node"
+      "Node.js v20",
+      "Node.js v18",
+      "Node.js"
     ]
   },
   {
     "id": 2,
-    "keyword": "90%",
-    "sentence": "The CPU alert threshold is 90%",
+    "keyword": "92%",
+    "sentence": "The CPU alert threshold is 92%, though we previously used 90%.",
     "type": "metric",
     "turn": 5,
     "embed_variants": [
-      "90"
+      "92%",
+      "92",
+      "90%"
     ]
   },
   {
     "id": 3,
-    "keyword": "RB-884",
-    "sentence": "The runbook ID is RB-884",
+    "keyword": "RB-884-v2",
+    "sentence": "The runbook ID is RB-884-v2, which supersedes the legacy RB-884.",
     "type": "id",
     "turn": 7,
     "embed_variants": [
-      "RB884",
+      "RB-884-v2",
       "RB-884"
     ]
   },
   {
     "id": 4,
-    "keyword": "WARN",
-    "sentence": "The default log level is set to WARN.",
+    "keyword": "DEBUG (temporary)",
+    "sentence": "The current log level is set to DEBUG (temporary), while the default is WARN.",
     "type": "config",
     "turn": 9,
     "embed_variants": [
+      "DEBUG (temporary)",
+      "DEBUG",
       "WARN"
     ]
   },
   {
     "id": 5,
-    "keyword": "3 times",
-    "sentence": "The max connection retry count is 3 times.",
+    "keyword": "5 retries",
+    "sentence": "The max connection retry count is 5 retries, increased from 3.",
     "type": "config",
     "turn": 11,
     "embed_variants": [
-      "3 times",
+      "5 retries",
+      "5",
       "3"
     ]
   },
   {
     "id": 6,
-    "keyword": "512MB",
-    "sentence": "The OOM kill threshold is 512MB.",
+    "keyword": "512MB (soft limit)",
+    "sentence": "The OOM kill threshold is 512MB (soft limit), with a 1GB hard limit.",
     "type": "config",
     "turn": 13,
     "embed_variants": [
+      "512MB (soft limit)",
       "512MB",
-      "512 MB"
+      "1GB"
     ]
   },
   {
     "id": 7,
-    "keyword": "Datadog",
-    "sentence": "We use Datadog for APM tracing.",
+    "keyword": "Datadog APM",
+    "sentence": "We use Datadog APM for tracing, alongside legacy Prometheus metrics.",
     "type": "software",
     "turn": 15,
     "embed_variants": [
-      "Datadog"
+      "Datadog APM",
+      "Datadog",
+      "Prometheus"
     ]
   },
   {
     "id": 8,
-    "keyword": "NODE_ENV=production",
-    "sentence": "You must set NODE_ENV=production.",
+    "keyword": "NODE_ENV=production-v2",
+    "sentence": "You must set NODE_ENV=production-v2 for the new deployment pipeline.",
     "type": "config",
     "turn": 17,
     "embed_variants": [
-      "NODE_ENV=production",
+      "NODE_ENV=production-v2",
+      "production-v2",
       "production"
     ]
   },
   {
     "id": 9,
-    "keyword": "Team Alpha",
-    "sentence": "The service is owned by Team Alpha.",
+    "keyword": "Team Alpha-Prime",
+    "sentence": "The service is owned by Team Alpha-Prime, a split from Team Alpha.",
     "type": "team",
     "turn": 19,
     "embed_variants": [
+      "Team Alpha-Prime",
       "Team Alpha"
     ]
   },
   {
     "id": 10,
-    "keyword": "/api/v2/process",
-    "sentence": "The critical endpoint is /api/v2/process.",
+    "keyword": "/api/v2/process/status",
+    "sentence": "The critical endpoint is /api/v2/process/status, not the old /api/v2/process.",
     "type": "endpoint",
     "turn": 21,
     "embed_variants": [
+      "/api/v2/process/status",
       "/api/v2/process"
     ]
   }
