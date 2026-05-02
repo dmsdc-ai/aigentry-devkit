@@ -1,0 +1,6 @@
+{
+  "fixture": "H11",
+  "primary_metric": {
+    "pass_threshold": 0.66
+  }
+}

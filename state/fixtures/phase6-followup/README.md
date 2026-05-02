@@ -11,7 +11,7 @@ Replaces ceiling fixtures H2, H3, and H5 with 4 new domain-diverse fixtures aimi
 
 ## Q3 Compliance (Format Exemption)
 Each fixture explicitly documents format exemption rules in its `metadata.json`. Graders for these fixtures MUST implement a canonicalization pre-step:
-- **H11**: Normalizes JSON, YAML, and markdown tables into relation tuples.
+- **H11**: Normalizes JSON and markdown tables into relation tuples.
 - **H12**: Evaluates pure semantic presence of facts, disregarding list styles or paragraphs.
 - **H13**: Parses content interchangeably as JSON or YAML, stripping code blocks.
 - **H14**: Extracts tool sequence via regex, ignoring any backticks or numbering (explicitly avoiding the NB3 trap).

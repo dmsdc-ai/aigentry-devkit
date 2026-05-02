@@ -14,8 +14,24 @@
     {
       "id": "B1",
       "severity": "Critical",
-      "must_cite_line_any_of": [49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63],
-      "label": "External HTTP (slack/sms/email) issued inside db_session() transaction (lines 50-63) — violates OPS-4192 policy.",
+      "must_cite_line_any_of": [
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63
+      ],
+      "label": "External HTTP (slack/sms/email) issued inside db_session() transaction (lines 50-63) \u2014 violates OPS-4192 policy.",
       "match_regex_any_of": [
         "(transaction|db_session|tx).{0,40}(http|external|requests|slack|sms|email|i/o)",
         "(http|external|requests|slack|sms|email|i/o).{0,40}(transaction|db_session|tx)",
@@ -26,8 +42,10 @@
     {
       "id": "B2",
       "severity": "High",
-      "must_cite_line_any_of": [9],
-      "label": "Slack webhook URL loaded directly from os.environ at module import (line 9) — violates vault lazy-load policy.",
+      "must_cite_line_any_of": [
+        9
+      ],
+      "label": "Slack webhook URL loaded directly from os.environ at module import (line 9) \u2014 violates vault lazy-load policy.",
       "match_regex_any_of": [
         "vault.{0,40}(lazy|load|secret)",
         "(env|environ).{0,40}(secret|webhook|slack)",
@@ -38,8 +56,18 @@
     {
       "id": "B3",
       "severity": "High",
-      "must_cite_line_any_of": [15, 16, 17, 18, 19, 20, 21, 22, 23],
-      "label": "Slack POST retry has no idempotency-key (line 18) — duplicate sends on transient failure.",
+      "must_cite_line_any_of": [
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23
+      ],
+      "label": "Slack POST retry has no idempotency-key (line 18) \u2014 duplicate sends on transient failure.",
       "match_regex_any_of": [
         "idempotency[\\s\\-_]*key",
         "duplicate.{0,30}(send|post|notification)",
@@ -49,8 +77,11 @@
     {
       "id": "B4",
       "severity": "High",
-      "must_cite_line_any_of": [27, 61],
-      "label": "PII (phone, email body, message body) logged unmasked (lines 27, 61) — mask_pii not applied.",
+      "must_cite_line_any_of": [
+        27,
+        61
+      ],
+      "label": "PII (phone, email body, message body) logged unmasked (lines 27, 61) \u2014 mask_pii not applied.",
       "match_regex_any_of": [
         "mask_pii",
         "PII.{0,30}(log|leak|unmasked|plaintext)",
@@ -60,8 +91,11 @@
     {
       "id": "B5",
       "severity": "High",
-      "must_cite_line_any_of": [15, 18],
-      "label": "_post_slack has no timeout on requests.post (line 18) — can hang indefinitely.",
+      "must_cite_line_any_of": [
+        15,
+        18
+      ],
+      "label": "_post_slack has no timeout on requests.post (line 18) \u2014 can hang indefinitely.",
       "match_regex_any_of": [
         "timeout.{0,30}(missing|absent|not\\s*set|none|0)",
         "(no|missing|without)\\s*timeout",
@@ -71,8 +105,20 @@
     {
       "id": "B6",
       "severity": "Medium",
-      "must_cite_line_any_of": [37, 38, 39, 40, 41, 42, 43, 44, 35, 45, 46],
-      "label": "Line numbering jumps backwards from 44 → 35 in _post_email (lines 35/45) — broken diff or copy-paste error; production file has gap.",
+      "must_cite_line_any_of": [
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        35,
+        45,
+        46
+      ],
+      "label": "Line numbering jumps backwards from 44 \u2192 35 in _post_email (lines 35/45) \u2014 broken diff or copy-paste error; production file has gap.",
       "match_regex_any_of": [
         "line\\s*number.{0,20}(skip|jump|out\\s*of\\s*order|gap|backward)",
         "(35|45).{0,20}(after|follow|jump|gap)",
@@ -84,7 +130,7 @@
     {
       "id": "D1",
       "line": 11,
-      "label": "SMTP_HOST is a hardcoded HOST not a SECRET — legitimately fine to be a constant; flagging it as a 'magic value' is a style preference, not a bug.",
+      "label": "SMTP_HOST is a hardcoded HOST not a SECRET \u2014 legitimately fine to be a constant; flagging it as a 'magic value' is a style preference, not a bug.",
       "fp_regex_any_of": [
         "SMTP_HOST.{0,30}(magic|hardcoded|secret|env)",
         "constant.{0,20}should\\s*be\\s*config"
@@ -93,7 +139,7 @@
     {
       "id": "D2",
       "line": 52,
-      "label": ".get(user_id) returning None handled correctly at line 52 — flagging this as 'silent failure' is wrong, it's an explicit None check.",
+      "label": ".get(user_id) returning None handled correctly at line 52 \u2014 flagging this as 'silent failure' is wrong, it's an explicit None check.",
       "fp_regex_any_of": [
         "(line\\s*52|user\\s*not\\s*found).{0,60}silent",
         "(line\\s*52|user\\s*not\\s*found).{0,60}fail.{0,20}silent",
@@ -117,8 +163,12 @@
     "pass_threshold": 0.55
   },
   "output_structure_checks": {
-    "must_contain_all": ["|", "Severity", "Line"],
-    "table_required": true,
-    "description": "Output must be a markdown table with at minimum ID|Line|Severity|Issue|Fix columns."
+    "must_contain_all": [
+      "|",
+      "Severity",
+      "Line"
+    ],
+    "table_required": false,
+    "description": "Output structure is flexible (format is non-scoring), but should clearly identify ID, Line, Severity, Issue, and Fix."
   }
 }
