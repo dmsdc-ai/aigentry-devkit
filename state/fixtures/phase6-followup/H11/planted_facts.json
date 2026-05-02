@@ -30,5 +30,77 @@
       "09:45",
       "9:45"
     ]
+  },
+  {
+    "id": 4,
+    "keyword": "auth-api",
+    "sentence": "The affected service is auth-api.",
+    "type": "service",
+    "turn": 9,
+    "embed_variants": [
+      "auth-api"
+    ]
+  },
+  {
+    "id": 5,
+    "keyword": "us-west-2",
+    "sentence": "The incident occurred in the us-west-2 region.",
+    "type": "region",
+    "turn": 11,
+    "embed_variants": [
+      "us-west-2"
+    ]
+  },
+  {
+    "id": 6,
+    "keyword": "503 errors",
+    "sentence": "We saw a spike in 503 errors.",
+    "type": "metric",
+    "turn": 13,
+    "embed_variants": [
+      "503 errors",
+      "503"
+    ]
+  },
+  {
+    "id": 7,
+    "keyword": "45 minutes",
+    "sentence": "The total downtime was 45 minutes.",
+    "type": "duration",
+    "turn": 15,
+    "embed_variants": [
+      "45 minutes",
+      "45 mins"
+    ]
+  },
+  {
+    "id": 8,
+    "keyword": "bad deployment",
+    "sentence": "The root cause was identified as a bad deployment.",
+    "type": "root_cause",
+    "turn": 17,
+    "embed_variants": [
+      "bad deployment"
+    ]
+  },
+  {
+    "id": 9,
+    "keyword": "#incidents-p1",
+    "sentence": "Communication happened in the #incidents-p1 Slack channel.",
+    "type": "channel",
+    "turn": 19,
+    "embed_variants": [
+      "#incidents-p1"
+    ]
+  },
+  {
+    "id": 10,
+    "keyword": "JIRA-8891",
+    "sentence": "The tracking ticket is JIRA-8891.",
+    "type": "ticket",
+    "turn": 21,
+    "embed_variants": [
+      "JIRA-8891"
+    ]
   }
 ]

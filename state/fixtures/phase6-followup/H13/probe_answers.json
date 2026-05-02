@@ -23,5 +23,63 @@
     "accept_variants": [
       "Cloudflare"
     ]
+  },
+  {
+    "q_idx": 4,
+    "fact_id": 4,
+    "answer": "150 nodes",
+    "accept_variants": [
+      "150 nodes",
+      "150"
+    ]
+  },
+  {
+    "q_idx": 5,
+    "fact_id": 5,
+    "answer": "m5.2xlarge",
+    "accept_variants": [
+      "m5.2xlarge"
+    ]
+  },
+  {
+    "q_idx": 6,
+    "fact_id": 6,
+    "answer": "1.27",
+    "accept_variants": [
+      "1.27"
+    ]
+  },
+  {
+    "q_idx": 7,
+    "fact_id": 7,
+    "answer": "Cilium",
+    "accept_variants": [
+      "Cilium"
+    ]
+  },
+  {
+    "q_idx": 8,
+    "fact_id": 8,
+    "answer": "4Gi",
+    "accept_variants": [
+      "4Gi",
+      "4 GB"
+    ]
+  },
+  {
+    "q_idx": 9,
+    "fact_id": 9,
+    "answer": "infra-manifests",
+    "accept_variants": [
+      "infra-manifests"
+    ]
+  },
+  {
+    "q_idx": 10,
+    "fact_id": 10,
+    "answer": "ArgoCD",
+    "accept_variants": [
+      "ArgoCD"
+    ]
   }
 ]

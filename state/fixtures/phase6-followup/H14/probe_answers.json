@@ -26,5 +26,64 @@
       "RB-884",
       "RB884"
     ]
+  },
+  {
+    "q_idx": 4,
+    "fact_id": 4,
+    "answer": "WARN",
+    "accept_variants": [
+      "WARN"
+    ]
+  },
+  {
+    "q_idx": 5,
+    "fact_id": 5,
+    "answer": "3 times",
+    "accept_variants": [
+      "3 times",
+      "3"
+    ]
+  },
+  {
+    "q_idx": 6,
+    "fact_id": 6,
+    "answer": "512MB",
+    "accept_variants": [
+      "512MB",
+      "512 MB"
+    ]
+  },
+  {
+    "q_idx": 7,
+    "fact_id": 7,
+    "answer": "Datadog",
+    "accept_variants": [
+      "Datadog"
+    ]
+  },
+  {
+    "q_idx": 8,
+    "fact_id": 8,
+    "answer": "NODE_ENV=production",
+    "accept_variants": [
+      "NODE_ENV=production",
+      "production"
+    ]
+  },
+  {
+    "q_idx": 9,
+    "fact_id": 9,
+    "answer": "Team Alpha",
+    "accept_variants": [
+      "Team Alpha"
+    ]
+  },
+  {
+    "q_idx": 10,
+    "fact_id": 10,
+    "answer": "/api/v2/process",
+    "accept_variants": [
+      "/api/v2/process"
+    ]
   }
 ]

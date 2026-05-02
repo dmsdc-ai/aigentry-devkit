@@ -30,5 +30,79 @@
       "Postgres 15",
       "PostgreSQL"
     ]
+  },
+  {
+    "id": 4,
+    "keyword": "October 12th",
+    "sentence": "The next board meeting is on October 12th.",
+    "type": "date",
+    "turn": 9,
+    "embed_variants": [
+      "October 12th",
+      "Oct 12"
+    ]
+  },
+  {
+    "id": 5,
+    "keyword": "250 TB",
+    "sentence": "Our current S3 storage usage is 250 TB.",
+    "type": "metric",
+    "turn": 11,
+    "embed_variants": [
+      "250 TB",
+      "250TB"
+    ]
+  },
+  {
+    "id": 6,
+    "keyword": "David",
+    "sentence": "The new CFO is David.",
+    "type": "person",
+    "turn": 13,
+    "embed_variants": [
+      "David"
+    ]
+  },
+  {
+    "id": 7,
+    "keyword": "12%",
+    "sentence": "Q3 revenue growth was 12%.",
+    "type": "metric",
+    "turn": 15,
+    "embed_variants": [
+      "12%"
+    ]
+  },
+  {
+    "id": 8,
+    "keyword": "Tableau",
+    "sentence": "We use Tableau for BI reporting.",
+    "type": "software",
+    "turn": 17,
+    "embed_variants": [
+      "Tableau"
+    ]
+  },
+  {
+    "id": 9,
+    "keyword": "SOC2 compliance",
+    "sentence": "The Q4 security goal is SOC2 compliance.",
+    "type": "goal",
+    "turn": 19,
+    "embed_variants": [
+      "SOC2 compliance",
+      "SOC2"
+    ]
+  },
+  {
+    "id": 10,
+    "keyword": "Project Phoenix",
+    "sentence": "The internal code name is Project Phoenix.",
+    "type": "project",
+    "turn": 21,
+    "embed_variants": [
+      "Project Phoenix",
+      "Phoenix"
+    ]
   }
 ]

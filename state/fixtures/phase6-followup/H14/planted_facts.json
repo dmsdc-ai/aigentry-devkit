@@ -30,5 +30,78 @@
       "RB884",
       "RB-884"
     ]
+  },
+  {
+    "id": 4,
+    "keyword": "WARN",
+    "sentence": "The default log level is set to WARN.",
+    "type": "config",
+    "turn": 9,
+    "embed_variants": [
+      "WARN"
+    ]
+  },
+  {
+    "id": 5,
+    "keyword": "3 times",
+    "sentence": "The max connection retry count is 3 times.",
+    "type": "config",
+    "turn": 11,
+    "embed_variants": [
+      "3 times",
+      "3"
+    ]
+  },
+  {
+    "id": 6,
+    "keyword": "512MB",
+    "sentence": "The OOM kill threshold is 512MB.",
+    "type": "config",
+    "turn": 13,
+    "embed_variants": [
+      "512MB",
+      "512 MB"
+    ]
+  },
+  {
+    "id": 7,
+    "keyword": "Datadog",
+    "sentence": "We use Datadog for APM tracing.",
+    "type": "software",
+    "turn": 15,
+    "embed_variants": [
+      "Datadog"
+    ]
+  },
+  {
+    "id": 8,
+    "keyword": "NODE_ENV=production",
+    "sentence": "You must set NODE_ENV=production.",
+    "type": "config",
+    "turn": 17,
+    "embed_variants": [
+      "NODE_ENV=production",
+      "production"
+    ]
+  },
+  {
+    "id": 9,
+    "keyword": "Team Alpha",
+    "sentence": "The service is owned by Team Alpha.",
+    "type": "team",
+    "turn": 19,
+    "embed_variants": [
+      "Team Alpha"
+    ]
+  },
+  {
+    "id": 10,
+    "keyword": "/api/v2/process",
+    "sentence": "The critical endpoint is /api/v2/process.",
+    "type": "endpoint",
+    "turn": 21,
+    "embed_variants": [
+      "/api/v2/process"
+    ]
   }
 ]
