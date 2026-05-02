@@ -1040,6 +1040,23 @@ _H1_CANONICALIZER_VARIANTS: tuple[str, ...] = (
     "json_array_of_review_rows",
     "bullet_or_numbered_list_of_review_rows",
 )
+# m1 (codex MINOR 1 / triage m1): the four declared variants above are the
+# DELIBERATELY BOUNDED equivalence surface for H1 NB3 per Q3 ADR §2.4.1
+# reviewer-checklist item "Equivalence-surface declaration". HTML <table>,
+# CSV/TSV, and XML/semantic-table renderings are real-world variants that an
+# honest agent might emit but are intentionally NOT canonicalized here:
+#
+#   - HTML table: requires an html.parser dependency to safely strip tags +
+#     extract row content. Article 17 무의존 (Python stdlib only) discourages
+#     html.parser usage for a defensive variant H1 prompt does not request.
+#   - CSV/TSV: ambiguous separator semantics (commas inside issue prose vs
+#     between columns) yield brittle row recovery; the H1 prompt explicitly
+#     guides the agent toward markdown/json/list, not CSV.
+#   - XML / semantic <table>: superset of HTML's complexity without payoff.
+#
+# Any future fixture whose pedagogical intent specifically scores HTML / CSV /
+# XML format-equivalence MUST extend this tuple AND add adversarial tests per
+# variant; do not silently widen the H1 surface.
 
 
 def _canonicalize_h1_review_rows(text: str) -> tuple[list[dict], str]:
@@ -1095,7 +1112,7 @@ def _canonicalize_h1_review_rows(text: str) -> tuple[list[dict], str]:
 
 
 def _label_marker_regex(label: str) -> re.Pattern[str]:
-    """H8: tolerate the label surface real agents emit.
+    r"""H8: tolerate the label surface real agents emit.
 
     Accepted forms (MULTILINE-anchored at line start):
       - `(a)`                      — plain parens (pre-H8 baseline)
@@ -1110,6 +1127,9 @@ def _label_marker_regex(label: str) -> re.Pattern[str]:
 
     The optional `#{1,6}\s+` prefix is applied as an outer non-capturing
     group so all pre-existing combinations continue to match unchanged.
+    (m3: docstring promoted to raw-string so Python 3.14's invalid-escape
+    SyntaxWarning on the literal `\s+` token in this comment is silenced —
+    triage `2026-05-02-phase6-grader-triage.md` §3 row m3.)
 
     The trailing-punctuation branch requires a `)`, `.`, or `:` after the
     label (with optional bold markers) so prose lines that simply start
@@ -2022,6 +2042,15 @@ def score_h10_strict_instruction_following(agent_output: str, ground_truth: dict
     Each constraint is mechanically checkable from `agent_output` alone. The
     rubric is fixed by `ground_truth.constraints[*].type`; this function is a
     type→checker dispatcher. No LLM judge.
+
+    formatting_exempt_status: ``grandfathered`` per Q3 ADR
+    `2026-05-02-output-style-fixture-design-rule.md` §2.3 row 3 + §11 registry
+    entry (expiry 2026-08-01, ``lint_allow_status_grandfathered: true``). H10
+    is a strict-instruction-following fixture where formatting tokens (H2
+    titles, comma-grouped digits, exact-last-line) ARE the scoring surface,
+    so a normalizing canonicalizer would defeat the test. Migration deferred
+    to next natural patch occasion or Phase 7 hard deadline (B3 / triage
+    `2026-05-02-phase6-grader-triage.md` §3 row B3 / codex C5 finding).
     """
     text = agent_output or ""
 
@@ -2029,7 +2058,7 @@ def score_h10_strict_instruction_following(agent_output: str, ground_truth: dict
     # vacuously-passing negative constraints (regex_must_not_match). Reject before
     # rubric runs so score is monotonic in actual content.
     if len(text.strip()) < 20:
-        return {
+        early = {
             "fixture": ground_truth.get("fixture", "H10"),
             "constraints_total": len(ground_truth.get("constraints") or []),
             "constraints_passed": 0,
@@ -2038,6 +2067,8 @@ def score_h10_strict_instruction_following(agent_output: str, ground_truth: dict
             "primary_score": 0.0,
             "empty_output_rejection": True,
         }
+        early.update(_emit_formatting_exempt_status("grandfathered"))
+        return early
 
     prose = _h10_extract_prose(text)
     constraint_results: list[dict] = []
@@ -2183,7 +2214,7 @@ def score_h10_strict_instruction_following(agent_output: str, ground_truth: dict
     # retained for backward-compat reporting only.
     failed_constraint_ids = [c["id"] for c in constraint_results if not c["passed"]]
 
-    return {
+    result = {
         "fixture": ground_truth.get("fixture", "H10"),
         "constraints_total": n,
         "constraints_passed": n_pass,
@@ -2193,6 +2224,8 @@ def score_h10_strict_instruction_following(agent_output: str, ground_truth: dict
         "primary_pass": (n_pass == n),
         "primary_score": primary_score,
     }
+    result.update(_emit_formatting_exempt_status("grandfathered"))
+    return result
 
 
 def score_h1_long_form_code_review(agent_output: str, ground_truth: dict) -> dict:
@@ -2272,17 +2305,23 @@ def score_h1_long_form_code_review(agent_output: str, ground_truth: dict) -> dic
 
     struct_cfg = ground_truth.get("output_structure_checks") or {}
     must_all_tokens = [str(s).lower() for s in struct_cfg.get("must_contain_all") or []]
-    if source_format == "markdown_pipe_table":
-        # Baseline path: keep the original literal-token check so existing
-        # markdown-table outputs grade identically to pre-patch behavior.
+    table_required = bool(struct_cfg.get("table_required", False))
+    if table_required and source_format == "markdown_pipe_table":
+        # Legacy path retained ONLY for fixture variants that still set
+        # `table_required: true`. The H1 prompt was amended (dustcraw commit
+        # 011e94e) to make table format non-scoring per user Q1=(a) — current
+        # H1 ground_truth carries `table_required: false`, so this branch is
+        # not exercised by H1 today but is preserved for any future fixture
+        # whose pedagogical intent IS the table surface.
         structure_ok = all(tok in text.lower() for tok in must_all_tokens) and bool(rows)
     else:
-        # NB3 patch (ADR §2.1 bullet-vs-numbered-list equivalence): for
-        # structurally-equivalent variants the canonicalizer already validated
-        # the per-issue field surface (id+line+severity+content). The literal
-        # `must_contain_all` tokens (e.g., '|' for pipe-table typography) are
-        # the wrong proxy for structural correctness on these variants, so
-        # `structure_ok` collapses to the row-non-empty signal.
+        # M2 (Q1=a) + ADR §2.1 bullet-vs-numbered-list equivalence: format is
+        # non-scoring, so the literal `must_contain_all` tokens (e.g. '|' for
+        # pipe-table typography) are NOT a structural-correctness proxy. The
+        # canonicalizer already validated the per-issue field surface
+        # (id+line+severity+content) regardless of source variant; structure_ok
+        # collapses uniformly to the row-non-empty signal across all variants.
+        # codex MAJOR 2 / triage M2 path (a) fix.
         structure_ok = bool(rows)
 
     pass_threshold = float(((ground_truth.get("primary_metric") or {}).get("pass_threshold")) or 1.0)
@@ -2765,29 +2804,119 @@ def _canonicalize_h11_pairs_text(text: str) -> tuple[str, str]:
     return text, "raw_text"
 
 
+_H11_BULLET_RE = re.compile(r"\s*(?:[-*•]|\d+[.)])\s+\S")
+_H11_TABLE_SEP_RE = re.compile(r"[\s\-:|]+")
+
+
+def _split_h11_entries(text: str) -> list[str]:
+    """Split candidate text into per-pair entries (rows / objects / bullets / lines).
+
+    Each entry is the substring covering one (Component, Root-Cause) candidate.
+    The H11 grader credits a pair only when the component AND its cause keyword
+    appear within the SAME entry — this defeats globally-swapped mappings that
+    the pre-r2 single-pass regex falsely scored 1.0 (codex BLOCKER 2 / triage
+    `2026-05-02-phase6-grader-triage.md` §3 row B2).
+
+    Detection priority is structural-strongest → weakest: JSON object/array,
+    markdown pipe table, bullet/numbered list, line, sentence. Auto-detect is
+    used (rather than `source_format` from the canonicalizer) so a payload
+    fenced as raw_text but containing JSON inside still splits per-object.
+    """
+    if not text:
+        return []
+    stripped = text.strip()
+
+    if stripped.startswith(("[", "{")):
+        try:
+            blob = json.loads(stripped)
+        except (ValueError, TypeError):
+            blob = None
+        items: list | None = None
+        if isinstance(blob, list):
+            items = blob
+        elif isinstance(blob, dict):
+            for key in ("pairs", "components", "rows", "items", "results", "findings"):
+                inner = blob.get(key)
+                if isinstance(inner, list):
+                    items = inner
+                    break
+        if items:
+            return [
+                json.dumps(it, ensure_ascii=False) if not isinstance(it, str) else it
+                for it in items
+            ]
+
+    pipe_lines = [ln for ln in text.splitlines() if ln.lstrip().startswith("|")]
+    if len(pipe_lines) >= 2:
+        rows: list[str] = []
+        for ln in pipe_lines:
+            cols_only = ln.strip().strip("|")
+            if _H11_TABLE_SEP_RE.fullmatch(cols_only or "-"):
+                continue
+            rows.append(ln.strip())
+        if rows:
+            return rows
+
+    if any(_H11_BULLET_RE.match(ln) for ln in text.splitlines()):
+        bullets: list[str] = []
+        cur: list[str] = []
+        for ln in text.splitlines():
+            if _H11_BULLET_RE.match(ln):
+                if cur:
+                    bullets.append("\n".join(cur).strip())
+                cur = [ln]
+            elif cur:
+                cur.append(ln)
+        if cur:
+            bullets.append("\n".join(cur).strip())
+        if bullets:
+            return bullets
+
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if len(lines) > 1:
+        return lines
+
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s.strip()]
+    return sentences or [text]
+
+
 def score_h11_structured_data_extraction(agent_output: str, ground_truth: dict) -> dict:
     """H11 — count of (Component, Root-Cause) pairs recovered from any format.
 
     primary_score = matched_pairs / 3 (continuous fraction; fixture target
-    band μq ∈ [0.5, 0.85] is naturally hit at 2/3 partial credit).
+    band μq ∈ [0.5, 0.85] is naturally hit at 2/3 partial credit). Pairs are
+    matched **per-entry** (a row, JSON object, bullet item, or sentence) so a
+    swapped mapping like `CheckoutService → OOM` does NOT match P1 (P1's cause
+    regex is PaymentGateway/timeout, which would have to live in the same
+    entry as `CheckoutService` to score). codex BLOCKER 2 / triage B2 fix.
     """
     text = agent_output or ""
     canonical_text, source_format = _canonicalize_h11_pairs_text(text)
+    entries = _split_h11_entries(canonical_text)
 
     pair_results: list[dict] = []
     matched_ids: list[str] = []
     for pair in _H11_PAIRS:
-        comp_hit = bool(re.search(pair["component_regex"], canonical_text, re.IGNORECASE))
-        cause_hit = comp_hit and bool(_regex_any_hit(
-            canonical_text, pair["root_cause_regex_any_of"]
-        ))
-        passed = comp_hit and cause_hit
+        matched_entry_idx: int | None = None
+        comp_anywhere = False
+        cause_anywhere = False
+        for idx, entry in enumerate(entries):
+            comp_h = bool(re.search(pair["component_regex"], entry, re.IGNORECASE))
+            cause_h = bool(_regex_any_hit(entry, pair["root_cause_regex_any_of"]))
+            if comp_h:
+                comp_anywhere = True
+            if cause_h:
+                cause_anywhere = True
+            if comp_h and cause_h and matched_entry_idx is None:
+                matched_entry_idx = idx
+        passed = matched_entry_idx is not None
         if passed:
             matched_ids.append(pair["id"])
         pair_results.append({
             "id": pair["id"],
-            "component_hit": comp_hit,
-            "cause_hit": cause_hit,
+            "component_hit": comp_anywhere,
+            "cause_hit": cause_anywhere,
+            "matched_entry_index": matched_entry_idx,
             "passed": passed,
         })
 
@@ -2804,6 +2933,7 @@ def score_h11_structured_data_extraction(agent_output: str, ground_truth: dict) 
         "matched_pair_ids": matched_ids,
         "pairs_total": n_pairs,
         "pairs_matched": len(matched_ids),
+        "entries_total": len(entries),
         "output_format_source": source_format,
         "primary_pass": primary_pass,
         "primary_score": primary_score,
@@ -2817,6 +2947,10 @@ def score_h11_structured_data_extraction(agent_output: str, ground_truth: dict) 
             "test_h11_grader_full_credit_on_three_pairs",
             "test_h11_grader_partial_credit_on_two_pairs",
             "test_h11_grader_format_invariant_json_vs_markdown",
+            "test_h11_grader_swapped_pairs_score_below_one_table",
+            "test_h11_grader_swapped_pairs_score_below_one_json",
+            "test_h11_grader_swapped_pairs_score_below_one_bullets",
+            "test_h11_grader_negative_unrelated_prose_scores_zero",
         ],
     ))
     return result
@@ -2846,12 +2980,18 @@ _H12_TAKEAWAYS = (
     },
     {
         "id": "T3",
+        # M4 (codex MAJOR 4 / triage M4): the prior `cluster` alternation in
+        # pattern 2 over-credited "Redis cluster" alone with no scaling action.
+        # T3 now requires an actual scaling/expansion verb (scal*/expand/grow/
+        # 확장/증설) — `cluster` is a noun that names the resource, not a
+        # mitigation. DB-load conditionality is preferred via patterns 3-4 but
+        # not strictly required (the takeaway accepts unconditional scaling).
         "label": "Scale Redis cluster if DB load increases",
         "regex_any_of": [
-            r"(?:scal|확장|증설).{0,40}Redis",
-            r"Redis.{0,40}(?:scal|확장|증설|cluster)",
-            r"DB\s*load.{0,40}(?:scal|확장|증설|증가)",
-            r"(?:DB|database).{0,40}(?:load|부하).{0,40}(?:scal|확장|증설)",
+            r"(?:scal|expand|grow|확장|증설).{0,40}Redis",
+            r"Redis(?:\s*\S+){0,3}.{0,40}(?:scal|expand|grow|확장|증설)",
+            r"DB\s*load.{0,40}(?:scal|expand|grow|확장|증설|증가)",
+            r"(?:DB|database).{0,40}(?:load|부하).{0,40}(?:scal|expand|grow|확장|증설)",
         ],
     },
 )
@@ -2957,6 +3097,30 @@ _H13_VARIANTS: tuple[str, ...] = (
 )
 
 
+def _strip_inline_backticks(text: str) -> str:
+    """Strip a single pair of leading/trailing single backticks.
+
+    Wrapped JSON like an inline-backticked routes blob is structurally
+    equivalent to the raw form per H13 fixture metadata `format_exemption_rules`
+    ("Grader MUST strip backticks and attempt parsing as JSON, then YAML").
+    This helper handles the inline (single-backtick) variant; the triple-
+    backtick fence is stripped separately by `_FENCE_RE`. codex MAJOR 5 /
+    triage M5 fix.
+    """
+    if not text:
+        return text
+    s = text.strip()
+    if (
+        len(s) >= 2
+        and s.startswith("`")
+        and s.endswith("`")
+        and not s.startswith("```")
+        and not s.endswith("```")
+    ):
+        return s[1:-1]
+    return text
+
+
 def _try_parse_h13_json(candidate: str) -> dict | None:
     candidate = candidate.strip()
     if not candidate or candidate[0] not in "[{":
@@ -2994,19 +3158,23 @@ def _try_parse_h13_yaml(candidate: str) -> list[dict] | None:
 
 
 def _canonicalize_h13_routes(text: str) -> tuple[list[dict], str]:
-    """Parse routes from JSON or YAML, with or without code-fence wrappers.
+    """Parse routes from JSON or YAML, with or without code-fence/backtick wrappers.
 
     Returns (routes, source_format) where routes is the list of route dicts
     (each with 'path' and 'backend' keys) and source_format ∈ _H13_VARIANTS.
 
     Equivalence-surface declaration:
       Variants normalized: raw_json, fenced_json, raw_yaml, fenced_yaml.
+        Inline single-backtick wrappers around an entire routes payload are
+        stripped before format detection per fixture metadata
+        `format_exemption_rules` (codex MAJOR 5 / triage M5).
       Variants intentionally NOT normalized: path strings ('/api/v1'
         vs '/api/v2' are different) and backend names — these are the
         scoring surface itself.
     """
     if not text:
         return [], "raw_json"
+    text = _strip_inline_backticks(text)
     fenced = _FENCE_RE.match(text)
     inner = fenced.group("body") if fenced else text
 
@@ -3030,8 +3198,13 @@ def _canonicalize_h13_routes(text: str) -> tuple[list[dict], str]:
 def score_h13_schema_strict_routes(agent_output: str, ground_truth: dict) -> dict:
     """H13 — routes-array correctness, JSON or YAML accepted as equivalent.
 
-    primary_score = matched_routes / 2 (two required routes; partial credit
-    of 0.5 for one route correct hits the q ∈ [0.5, 0.85] band).
+    primary_score = max(0, (matched - 0.5 * extras)) / required_count.
+    Two required routes; partial credit of 0.5 for one route correct hits the
+    q ∈ [0.5, 0.85] band. Genuine extras (route paths NOT in the required set,
+    e.g. an unsolicited `/admin`) incur a 0.5-credit penalty each per the
+    fixture's schema-strict-output domain — codex MAJOR 5 / triage M5 fix.
+    Wrong-backend routes that target a required path are NOT counted as
+    extras (they are mis-aimed-required, already missing from `matched`).
     """
     text = agent_output or ""
     routes, source_format = _canonicalize_h13_routes(text)
@@ -3051,12 +3224,19 @@ def score_h13_schema_strict_routes(agent_output: str, ground_truth: dict) -> dic
             "passed": ok,
         })
 
+    required_paths = {r["path"] for r in _H13_REQUIRED_ROUTES}
+    extras: list[dict] = [
+        r for r in routes
+        if r.get("path") not in required_paths
+    ]
     n_routes = len(_H13_REQUIRED_ROUTES)
-    primary_score = round(_clamp01(len(matched) / n_routes), 4)
+    extras_penalty = 0.5 * len(extras)
+    raw = (len(matched) - extras_penalty) / n_routes if n_routes else 0.0
+    primary_score = round(_clamp01(raw), 4)
     pass_threshold = float(
         ((ground_truth or {}).get("primary_metric") or {}).get("pass_threshold", 0.5)
     )
-    primary_pass = primary_score >= pass_threshold and bool(routes)
+    primary_pass = primary_score >= pass_threshold and bool(routes) and not extras
 
     result = {
         "fixture": (ground_truth or {}).get("fixture", "H13"),
@@ -3064,6 +3244,8 @@ def score_h13_schema_strict_routes(agent_output: str, ground_truth: dict) -> dic
         "routes_parsed": routes,
         "routes_total": n_routes,
         "routes_matched": len(matched),
+        "extras": extras,
+        "extras_count": len(extras),
         "output_format_source": source_format,
         "primary_pass": primary_pass,
         "primary_score": primary_score,
@@ -3077,6 +3259,9 @@ def score_h13_schema_strict_routes(agent_output: str, ground_truth: dict) -> dic
             "test_h13_grader_full_credit_both_routes",
             "test_h13_grader_partial_credit_one_route",
             "test_h13_grader_yaml_equivalent_to_json",
+            "test_h13_grader_inline_backtick_json_strips_to_full_credit",
+            "test_h13_grader_extra_route_penalized_under_schema_strict",
+            "test_h13_grader_invalid_input_yields_zero",
         ],
     ))
     return result
@@ -3084,9 +3269,73 @@ def score_h13_schema_strict_routes(agent_output: str, ground_truth: dict) -> dic
 
 # ─── H14: agentic-multi-step-tool-use (4-tool ordered sequence)
 _H14_REQUIRED_SEQUENCE = ("grep_logs", "read_metrics", "list_threads", "restart_process")
+_H14_KNOWN_TOOLS = frozenset(_H14_REQUIRED_SEQUENCE)
 _H14_TOOL_PATTERN = re.compile(
     r"\b(read_metrics|restart_process|list_threads|grep_logs)\b"
 )
+_H14_BACKTICK_TOKEN_RE = re.compile(r"`([a-z][a-z0-9_]+)`")
+_H14_LIST_LINE_RE = re.compile(r"^\s*(?:\d+[.)]|[-*•])\s+([a-z][a-z0-9_]+)", re.MULTILINE)
+_H14_CSV_TOKEN_RE = re.compile(r"(?:^|[,\n])\s*([a-z][a-z0-9_]+)\s*(?:,|$)", re.MULTILINE)
+
+
+def _detect_h14_unknown_tools(text: str) -> list[str]:
+    """Return distinct snake_case tool-call-shaped tokens NOT in H14 palette.
+
+    Scans backtick-wrapped tokens, numbered/bulleted line-starts, comma-
+    separated runs, and JSON array entries. Tokens without an underscore are
+    excluded to avoid false-positives on prose words ("first", "then"). Any
+    multi-token identifier outside {grep_logs, read_metrics, list_threads,
+    restart_process} is flagged so the grader can apply the palette-only
+    penalty (codex MAJOR 6 / triage M6 fix).
+    """
+    if not text:
+        return []
+    body = text
+    fenced = _FENCE_RE.match(body)
+    if fenced:
+        body = fenced.group("body")
+
+    candidates: list[str] = []
+    for m in _H14_BACKTICK_TOKEN_RE.finditer(body):
+        candidates.append(m.group(1))
+    for m in _H14_LIST_LINE_RE.finditer(body):
+        candidates.append(m.group(1))
+    for m in _H14_CSV_TOKEN_RE.finditer(body):
+        candidates.append(m.group(1))
+
+    stripped = body.strip()
+    if stripped.startswith(("[", "{")):
+        try:
+            blob = json.loads(stripped)
+            items = blob if isinstance(blob, list) else None
+            if items:
+                for entry in items:
+                    if isinstance(entry, str):
+                        m = re.search(r"\b([a-z][a-z0-9_]+)\b", entry)
+                        if m:
+                            candidates.append(m.group(1))
+                    elif isinstance(entry, dict):
+                        for v in entry.values():
+                            if isinstance(v, str):
+                                m = re.search(r"\b([a-z][a-z0-9_]+)\b", v)
+                                if m:
+                                    candidates.append(m.group(1))
+                                    break
+        except (ValueError, TypeError):
+            pass
+
+    unknown: list[str] = []
+    seen: set[str] = set()
+    for cand in candidates:
+        if cand in _H14_KNOWN_TOOLS:
+            continue
+        if "_" not in cand:
+            continue
+        if cand in seen:
+            continue
+        seen.add(cand)
+        unknown.append(cand)
+    return unknown
 _H14_VARIANTS: tuple[str, ...] = (
     "raw_text",
     "fenced_code_block",
@@ -3163,19 +3412,24 @@ def _canonicalize_h14_tool_sequence(text: str) -> tuple[list[str], str]:
 
 
 def score_h14_agentic_tool_sequence(agent_output: str, ground_truth: dict) -> dict:
-    """H14 — sequence-of-4 tool plan, ordered correctness with partial credit.
+    """H14 — sequence-of-4 tool plan, ordered correctness + palette-only constraint.
 
     Component scores:
       - palette_recall: |required ∩ extracted| / 4
       - order_correct:  longest-matching-prefix(extracted_unique, required) / 4
-    primary_score = 0.5 * palette_recall + 0.5 * order_correct.
+      - duplicate_penalty: 0.15 per duplicate palette call beyond the first.
+      - unknown_penalty:  0.30 per distinct snake_case tool-call-shape token
+                          that is NOT in the palette (codex MAJOR 6 fix).
 
-    Partial-credit shape lands the q ∈ [0.5, 0.85] band: a 4/4 set in any
-    order ≈ 0.5 (palette only); a 4/4 set in correct order = 1.0; a 3/4
-    palette + 3/4 prefix ≈ 0.75.
+    primary_score = clamp01(0.5*palette + 0.5*order - dup_pen - unknown_pen).
+
+    primary_pass requires (a) score ≥ threshold AND (b) exactly len(palette)
+    palette-matched calls AND (c) zero unknown tools — enforcing the prompt's
+    "exactly 4 tool calls" + palette-only constraint surface.
     """
     text = agent_output or ""
     extracted, source_format = _canonicalize_h14_tool_sequence(text)
+    unknown_tools = _detect_h14_unknown_tools(text)
 
     extracted_unique: list[str] = []
     seen: set[str] = set()
@@ -3183,6 +3437,7 @@ def score_h14_agentic_tool_sequence(agent_output: str, ground_truth: dict) -> di
         if name not in seen:
             extracted_unique.append(name)
             seen.add(name)
+    duplicate_count = len(extracted) - len(extracted_unique)
 
     n_required = len(_H14_REQUIRED_SEQUENCE)
     palette_hits = [name for name in _H14_REQUIRED_SEQUENCE if name in seen]
@@ -3196,11 +3451,19 @@ def score_h14_agentic_tool_sequence(agent_output: str, ground_truth: dict) -> di
             break
     order_score = _safe_div(prefix_match, n_required)
 
-    primary_score = round(_clamp01(0.5 * palette_recall + 0.5 * order_score), 4)
+    duplicate_penalty = 0.15 * duplicate_count
+    unknown_penalty = 0.30 * len(unknown_tools)
+    raw = 0.5 * palette_recall + 0.5 * order_score - duplicate_penalty - unknown_penalty
+    primary_score = round(_clamp01(raw), 4)
     pass_threshold = float(
         ((ground_truth or {}).get("primary_metric") or {}).get("pass_threshold", 0.75)
     )
-    primary_pass = primary_score >= pass_threshold
+    primary_pass = (
+        primary_score >= pass_threshold
+        and duplicate_count == 0
+        and not unknown_tools
+        and len(extracted_unique) == n_required
+    )
 
     result = {
         "fixture": (ground_truth or {}).get("fixture", "H14"),
@@ -3209,6 +3472,8 @@ def score_h14_agentic_tool_sequence(agent_output: str, ground_truth: dict) -> di
         "palette_recall": round(palette_recall, 4),
         "order_prefix_match": prefix_match,
         "order_score": round(order_score, 4),
+        "duplicate_count": duplicate_count,
+        "unknown_tools": unknown_tools,
         "required_sequence": list(_H14_REQUIRED_SEQUENCE),
         "output_format_source": source_format,
         "primary_pass": primary_pass,
@@ -3223,6 +3488,9 @@ def score_h14_agentic_tool_sequence(agent_output: str, ground_truth: dict) -> di
             "test_h14_grader_full_credit_correct_order",
             "test_h14_grader_partial_credit_unordered",
             "test_h14_grader_format_invariant_json_vs_text",
+            "test_h14_grader_duplicate_call_penalized",
+            "test_h14_grader_unknown_tool_penalized",
+            "test_h14_grader_excess_length_blocks_pass",
         ],
     ))
     return result
