@@ -1,0 +1,7 @@
+{
+  "fixture": "H12",
+  "domain": "multilingual-summarization",
+  "expected_q_range": "[0.5, 0.85]",
+  "grader_hints": "Verify the presence of 3 semantic takeaways: Redis memory issue/latency, reducing TTL to 6 hours, scaling Redis if DB load increases.",
+  "format_exemption_rules": "Format is exempt. The grader must evaluate semantic presence only. Any list marker (*, -, 1.) or paragraph structure containing the 3 facts is equivalent."
+}

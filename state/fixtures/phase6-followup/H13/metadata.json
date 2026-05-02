@@ -1,0 +1,7 @@
+{
+  "fixture": "H13",
+  "domain": "schema-strict-output",
+  "expected_q_range": "[0.5, 0.85]",
+  "grader_hints": "Parse the output as JSON or YAML and check the 'routes' array.",
+  "format_exemption_rules": "Grader MUST strip backticks and attempt parsing as JSON, then YAML. { \"routes\": [...] } in JSON is strictly equivalent to `routes: ...` in YAML."
+}

@@ -1,0 +1,7 @@
+{
+  "fixture": "H11",
+  "domain": "structured-data-extraction",
+  "expected_q_range": "[0.5, 0.85]",
+  "grader_hints": "Extract pairs of (Component, Root Cause) regardless of output format. Expects exactly 3 correct pairs for full credit.",
+  "format_exemption_rules": "Grader MUST use an equivalence pre-step. JSON objects, Markdown tables, or bullet points containing the 3 pairs are structurally equivalent and must receive full credit."
+}
