@@ -904,6 +904,196 @@ def _parse_markdown_table_rows(text: str) -> list[list[str]]:
     return rows
 
 
+# ─── H1 long-form-code-review canonicalization (ADR §2.4.2 implemented) ─────
+# H1 grader compares per-issue fields (id, line, severity, content) — not the
+# typography of the enclosing structure. Per ADR §2.1 the bullet-vs-numbered-list
+# example, structurally-equivalent variants of the same review content must
+# normalize to the same row dicts before scoring.
+_H1_OUTER_CODE_FENCE_RE = re.compile(
+    r"\A\s*```[\w\-]*\s*\n(?P<body>.*?)\n```\s*\Z",
+    re.DOTALL,
+)
+_H1_SEVERITY_RE = re.compile(r"\b(Critical|High|Medium|Low)\b", re.IGNORECASE)
+_H1_LINE_RE = re.compile(r"\bline[s]?\s*:?\s*(\d+)\b", re.IGNORECASE)
+_H1_BUG_ID_RE = re.compile(r"\b[BD]\d+\b")
+
+
+def _h1_strip_outer_code_fence(text: str) -> str:
+    """Strip a single outer ``` fence wrapping the entire text, else passthrough.
+
+    Used by the JSON-variant parser so a payload like
+
+        ```json
+        [ {"id": "B1", ...} ]
+        ```
+
+    parses identically to the raw JSON form.
+    """
+    if not text:
+        return text
+    m = _H1_OUTER_CODE_FENCE_RE.match(text)
+    if m:
+        return m.group("body")
+    return text
+
+
+def _h1_json_rows_to_dicts(blob) -> list[dict]:
+    """Convert parsed JSON to H1 row dicts.
+
+    Accepts either a top-level list-of-dicts or a dict carrying the rows under
+    one of the conventional keys (`issues`, `rows`, `findings`, `review`,
+    `items`, `bugs`). Field key lookup is case-tolerant (`id` / `ID` / `Id`).
+    """
+    items = None
+    if isinstance(blob, list):
+        items = blob
+    elif isinstance(blob, dict):
+        for key in ("issues", "rows", "findings", "review", "items", "bugs"):
+            if isinstance(blob.get(key), list):
+                items = blob[key]
+                break
+    if not items:
+        return []
+
+    def _lookup(item: dict, *names: str) -> str:
+        for n in names:
+            for variant in (n, n.lower(), n.upper(), n.title()):
+                if variant in item and item[variant] is not None:
+                    return str(item[variant])
+        return ""
+
+    out: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        out.append({
+            "id":       _lookup(item, "id").strip(),
+            "line":     _lookup(item, "line").strip(),
+            "severity": _lookup(item, "severity").strip(),
+            "issue":    _lookup(item, "issue", "description", "summary").strip(),
+            "fix":      _lookup(item, "fix", "recommended_fix", "recommendation").strip(),
+        })
+    return out
+
+
+def _parse_h1_json_review_rows(text: str) -> list[dict]:
+    """Try to parse `text` as a JSON document containing review rows.
+
+    Returns `[]` on parse failure or when the parsed shape carries no rows.
+    The outer code-fence stripper handles ```` ```json ... ``` ```` wrappers.
+    """
+    candidate = _h1_strip_outer_code_fence(text).strip()
+    if not candidate or candidate[0] not in "[{":
+        return []
+    try:
+        blob = json.loads(candidate)
+    except (ValueError, TypeError):
+        return []
+    return _h1_json_rows_to_dicts(blob)
+
+
+_H1_BULLET_PREFIX_RE = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+")
+
+
+def _parse_h1_bullet_review_rows(text: str) -> list[dict]:
+    """Parse bullet / numbered list where each item carries id+line+severity.
+
+    Conservative: only emit a row when ALL of {bug-id pattern (`B1`/`D2`/...),
+    `line N` token, severity word (Critical/High/Medium/Low)} appear in the
+    same bullet item. This guards against false-positive row extraction from
+    prose paragraphs that just happen to contain a severity word.
+    """
+    if not text:
+        return []
+    rows: list[dict] = []
+    cur_lines: list[str] = []
+
+    def _flush() -> None:
+        if not cur_lines:
+            return
+        item = "\n".join(cur_lines).strip()
+        sev_m = _H1_SEVERITY_RE.search(item)
+        line_m = _H1_LINE_RE.search(item)
+        id_m = _H1_BUG_ID_RE.search(item)
+        if sev_m and line_m and id_m:
+            rows.append({
+                "id": id_m.group(0),
+                "line": line_m.group(1),
+                "severity": sev_m.group(1).title(),
+                "issue": item,
+                "fix": item,
+            })
+
+    for line in text.splitlines():
+        if _H1_BULLET_PREFIX_RE.match(line):
+            _flush()
+            cur_lines = [line]
+        elif cur_lines:
+            cur_lines.append(line)
+    _flush()
+    return rows
+
+
+_H1_CANONICALIZER_VARIANTS: tuple[str, ...] = (
+    "markdown_pipe_table",
+    "markdown_pipe_table_in_code_fence",
+    "json_array_of_review_rows",
+    "bullet_or_numbered_list_of_review_rows",
+)
+
+
+def _canonicalize_h1_review_rows(text: str) -> tuple[list[dict], str]:
+    """Canonicalize H1 review output to row dicts; emit the variant tag.
+
+    Per ADR `2026-05-02-output-style-fixture-design-rule.md` §2.1, structurally-
+    equivalent variants of the same review content (markdown pipe table, JSON
+    array, bullet list) must produce the same grading outcome. This function
+    is the canonicalization pre-step required by §2.4.2 (status `implemented`).
+
+    Equivalence-surface declaration (§2.4.1 reviewer-checklist item 2):
+      Variants normalized: markdown_pipe_table; markdown_pipe_table_in_code_fence;
+        json_array_of_review_rows; bullet_or_numbered_list_of_review_rows.
+      Variants intentionally NOT normalized (semantic-format surfaces):
+        severity tokens (Critical/High/Medium/Low) — meaning;
+        line numbers — meaning;
+        issue/fix prose content — meaning.
+
+    Returns:
+        (rows, source_format) where rows is a list of dicts with keys
+        {id, line, severity, issue, fix}, and source_format is one of
+        _H1_CANONICALIZER_VARIANTS or 'none'.
+    """
+    if not text:
+        return [], "none"
+
+    pipe_rows = _parse_markdown_table_rows(text)
+    pipe_dicts = [
+        {
+            "id":       cols[0] if len(cols) > 0 else "",
+            "line":     cols[1] if len(cols) > 1 else "",
+            "severity": cols[2] if len(cols) > 2 else "",
+            "issue":    cols[3] if len(cols) > 3 else "",
+            "fix":      "|".join(cols[4:]) if len(cols) > 4 else "",
+        }
+        for cols in pipe_rows
+        if cols and cols[0].strip().lower() not in {"id", "#"}
+    ]
+    if pipe_dicts:
+        if _H1_OUTER_CODE_FENCE_RE.match(text):
+            return pipe_dicts, "markdown_pipe_table_in_code_fence"
+        return pipe_dicts, "markdown_pipe_table"
+
+    json_rows = _parse_h1_json_review_rows(text)
+    if json_rows:
+        return json_rows, "json_array_of_review_rows"
+
+    bullet_rows = _parse_h1_bullet_review_rows(text)
+    if bullet_rows:
+        return bullet_rows, "bullet_or_numbered_list_of_review_rows"
+
+    return [], "none"
+
+
 def _label_marker_regex(label: str) -> re.Pattern[str]:
     """H8: tolerate the label surface real agents emit.
 
@@ -2012,19 +2202,19 @@ def score_h1_long_form_code_review(agent_output: str, ground_truth: dict) -> dic
     review). TP weight = sum of severity weights of matched issues. FP weight =
     (#flagged distractors) * Medium weight. FN weight = sum of severity weights
     of missed issues. Score = 2PR/(P+R).
+
+    NB3 patch (Q3 ADR §2.4.2 r2 + §8.6 milestone): the row-extraction step
+    runs `_canonicalize_h1_review_rows`, which normalizes structurally-
+    equivalent output-style variants (raw markdown pipe table, fenced
+    markdown table, JSON array of review rows, bullet/numbered list with
+    structured fields) into a single row schema before scoring. Pre-patch
+    the grader only matched the markdown-pipe-table variant, leaving JSON-
+    or bullet-formatted reviews uncredited even when the per-issue content
+    was correct — the same dormant output-style asymmetry NB3 surfaced on
+    H5 (analyst report `2026-05-01-phase5-final-analysis.md` §7).
     """
     text = agent_output or ""
-    rows = [
-        {
-            "id": cols[0] if len(cols) > 0 else "",
-            "line": cols[1] if len(cols) > 1 else "",
-            "severity": cols[2] if len(cols) > 2 else "",
-            "issue": cols[3] if len(cols) > 3 else "",
-            "fix": "|".join(cols[4:]) if len(cols) > 4 else "",
-        }
-        for cols in _parse_markdown_table_rows(text)
-        if cols and cols[0].strip().lower() not in {"id", "#"}
-    ]
+    rows, source_format = _canonicalize_h1_review_rows(text)
 
     weights = ground_truth.get("severity_weights") or {}
     medium_weight = float(weights.get("Medium", 1.0))
@@ -2082,7 +2272,18 @@ def score_h1_long_form_code_review(agent_output: str, ground_truth: dict) -> dic
 
     struct_cfg = ground_truth.get("output_structure_checks") or {}
     must_all_tokens = [str(s).lower() for s in struct_cfg.get("must_contain_all") or []]
-    structure_ok = all(tok in text.lower() for tok in must_all_tokens) and bool(rows)
+    if source_format == "markdown_pipe_table":
+        # Baseline path: keep the original literal-token check so existing
+        # markdown-table outputs grade identically to pre-patch behavior.
+        structure_ok = all(tok in text.lower() for tok in must_all_tokens) and bool(rows)
+    else:
+        # NB3 patch (ADR §2.1 bullet-vs-numbered-list equivalence): for
+        # structurally-equivalent variants the canonicalizer already validated
+        # the per-issue field surface (id+line+severity+content). The literal
+        # `must_contain_all` tokens (e.g., '|' for pipe-table typography) are
+        # the wrong proxy for structural correctness on these variants, so
+        # `structure_ok` collapses to the row-non-empty signal.
+        structure_ok = bool(rows)
 
     pass_threshold = float(((ground_truth.get("primary_metric") or {}).get("pass_threshold")) or 1.0)
 
@@ -2102,7 +2303,7 @@ def score_h1_long_form_code_review(agent_output: str, ground_truth: dict) -> dic
         and matches_floor_ok
     )
 
-    return {
+    result = {
         "fixture": ground_truth.get("fixture", "H1"),
         "matched_issue_ids": matched_ids,
         "missed_issue_ids": missed_ids,
@@ -2113,11 +2314,26 @@ def score_h1_long_form_code_review(agent_output: str, ground_truth: dict) -> dic
         "precision": round(precision, 4),
         "recall": round(recall, 4),
         "structure_ok": structure_ok,
+        "output_format_source": source_format,
         "min_matches_for_pass": min_matches,
         "matches_floor_ok": matches_floor_ok,
         "primary_pass": primary_pass,
         "primary_score": primary_score,
     }
+    result.update(_emit_formatting_exempt_status(
+        "implemented",
+        canonicalizer="_canonicalize_h1_review_rows",
+        variants=list(_H1_CANONICALIZER_VARIANTS),
+        tests=[
+            "test_h1_canonicalizer_markdown_pipe_table_baseline",
+            "test_h1_canonicalizer_fenced_markdown_table_equivalent",
+            "test_h1_canonicalizer_json_array_equivalent",
+            "test_h1_canonicalizer_bullet_list_equivalent",
+            "test_h1_canonicalizer_negative_prose_does_not_yield_rows",
+            "test_h1_canonicalizer_negative_json_array_with_distractors",
+        ],
+    ))
+    return result
 
 
 def score_h2_multi_hop_reasoning(agent_output: str, ground_truth: dict) -> dict:
