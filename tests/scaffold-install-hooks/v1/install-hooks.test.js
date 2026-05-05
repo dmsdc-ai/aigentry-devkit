@@ -58,7 +58,7 @@ test("idempotency", () => {
     markdownSentinel,
     jsonNamedKey,
     scriptSha256,
-  } = require("../../../lib/scaffold/install-hooks/idempotent");
+  } = require("../../../lib/scaffold/idempotent");
   const scope = mkScope();
 
   const markdownPath = path.join(scope, "AGENTS.md");

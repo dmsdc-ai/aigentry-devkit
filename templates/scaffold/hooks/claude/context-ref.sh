@@ -95,6 +95,7 @@ if (!stat.isFile()) process.exit(2);
 if ((stat.mode & 0o777) !== 0o600) process.exit(2);
 if (typeof process.getuid === "function" && stat.uid !== process.getuid()) process.exit(2);
 const refBody = fs.readFileSync(refPath, "utf8");
+// Schema mirrors lib/scaffold/payload-schema.js CONTEXT_REF_V1_SCHEMA.
 const payload = {
   version: "context-ref/v1",
   ref_path: refPath,
