@@ -169,7 +169,7 @@ Per `references/constitution-check.md` — 5 mandatory questions.
 
 ```
 aigentry scaffold --project <cwd> --cli {claude|codex|gemini}
-                  [--dry-run] [--backup] [--uninstall]
+                  [--dry-run] [--no-backup] [--uninstall]
                   [--template-dir <path>]
                   [--orchestrator-session-id <id>]
                   [--no-auto-report-errors]
@@ -179,7 +179,17 @@ aigentry-devkit workspace-init --cli {claude|codex|gemini} --cwd <cwd>
                                [...same flags...]
 ```
 
-**Required**: `--cli`, `--cwd` (absolute path). Default: `--backup` ON for merge-targets, OFF for first-time create. `--dry-run` overrides `--backup` (no writes of any kind).
+**Required**: `--cli`, `--cwd` (absolute path).
+
+**Backup behavior** (rewritten for clarity — no "default ON for X, OFF for Y" magic):
+- Scaffold **always** writes `.bak.<ISO8601>` before any merge or uninstall mutation, irrespective of flag.
+- Scaffold **never** writes `.bak` for first-time `create` actions (no source file to back up).
+- `--no-backup` opts out of the always-on `.bak` write for merge / uninstall. **Not recommended.** Implementation MUST refuse the combination `--no-backup --uninstall` against a malformed-JSON `settings.json` (cannot safely uninstall sentinel blocks from unparseable JSON without a recovery copy) → exit 2 with `error: --no-backup forbidden when uninstalling from malformed settings.json`.
+- `--dry-run` short-circuits all I/O (no writes, no `.bak`); plan is emitted to stdout only.
+
+**Hook-related flags** (parameterize the `hooks` block emitted to `.claude/settings.json` per §6.6):
+- `--orchestrator-session-id <id>`: literal session ID embedded into the PostToolUse `[BUILD ERROR]` and Stop `[SESSION_IDLE]` injection commands. If omitted, falls back to `$ATERM_ORCHESTRATOR_SESSION` env var → `~/.config/aterm/aterm.json` orchestrator.session_id → `aterm list --json` autodetect. If all three resolve to nothing, hook entries are **skipped entirely** (PostToolUse + Stop arrays empty) and stderr emits `info: no orchestrator session id resolved; auto-report-error hooks omitted`. Behavior preserved verbatim from existing `workspace-init.js` lines 61-101 + 326-374.
+- `--no-auto-report-errors`: explicit opt-out — even when an orchestrator id resolves, do not emit PostToolUse or Stop hook entries; only `permissions.allow` is written. Useful for sandbox / isolated workspaces where cross-session error injection is undesired.
 
 **Exit codes** (uniform across `scaffold/v1` per ADR §3.3.1.4):
 
@@ -208,25 +218,29 @@ aigentry-devkit workspace-init --cli {claude|codex|gemini} --cwd <cwd>
 
 **State directory**: `<cwd>/state/{task-queue,lessons}.json`. For workspaces named `orchestrator`, state files are symlinked to `~/.aigentry/data/` (preserves existing behavior).
 
+**Re-application to existing `.md` files**: when an `.md` target already exists, scaffold's policy is **skip-on-exist** (full file). Constitution / template updates therefore do NOT propagate via `aigentry scaffold --project`. Users wanting to re-apply template-driven changes (e.g., constitutional appends like "Session Communication Rules" / "Mandatory Reporting") run the existing `aigentry-devkit update-md` command (see `lib/update-md.js` + §13.2). The two commands are deliberately split: `scaffold --project` owns *creation* under skip-on-exist; `update-md` owns *append-style update* of existing files. This split is preserved by this spec.
+
 **MCP registration**: `--project` invokes `registerClaudeMcp() / registerGeminiMcp() / registerCodexMcp()` from `lib/bootstrap.js` (write to `~/.claude/.mcp.json`, `~/.gemini/settings.json`, `~/.codex/config.toml` — **GLOBAL paths**, not project-level — preserves existing behavior; out-of-scope for sentinel-merge in this spec).
 
 ### §6.3 `.claude/settings.json` deep-merge with sentinel sections
 
 **Filename**: `.claude/settings.json` (canonical per ADR §3.4 row #3 verbatim). NOT `.claude/settings.local.json` — see §9 for migration semantics.
 
-**Sentinel layout** (top-level JSON; both keys may co-exist with user-authored keys):
+**Discriminator**: scaffold-managed top-level blocks carry the namespaced key `"x-aigentry-scaffold": "v1"`. This is a **project-namespaced extension key** (`x-` prefix per RFC 6648 / OpenAPI extension convention) — chosen explicitly NOT to use `$schema`, which is reserved for JSON-Schema URIs and would collide with consumers (Claude Code itself or third-party validators) expecting a schema-URI string there.
+
+**Sentinel layout** (top-level JSON; spec-managed blocks may co-exist with user-authored keys):
 
 ```json
 {
   "permissions": {
-    "$schema": "scaffold/v1",
+    "x-aigentry-scaffold": "v1",
     "allow": [
       "Bash(aterm *)",
       "Bash(telepty *)"
     ]
   },
   "hooks": {
-    "$schema": "scaffold/v1",
+    "x-aigentry-scaffold": "v1",
     "PostToolUse": [
       {
         "matcher": "Bash",
@@ -246,32 +260,43 @@ aigentry-devkit workspace-init --cli {claude|codex|gemini} --cwd <cwd>
 
 1. Read existing `.claude/settings.json` (if any). Parse as JSON; on parse failure → exit 4 with `.bak.<ISO8601>` written first.
 2. For each top-level key the spec writes (`permissions`, `hooks`):
-   - If key absent → insert spec block verbatim.
-   - If key present and `$schema === "scaffold/v1"` → replace block with current spec emission. Drift is silently corrected.
-   - If key present and `$schema` differs or absent → user-authored block. **Never overwrite.** Deep-merge: append spec's `permissions.allow[]` entries that are not already present; append `hooks.PostToolUse[]` / `hooks.Stop[]` entries whose `command` string is not already present (matches existing `deepMergeSettings` semantics).
-3. Preserve every other top-level key in the file untouched.
-4. Write `.bak.<ISO8601>` of the original before any mutation when `--backup` is in effect (default ON for merge-targets).
+   - **Block absent** → insert spec block verbatim (with `x-aigentry-scaffold: "v1"`).
+   - **Block present and `x-aigentry-scaffold === "v1"`** → replace block with current spec emission. Drift is silently corrected (this is how spec evolves alongside template updates).
+   - **Block present and discriminator differs / absent** → user-authored block. **Never overwrite.** Deep-merge:
+     - `permissions.allow[]`: append spec entries not already present. Dedup is **exact-string equality** (`===`); any non-string entries (objects, etc.) pass through untouched. Order: existing entries first, then appended spec entries.
+     - `hooks.PostToolUse[]` / `hooks.Stop[]`: append entries whose first `hooks[0].command` string is not already present anywhere in the existing array. (Matches existing `deepMergeSettings` semantics.)
+3. **Top-level keys not owned by this spec** (`mcpServers`, `env`, `apiKeyHelper`, `model`, `plugins`, and any other Claude Code or user-authored keys): preserved untouched. The merger walks only `permissions` and `hooks`; all other keys pass through verbatim. Explicit by-name preservation guarantee for known Claude Code keys: `mcpServers`, `env`, `apiKeyHelper`, `model`, `plugins`, `disableAllHooks`, `theme`.
+4. Write `.bak.<ISO8601>` of the original before any mutation when backup is in effect (default per §6.1 — always ON for merge / uninstall, irrespective of flag, unless `--no-backup` opts out).
 5. Emit `merge <abs-path>` on stdout per §6.4.
 
 **`UserPromptSubmit` hook**: explicitly NOT touched by `--project` (ADR §3.4 row #10.2 ownership; deferred to Issue #10.2 spec).
 
-**`mcpServers` key**: explicitly NOT written into project `settings.json`. MCP brain registration goes to global `~/.claude/.mcp.json` per existing `bootstrap.js` behavior — avoids project-level MCP conflicts when multiple projects coexist.
+**`mcpServers` key**: explicitly NOT **written** into project `settings.json` by this spec. MCP brain registration writes to global `~/.claude/.mcp.json` per existing `bootstrap.js` behavior — avoids project-level MCP conflicts when multiple projects coexist. **Pre-existing project-level `mcpServers`** (if a user has one): preserved untouched per rule 3 above; not stripped, not warned about.
 
 ### §6.4 Stdout vocabulary (machine-parseable)
 
-One line per action, separator = single ASCII space, no quoting needed (paths are absolute, no spaces guaranteed by `path.resolve`):
+One line per action. Format is **strictly deterministic** (no padding, no trailing whitespace, no column alignment):
 
+```
+<verb> SP <abs-path> [SP "(" <reason> ")"] LF
+```
+
+- `<verb>` ∈ `{ create, merge, skip, backup, remove, noop }` (4-6 chars, no padding).
+- Single ASCII space (`SP`) between verb and path.
+- `<abs-path>` is always absolute (guaranteed by `path.resolve`); paths containing literal spaces are **forbidden** by precondition (§8 — implementation rejects cwd whose `path.resolve` result contains spaces with exit 2 and stderr `error: cwd contains whitespace; not supported in v1`). This keeps the format space-delimited without quoting.
+- Optional parenthesized `<reason>` follows the path with a single leading space (only present for `skip`, `remove`, `noop` to clarify rationale).
+- Lines terminated with single LF (no CRLF).
+
+Examples:
 ```
 create /abs/cwd/AGENTS.md
 create /abs/cwd/CLAUDE.md
-merge  /abs/cwd/.claude/settings.json
-skip   /abs/cwd/state/task-queue.json (exists)
+merge /abs/cwd/.claude/settings.json
+skip /abs/cwd/state/task-queue.json (exists)
 backup /abs/cwd/.claude/settings.json.bak.2026-05-05T12:34:56Z
 remove /abs/cwd/.claude/settings.json (sentinel block)
-noop   /abs/cwd/AGENTS.md (no sentinel block to remove)
+noop /abs/cwd/AGENTS.md (no sentinel block to remove)
 ```
-
-(Note: `merge` is left-aligned with single trailing space for column alignment.)
 
 Verbs (exhaustive set for v1):
 - `create` — new file written
@@ -285,35 +310,57 @@ Stderr is reserved for warnings (deprecated alias note, MCP partial registration
 
 ### §6.5 Module API (public)
 
-```js
-// lib/scaffold/project/index.js
-async function scaffoldProject({
-  cwd,                          // string, absolute path (required)
-  cli,                          // 'claude' | 'codex' | 'gemini' (required)
-  dryRun = false,
-  backup = true,                // applies to merge / uninstall targets
-  uninstall = false,
-  templateDir = null,           // override path; null → devkit-bundled
-  orchestratorSessionId = null, // resolved via env / aterm.json / aterm list if null
-  autoReportErrors = true,      // include PostToolUse error hooks in settings.json
-}) {
-  // returns { actions: Action[], exitCode: 0|2|3|4 }
-  // emits one stdout line per action via lib/scaffold/project/stdout.js
+```pseudo
+// illustrative module shape; non-executable. Actual implementation produced by Phase 3 coder dispatch.
+// lib/scaffold/project/index.js — public entry
+
+scaffoldProject(opts: ScaffoldProjectOpts) → Promise<ScaffoldProjectResult>
+
+ScaffoldProjectOpts = {
+  cwd:                    string  // absolute path (required)
+  cli:                    'claude' | 'codex' | 'gemini'  // required
+  dryRun:                 boolean   // default false
+  backup:                 boolean   // default true; --no-backup sets false
+  uninstall:              boolean   // default false
+  templateDir:            string | null   // default null → devkit-bundled
+  orchestratorSessionId:  string | null   // null → resolved via env / aterm.json / aterm list
+  autoReportErrors:       boolean   // default true; --no-auto-report-errors sets false
 }
 
-// Action shape (internal, exported for tests):
-type Action =
+ScaffoldProjectResult = {
+  actions:   Action[]
+  exitCode:  0 | 2 | 3 | 4
+}
+
+// Side effects: emits one stdout line per action via lib/scaffold/project/stdout.js
+// Action shape (sum type; documented for fixture-test consumers):
+Action =
   | { verb: 'create',  path: string, source: string }
   | { verb: 'merge',   path: string, sentinelTag: 'scaffold/v1' }
   | { verb: 'skip',    path: string, reason: 'exists' | 'unchanged' }
   | { verb: 'backup',  path: string, original: string }
   | { verb: 'remove',  path: string, sentinelTag: 'scaffold/v1' }
-  | { verb: 'noop',    path: string, reason: string };
+  | { verb: 'noop',    path: string, reason: string }
 
-module.exports = { scaffoldProject, workspaceInitCompat };
+module exports: { scaffoldProject, workspaceInitCompat }
 ```
 
 `workspaceInitCompat(opts)` is the alias entry that prints the deprecation note to stderr and calls `scaffoldProject(opts)` with the same opts shape.
+
+### §6.6 Hook block emission (parameterized by §6.1 hook flags)
+
+The `hooks` block in `.claude/settings.json` (§6.3 sentinel layout) is emitted only when `--cli claude` AND `autoReportErrors === true` AND an orchestrator session id resolves (via `--orchestrator-session-id` flag, then `$ATERM_ORCHESTRATOR_SESSION` env, then `~/.config/aterm/aterm.json`/`~/.aterm/aterm.json` `orchestrator.session_id`, then `aterm list --json` autodetect on session names matching `/orchestrator/i`).
+
+When emitted, the block contains exactly two hook-type entries (verbatim from existing `workspace-init.js` lines 340-364):
+
+- **`PostToolUse[Bash]`** — one-liner shell command that, on non-zero `$CLAUDE_TOOL_EXIT_CODE`, performs `telepty inject --from "$TELEPTY_SESSION_ID" "$_ORCH" "[BUILD ERROR] session: ... | exit_code: ..."` with a 10-second debounce file at `/tmp/.aigentry-berr-${TELEPTY_SESSION_ID}`.
+- **`Stop`** — one-liner that injects `[SESSION_IDLE] session: $TELEPTY_SESSION_ID stopped responding` to the orchestrator.
+
+When `--no-auto-report-errors` is passed, only `permissions.allow` is emitted; the entire `hooks` block is omitted (no empty arrays, no orphan `x-aigentry-scaffold` discriminator).
+
+The orchestrator id is **embedded literally** as a fallback default within the shell command (`_ORCH="${ATERM_ORCHESTRATOR_SESSION:-<resolved-id>}"`) — preserves existing behavior + survives env var unset at runtime.
+
+**Rationale for keeping these flags in §6.1**: removing them would silently eliminate a behavior current `workspace-init` consumers depend on (V3 backward-compat threshold). Documenting them here keeps F1 (explicit out-of-scope) honored while preventing scope-creep accusations: hook *content* is owned by this spec because it's part of `permissions/hooks` block ownership; hook *protocol* (`[context-ref/v1]` UserPromptSubmit) remains owned by Issue #10.2.
 
 ---
 
@@ -423,9 +470,9 @@ The MCP registration codepath, the per-CLI template selection logic, the `state/
 |---|---|---|---|
 | **V1 — Surface conformance** | `aigentry scaffold --project --help` matches §6.1 grammar; `--dry-run` against fresh fixture cwd emits only verbs from §6.4 vocabulary; exit codes match §6.1 table | 100% match | spec REQUEST-REVISION |
 | **V2 — Idempotency** | Run `aigentry scaffold --project` twice with same args; second run emits only `skip` / `noop` actions; no file mtime change beyond first run | 0 unintended writes on second run | impl bug — gate PR |
-| **V3 — Backward compat (golden file diff)** | Capture pre-refactor `workspaceInit({cli:'claude', cwd:<fixture>})` output; run post-refactor `scaffoldProject({cli:'claude', cwd:<fixture>})`; diff every generated file | byte-identical except `settings.local.json` → `settings.json` rename | revert refactor; switch to Approach A or B |
+| **V3 — Backward compat (golden file diff)** | Capture pre-refactor `workspaceInit({cli:'claude', cwd:<fixture>})` output; run post-refactor `scaffoldProject({cli:'claude', cwd:<fixture>})`; diff every generated file | (a) every `.md` target byte-identical to pre-refactor; (b) `state/*.json` byte-identical; (c) `.claude/settings.json` is byte-identical to pre-refactor `.claude/settings.local.json` modulo a documented diff allowlist: { top-level filename rename `settings.local.json` → `settings.json`; addition of `"x-aigentry-scaffold": "v1"` discriminator inside `permissions` and `hooks` blocks }. The allowlist is committed alongside fixtures at `tests/scaffold-project/v1/golden-diff-allowlist.txt` and asserted exhaustive by V3 runner. | revert refactor; switch to Approach A or B |
 | **V4 — Boundary respect (Article 9)** | Clean machine without telepty installed: `aigentry scaffold --project /tmp/test --cli claude`; verify exit 0 and `strace -e trace=execve` shows zero `telepty` exec attempts | 0 telepty exec; exit 0 | M3 fail; spec REQUEST-REVISION |
-| **V5 — G3 SSOT registration** | Post-acceptance: `~/projects/aigentry-ssot/contracts/scaffold-v1.md` exists and references this spec doc by absolute path | `grep -q '2026-05-05-issue-3-bootstrap-spec.md' ~/projects/aigentry-ssot/contracts/scaffold-v1.md` exits 0 | orchestrator dispatches G3 fix before #8/#10.2 |
+| **V5 — G3 SSOT registration** | Post-acceptance: `~/projects/aigentry-ssot/contracts/scaffold-v1.md` exists and references this spec doc by absolute path | `grep -q '2026-05-05-issue-3-bootstrap-spec.md' ~/projects/aigentry-ssot/contracts/scaffold-v1.md` exits 0. **Stub authoring owner**: aigentry-architect at the moment of status flip from `proposed` to `accepted` (this session, after user gate). **Minimum stub content**: title `scaffold/v1 contract`, parent ADR link (`~/projects/aigentry-orchestrator/docs/adr/2026-05-05-telepty-devkit-boundary.md` §3.3.1.4), absolute-path reference to this spec, and TBD-marker for sibling specs (#8 + #10.2). Conformance fixture commit follows during Phase 3 implementation per M6. | orchestrator dispatches G3 fix before #8/#10.2 |
 | **V6 — Conformance fixtures (M6)** | Implementation PR ships `~/projects/aigentry-devkit/tests/scaffold-project/v1/{fresh,reapply,uninstall,unknown-cli-flag,malformed-settings,template-override,sentinel-drift,non-interactive,dry-run-no-writes}.spec.js` | All 9 fixtures present and green | M6 fail; PR blocked |
 | **V7 — Sentinel preservation** | Manually edit a non-`scaffold/v1`-tagged top-level key in `settings.json`; re-run scaffold; user edit must remain byte-identical | 100% user-key preservation | impl bug — gate PR |
 | **V8 — Cross-OS (Article 2)** | Run V1 + V2 on macOS, Linux, Windows (CI matrix) | All three platforms green | spec REQUEST-REVISION on platform-specific bug |
@@ -523,3 +570,22 @@ The MCP registration codepath, the per-CLI template selection logic, the `state/
 | 7 | Verification Plan §10 metrics measurable | ✅ | V1-V9 each with measurement method + threshold + failure action |
 
 **Self-check verdict**: 7/7 PASS. Ready for spec-document-reviewer dispatch (Phase 6).
+
+### §14.1 Iter-1 review patches applied (2026-05-05, claude-backed reviewer)
+
+10 patches absorbed (5 MAJOR + 5 MINOR):
+
+1. §6.3 discriminator: `"$schema": "scaffold/v1"` → `"x-aigentry-scaffold": "v1"` (avoids JSON-Schema URI collision with Claude Code / external validators).
+2. §10 V3 threshold rewritten with explicit diff allowlist (rename + discriminator additions); allowlist file path declared.
+3. §6.5 fence changed to ` ```pseudo ` with non-executable comment (F3 compliance).
+4. §6.4 stdout grammar tightened: no padding, no column alignment, formal grammar `<verb> SP <abs-path> [SP "(" reason ")"] LF`; whitespace-in-cwd rejected with exit 2.
+5. §10 V5 G3 stub ownership made explicit: architect at status flip, with minimum content list.
+6. §6.1 backup semantics rewritten: `[--no-backup]` opt-out, always-on for merge/uninstall, `--no-backup --uninstall` against malformed JSON forbidden.
+7. §6.6 added: hook flags (`--orchestrator-session-id`, `--no-auto-report-errors`) explicitly described with resolution chain + emission rule.
+8. §6.2 added: re-application policy clarified — `scaffold --project` is skip-on-exist; `update-md` is the existing path for re-applying template-driven changes.
+9. §6.3 step 3 expanded: explicit by-name preservation guarantee for `mcpServers`, `env`, `apiKeyHelper`, `model`, `plugins`, `disableAllHooks`, `theme`.
+10. §6.3 step 2c: `permissions.allow[]` dedup rule made exact-string equality with object-passthrough explicitly stated.
+
+### §14.2 Iter-2 review pending (cross-LLM — codex)
+
+Per session feedback rule: implementer ≠ reviewer. Iter 1 was claude-backed; iter 2 dispatches to codex for cross-LLM verification before Phase 7 user gate.
