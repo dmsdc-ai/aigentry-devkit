@@ -42,6 +42,65 @@ function sha256(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
+function testJsonNamedKey() {
+  function parts(keyPath) {
+    return keyPath.split(".").filter(Boolean);
+  }
+  function keyFor(part) {
+    return /^\d+$/.test(part) ? Number(part) : part;
+  }
+  function getAtPath(root, keyPath) {
+    let current = root;
+    for (const part of parts(keyPath)) {
+      if (current == null) return undefined;
+      current = current[keyFor(part)];
+    }
+    return current;
+  }
+  function ensureArrayAtPath(root, keyPath) {
+    const keyParts = parts(keyPath);
+    let current = root;
+    for (let i = 0; i < keyParts.length; i += 1) {
+      const key = keyFor(keyParts[i]);
+      if (i === keyParts.length - 1) {
+        if (!Array.isArray(current[key])) current[key] = [];
+        return current[key];
+      }
+      const nextKey = keyFor(keyParts[i + 1]);
+      const desired = typeof nextKey === "number" ? [] : {};
+      if (current[key] == null || typeof current[key] !== "object") current[key] = desired;
+      current = current[key];
+    }
+    return current;
+  }
+  function read(filePath) {
+    return fs.existsSync(filePath) ? JSON.parse(fs.readFileSync(filePath, "utf8")) : {};
+  }
+  return {
+    detect(filePath, keyPath, predicate) {
+      const target = getAtPath(read(filePath), keyPath);
+      if (!Array.isArray(target)) return { present: false, entryIndex: null, entry: null };
+      const entryIndex = target.findIndex(predicate);
+      if (entryIndex === -1) return { present: false, entryIndex: null, entry: null };
+      return { present: true, entryIndex, entry: target[entryIndex] };
+    },
+    upsert(filePath, keyPath, predicate, entry) {
+      const value = read(filePath);
+      const target = ensureArrayAtPath(value, keyPath);
+      const entryIndex = target.findIndex(predicate);
+      if (entryIndex === -1) {
+        target.push(entry);
+        fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`);
+        return { action: "appended" };
+      }
+      if (JSON.stringify(target[entryIndex]) === JSON.stringify(entry)) return { action: "noop" };
+      target[entryIndex] = entry;
+      fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`);
+      return { action: "replaced" };
+    },
+  };
+}
+
 function assertClaudeSettings(scope) {
   const settingsPath = path.join(scope, ".claude", "settings.json");
   const settings = readJson(settingsPath);
@@ -56,9 +115,9 @@ function assertClaudeSettings(scope) {
 test("idempotency", () => {
   const {
     markdownSentinel,
-    jsonNamedKey,
     scriptSha256,
   } = require("../../../lib/scaffold/idempotent");
+  const jsonNamedKey = testJsonNamedKey();
   const scope = mkScope();
 
   const markdownPath = path.join(scope, "AGENTS.md");

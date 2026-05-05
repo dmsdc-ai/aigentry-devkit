@@ -203,6 +203,8 @@ Header (rendered at install time with version + min-telepty-version pulled from 
 # DO NOT EDIT — managed by `aigentry scaffold install-hooks claude`
 ```
 
+> **Spec amendment (Issue #10.2 C5):** Implementation uses the single-line `# context-ref-installer/v1 sha256=<hex>` header format from the Issue #10.2 dispatch envelope section 6. The earlier separate-line `# script-sha256: <hex>` draft format is superseded for the claude and gemini script templates.
+
 Body algorithm (illustrative pseudo, non-executable):
 
 ```pseudo
@@ -441,6 +443,8 @@ jsonNamedKey.upsert(filePath, keyPath, identifierPredicate, newEntry, opts)
 jsonNamedKey.remove(filePath, keyPath, identifierPredicate, opts)
   → { changed: bool, backupPath: string|null, action: 'removed' | 'noop' }
 ```
+
+> **Spec amendment (Issue #10.2 C6):** The v1 claude/codex implementation does not export `jsonNamedKey` from `lib/scaffold/idempotent.js` because no production module consumes it. The helper remains test-local until a runtime consumer, such as a future gemini implementation, needs it.
 
 `keyPath` = dotted path (e.g., `hooks.UserPromptSubmit.0.hooks`). `identifierPredicate(entry) → bool` selects the targeted entry (e.g., `e => /aigentry-context-ref-v1/.test(e.command)`). Parse failure → throws; caller (per-CLI module) maps to exit 4. Indent preservation: if file has consistent 2-space or 4-space indent, write with same; else default 2-space.
 

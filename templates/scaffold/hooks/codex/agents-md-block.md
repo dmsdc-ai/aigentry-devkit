@@ -1,7 +1,6 @@
 <!-- BEGIN aigentry context-ref/v1 -->
 <!-- spec: ADR 2026-05-05-telepty-devkit-boundary section 3.1.2 (commit e4b072b) -->
 <!-- devkit version: {{DEVKIT_VERSION}} -->
-<!-- context-ref-installer/v1 sha256={{BLOCK_SHA256}} -->
 <!-- DO NOT EDIT - managed by `aigentry scaffold install-hooks codex` -->
 
 ## Context-ref directive (`[context-ref/v1]`)
