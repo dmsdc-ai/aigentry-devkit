@@ -78,7 +78,7 @@ if [[ -z "$path_token" ]]; then
 fi
 
 if [[ "$path_token" == "~/"* ]]; then
-  ref_path="${HOME}/${path_token#~/}"
+  ref_path="${HOME}/${path_token#"~/"}"
 elif [[ "$path_token" == "/"* ]]; then
   ref_path="$path_token"
 else

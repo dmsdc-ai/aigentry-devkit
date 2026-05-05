@@ -56,7 +56,8 @@
   "scripts": {
     "postinstall": "echo '[aigentry-devkit] Run: npx aigentry-devkit setup' || true",
     "test": "node bin/aigentry-devkit.js --help",
-    "test:scaffold-project": "node --test tests/scaffold-project/v1/*.spec.js"
+    "test:scaffold-project": "node --test tests/scaffold-project/v1/*.spec.js",
+    "test:scaffold-install-hooks": "node --test tests/scaffold-install-hooks/v1/*.test.js"
   },
   "keywords": [
     "ai",
