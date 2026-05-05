@@ -11,6 +11,7 @@ const {
   expectedStateFile,
   makeProject,
   readJson,
+  runDevkit,
   runScaffold,
 } = require("./helper");
 
@@ -45,4 +46,15 @@ test("fresh claude scaffold creates the project matrix and preserves golden temp
     },
   });
   assert.equal(fs.existsSync(path.join(project, ".claude", "settings.local.json")), false);
+});
+
+test("workspace-init remains a stderr-noted alias for project scaffold", () => {
+  const { project } = makeProject("workspace-init-alias");
+  const result = runDevkit("workspace-init", ["--cwd", project, "--cli", "codex"]);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /^\[alias\] consider 'aigentry scaffold --project --cli <cli> --cwd <cwd>'/);
+  assert.equal(fs.readFileSync(path.join(project, "AGENTS.md"), "utf8"), fs.readFileSync(path.join(__dirname, "..", "..", "..", "templates", "workspace", "AGENTS.codex.md"), "utf8"));
+  assert.equal(fs.existsSync(path.join(project, "state", "task-queue.json")), true);
+  assert.equal(fs.existsSync(path.join(project, "state", "lessons.json")), true);
 });

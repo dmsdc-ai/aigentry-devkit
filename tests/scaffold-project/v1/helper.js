@@ -25,7 +25,7 @@ function makeHome(prefix) {
   return home;
 }
 
-function runScaffold(args, options = {}) {
+function runDevkit(command, args, options = {}) {
   const home = options.home || makeHome("scaffold");
   const env = {
     ...process.env,
@@ -34,13 +34,17 @@ function runScaffold(args, options = {}) {
     ATERM_ORCHESTRATOR_SESSION: "",
     ...options.env,
   };
-  return spawnSync(process.execPath, [BIN, "scaffold", ...args], {
+  return spawnSync(process.execPath, [BIN, command, ...args], {
     cwd: ROOT,
     env,
     input: options.input === undefined ? "" : options.input,
     encoding: "utf8",
     timeout: options.timeout || 10000,
   });
+}
+
+function runScaffold(args, options = {}) {
+  return runDevkit("scaffold", args, options);
 }
 
 function readJson(filePath) {
@@ -96,6 +100,7 @@ module.exports = {
   makeHome,
   makeProject,
   readJson,
+  runDevkit,
   runScaffold,
   stdoutLines,
   tempRoot,
