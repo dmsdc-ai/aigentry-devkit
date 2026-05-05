@@ -1,0 +1,3 @@
+settings.local.json -> settings.json
+permissions.x-aigentry-scaffold added
+hooks.x-aigentry-scaffold added when hooks are emitted

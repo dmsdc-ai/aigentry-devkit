@@ -4,7 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 const { loadLicense, generateFreeLicense, getCurrentTier, checkEntitlement, getTierInfo, LICENSE_PATH } = require("../lib/entitlement");
-const { workspaceInit } = require("../lib/workspace-init");
+const { workspaceInit, scaffoldProject, parseProjectArgv, printScaffoldHelp } = require("../lib/workspace-init");
 const { updateMd } = require("../lib/update-md");
 
 const rootDir = path.resolve(__dirname, "..");
@@ -50,6 +50,10 @@ function printHelp() {
     "  aigentry-devkit workspace-init      Initialize workspace for AI CLI session",
     "    --cli <claude|codex|gemini>       Target CLI (required)",
     "    --cwd <path>                      Workspace directory (required)",
+    "  aigentry scaffold --project <cwd>   Scaffold project files for an AI CLI session",
+    "    --cli <claude|codex|gemini>       Target CLI (required)",
+    "    --dry-run                         Emit planned actions without writing",
+    "    --backup|--no-backup              Backup merge/uninstall targets (default: backup)",
     "  aigentry-devkit up                  Start enabled modules (telepty daemon, health checks)",
     "  aigentry-devkit start              Start all workspace sessions (kitty/tmux tabs)",
     "  aigentry-devkit stop               Stop all workspace sessions",
@@ -1414,10 +1418,15 @@ try {
 }
 const { options, extras } = parsed;
 
-if (extras.length > 0 && command !== "session" && command !== "workspace-init" && command !== "breakdown" && command !== "update-md") {
+if (extras.length > 0 && command !== "session" && command !== "workspace-init" && command !== "scaffold" && command !== "breakdown" && command !== "update-md") {
   process.stderr.write(`Unexpected arguments: ${extras.join(" ")}\n\n`);
   printHelp();
   process.exit(1);
+}
+
+if (command === "scaffold" && options.help) {
+  printScaffoldHelp();
+  process.exit(0);
 }
 
 if (command === "help" || options.help) {
@@ -1449,25 +1458,32 @@ try {
     case "init":
       runInit();
       break;
-    case "workspace-init": {
-      const wiArgs = {};
-      const allArgs = [...extras];
-      // Parse --cli and --cwd from extras
-      for (let i = 0; i < allArgs.length; i++) {
-        if (allArgs[i] === "--cli" && allArgs[i + 1]) {
-          wiArgs.cli = allArgs[++i];
-        } else if (allArgs[i] === "--cwd" && allArgs[i + 1]) {
-          wiArgs.cwd = allArgs[++i];
-        } else if ((allArgs[i] === "--orchestrator-session-id" || allArgs[i] === "--orchestrator-session") && allArgs[i + 1]) {
-          wiArgs.orchestratorSessionId = allArgs[++i];
-        } else if (allArgs[i] === "--no-error-hooks") {
-          wiArgs.autoReportErrors = false;
-        }
+    case "scaffold": {
+      let scaffoldOpts;
+      try {
+        scaffoldOpts = parseProjectArgv(extras, options);
+      } catch (error) {
+        process.stderr.write(`${error.message}\n`);
+        process.exit(error.exitCode || 2);
       }
-      // Also check if they were parsed as options
-      if (options.cli) wiArgs.cli = options.cli;
-      if (options.cwd) wiArgs.cwd = options.cwd;
-      workspaceInit(wiArgs);
+      const result = scaffoldProject(scaffoldOpts);
+      if (result.exitCode !== 0) {
+        process.exit(result.exitCode);
+      }
+      break;
+    }
+    case "workspace-init": {
+      let wiArgs;
+      try {
+        wiArgs = parseProjectArgv(extras, options);
+      } catch (error) {
+        process.stderr.write(`${error.message}\n`);
+        process.exit(error.exitCode || 2);
+      }
+      const result = workspaceInit(wiArgs);
+      if (result.exitCode !== 0) {
+        process.exit(result.exitCode);
+      }
       break;
     }
     case "update-md": {
