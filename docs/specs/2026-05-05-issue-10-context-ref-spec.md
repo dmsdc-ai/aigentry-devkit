@@ -235,23 +235,29 @@ ref_body = read_file(path_resolved)
 ref_sha256 = sha256(ref_body)
 inline_message = remainder of PROMPT_BODY after first_line
 
-emit JSON to stdout:
+construct PAYLOAD per ADR §3.1.2.3 wire-locked schema (all 6 fields, exact names):
+PAYLOAD = {
+  "version":        "context-ref/v1",
+  "ref_path":       path_resolved,
+  "ref_sha256":     ref_sha256,
+  "ref_body":       ref_body,
+  "inline_message": inline_message,
+  "decoded_at":     <ISO8601 now>
+}
+
+emit JSON to stdout (Claude Code hook envelope; PAYLOAD nested verbatim):
 {
   "additionalContext": ref_body,
-  "aigentry_context_ref": {
-    "version": "context-ref/v1",
-    "ref_path": path_resolved,
-    "ref_sha256": ref_sha256,
-    "inline_message": inline_message,
-    "decoded_at": <ISO8601 now>
-  }
+  "aigentry_context_ref": PAYLOAD          # all 6 fields, byte-equal to §3.1.2.3 schema
 }
 exit 0
 
 # Any unhandled error: print PROMPT_BODY unchanged to stdout, log diagnostic to stderr, exit 0
 ```
 
-The `additionalContext` field is the Claude Code hook's documented output mechanism; the `aigentry_context_ref` field is supplementary diagnostic metadata (Claude ignores unknown fields). The script MUST NEVER return a non-zero exit code that would abort prompt submission; **fail-open is mandatory** per ADR §3.1.2.4 hook-failure-runtime-behavior row.
+**Wire-contract fidelity (ADR §3.1.2.1.1 rule 1).** The `aigentry_context_ref` sub-object MUST carry **all six** fields named in ADR §3.1.2.3 (`version`, `ref_path`, `ref_sha256`, `ref_body`, `inline_message`, `decoded_at`) — including `ref_body` even though it is also duplicated into `additionalContext`. The duplication is intentional: `additionalContext` is the Claude-CLI ingestion path; `aigentry_context_ref.ref_body` is the wire-locked payload for any downstream consumer (e.g., audit log, sub-session inspecting the hook output). Hook scripts MUST NOT rename or omit any of the six fields; doing so violates the locked schema.
+
+The script MUST NEVER return a non-zero exit code that would abort prompt submission; **fail-open is mandatory** per ADR §3.1.2.4 hook-failure-runtime-behavior row.
 
 #### §4.1.4 Idempotency mechanism
 
@@ -316,16 +322,29 @@ Same shape as §4.1.5; `paths` returns just `{ agents_md }`. `issues` populated 
 
 ### §4.3 `gemini` (`lib/scaffold/install-hooks/gemini.js`)
 
-#### §4.3.1 Target files
+#### §4.3.0 Implementation precondition — dustcraw research dispatch (MANDATORY before gemini-portion coder dispatch)
+
+Unlike Claude Code's `UserPromptSubmit` hook (publicly documented, framework-stable) and Codex's prompt-time directive (markdown-only, no runtime framework needed), **Gemini CLI's user-prompt-time hook framework MUST be research-validated** before §4.3.2-§4.3.5 are implemented. This spec **pins a target schema below** (§4.3.2-§4.3.3) as the **expected shape**; a dustcraw research dispatch is required to confirm or correct it.
+
+**Research dispatch contract** (orchestrator-routed, blocks gemini-portion coder dispatch only — does NOT block claude/codex coder dispatch):
+
+- **Target session**: `aigentry-dustcraw-{cli}` (e.g., gemini or codex sub-session for upstream search).
+- **Evidence requirements** (per `feedback_dustcraw_evidence_required.md`): `gemini --version` paste, commit-SHA permalinks to gemini-cli repo settings.json schema or hook docs, quoted snippets of canonical hook entry shape, citation to gemini-cli upstream issue or PR if hook framework is non-stable.
+- **Expected output**: PASS/FAIL on §4.3.2 schema; if FAIL, exact corrected schema in the same JSON shape this spec uses.
+- **Outcome handling**: PASS → gemini-portion coder dispatch unblocked, no spec change. FAIL → architect re-dispatch to revise §4.3.2-§4.3.3; this spec's `status: accepted` rolls back to `revising`.
+
+**Why this is a precondition, not a spec blocker**: claude and codex are independently implementable today (no gemini schema research needed); shipping the spec now lets claude+codex coder dispatch proceed in parallel with the gemini research, honoring the M0 7-day window without coupling all three CLIs to the slowest-research path.
+
+#### §4.3.1 Target files (assumed; pending §4.3.0)
 
 | File | Path |
 |------|------|
 | Settings file | `<scope>/.gemini/settings.json` |
 | Hook script | `<scope>/.gemini/hooks/aigentry-context-ref-v1.js` |
 
-#### §4.3.2 settings.json patch
+#### §4.3.2 settings.json patch (target schema; subject to §4.3.0 validation)
 
-Gemini CLI's hook framework is less documented than Claude's; this spec uses the schema convention emerging in `~/.gemini/settings.json` per ADR §3.1.2.4 row "gemini" + community convention. The installer adds (or replaces) one entry:
+The installer adds (or replaces) one entry in the `hooks.userPromptSubmit` array:
 
 ```json
 {
@@ -342,15 +361,37 @@ Gemini CLI's hook framework is less documented than Claude's; this spec uses the
 }
 ```
 
-Detection key: `hooks.userPromptSubmit[].name == "aigentry-context-ref-v1"` (gemini's hook entries support a `name` field, unlike Claude's). If gemini's actual settings schema differs at implementation time, the coder session MUST refer to gemini's official hook documentation and adapt while preserving: a unique identifying field, a script-path field, and a version field. Adapter must NOT change the wire contract (which is decoder-side, lives in the script body).
+Detection key: `hooks.userPromptSubmit[].name == "aigentry-context-ref-v1"`.
 
-#### §4.3.3 Hook script body (templates/scaffold/hooks/gemini/context-ref.js)
+**Schema-shift fallback**: if §4.3.0 research returns FAIL with a corrected schema, the corrected schema is applied verbatim to §4.3.2 via architect re-dispatch BEFORE coder implementation. The coder MUST NOT adapt the schema unilaterally — wire-locked decisions belong in the spec, not in coder discretion (per spec §15 + dispatch envelope I1).
 
-Same algorithm as §4.1.3 (claude shell version), translated to Node.js. Reads stdin, parses first-line directive, emits gemini's expected output JSON shape (TBD by coder per gemini docs; convention is `{ "additionalContext": <body> }`). Header carries identical `script-sha256:` + `min telepty version` + `DO NOT EDIT` markers.
+The decoder-side wire contract (`[context-ref/v1]` payload schema, §3.1.2.3) is **independent of gemini's settings schema** and remains LOCKED regardless of §4.3.0 outcome.
+
+#### §4.3.3 Hook script body (`templates/scaffold/hooks/gemini/context-ref.js`)
+
+Same algorithm as §4.1.3 (claude shell version), translated to Node.js. The script reads stdin, parses first-line directive, performs the §6.2 receiver contract steps 1-9, materializes the §3.1.2.3 6-field payload identically, and emits the following gemini hook envelope to stdout (target shape; subject to §4.3.0 validation):
+
+```json
+{
+  "additionalContext": "<ref_body verbatim>",
+  "aigentry_context_ref": {
+    "version": "context-ref/v1",
+    "ref_path": "<resolved abs path>",
+    "ref_sha256": "<hex>",
+    "ref_body": "<utf-8 markdown>",
+    "inline_message": "<remainder after first line>",
+    "decoded_at": "<ISO8601>"
+  }
+}
+```
+
+The `aigentry_context_ref` sub-object MUST contain **all six** ADR §3.1.2.3 fields exactly as named (same fidelity rule as §4.1.3 — wire-locked schema is constant across CLIs; only the **outer envelope key** differs by CLI ingestion path). If §4.3.0 research determines gemini's ingestion field is named differently than `additionalContext`, only the **outer key name** changes; the inner 6-field payload is invariant.
+
+Header carries identical structure to §4.1.3 (`# context-ref/v1` + `# devkit version` + `# min telepty version` + `# script-sha256` + `# DO NOT EDIT` markers).
 
 #### §4.3.4 Idempotency mechanism
 
-Combined: JSON named-key detection on settings.json (`name == "aigentry-context-ref-v1"`) + script-sha256 detection on script file header. Re-install with version match → no-op. Mismatch → replace both, back up prior script.
+Combined: JSON named-key detection on settings.json (`name == "aigentry-context-ref-v1"`) + script-sha256 detection on script file header. Re-install with version match → no-op. Mismatch → replace both, back up prior script as `.bak.<ISO8601>`.
 
 #### §4.3.5 Verify behavior
 
@@ -446,7 +487,7 @@ The hook script MUST execute these steps **in this order**:
 3. Extract `path-token` between `[context-ref] Read ` and ` and use it as`. Malformed → fall-open.
 4. **Path-token expansion**: if starts with `~/`, expand to `$HOME/`; if starts with `/`, use as-is; else → fall-open (no relative paths, no envvar substitution beyond `$HOME`). This rule is **defense-in-depth** per ADR §3.1.2.2.
 5. Verify file exists. If not → fall-open.
-6. Verify mode is `0600` (octal compare, mask `077` checks). If not → fall-open.
+6. Verify mode is **exactly `0600`** (octal compare; `stat` returns `600`; group + other bits MUST be zero, owner has read+write only — no execute). If not → fall-open. Per ADR §3.1.2.2 receiver contract step 4 ("mode 0600" — exact value).
 7. Verify owner uid matches current uid. If not → fall-open.
 8. Read file body. Compute sha256 of body bytes.
 9. Construct payload object (six fields per schema).
@@ -454,16 +495,31 @@ The hook script MUST execute these steps **in this order**:
 
 Any unhandled exception → fall-open: print original prompt to stdout, log diagnostic to stderr, exit 0. **Hook script MUST NEVER return non-zero exit code that would abort prompt submission.**
 
-### §6.3 Telepty-version handshake
+### §6.3 Telepty-version handshake (per ADR §3.1.2.4 hook-handshake row, verbatim)
 
-At install time, the installer runs `telepty --version`:
-- If telepty not on PATH: install proceeds; warning emitted to stderr; hook script header records `min telepty version: unknown`; runtime fall-open behavior covers absence (file path simply won't exist if telepty isn't producing them).
-- If telepty present: record version in header. At runtime, hook compares (cheap: file-stat the telepty binary path's `--version` output is unnecessary; we trust install-time recording). **No runtime version check is performed**, because:
-  - if telepty was uninstalled, no `[context-ref]` prompts will be emitted, so the hook is never triggered (silent benign degradation),
-  - if telepty was upgraded to a newer compatible version, no action needed,
-  - if telepty was upgraded across a breaking v2 boundary, the v2 prefix line will not match v1's literal prefix, triggering fall-open.
+ADR §3.1.2.4 hook-handshake row text (binding):
 
-This is simpler than ADR §3.1.2.4's hook-handshake row literal text suggests; it preserves semantic intent (graceful degradation per Article 17) without runtime overhead.
+> "Hook script reads `telepty --version` at install time → records minimum required telepty version in hook script header comment. At runtime, hook re-checks → if telepty too old, hook prints actionable error + falls back to passing prompt through unchanged (graceful degradation per Article 17)."
+
+This spec implements that row exactly:
+
+**Install-time recording** (executed by `lib/scaffold/install-hooks/{claude,gemini}.js#install()`):
+- `telepty --version` invoked via `child_process.spawnSync('telepty', ['--version'])` (Node) or `telepty --version` (shell).
+- If telepty present (exit 0, parseable semver in stdout): the parsed semver is embedded into the hook script header line `# min telepty version: <SEMVER>` at install time.
+- If telepty absent (ENOENT) or unparseable: header line records `# min telepty version: unknown`; install emits a stderr warning (`telepty CLI not found on PATH; install proceeds. Hook will fall-open at runtime until telepty is installed.`); install exit code remains 0.
+
+**Runtime re-check** (executed inside the hook script, before the §6.2 receiver-contract steps):
+1. Hook reads its own header `# min telepty version: <SEMVER-or-unknown>` line via `awk` (bash) or `fs.readFileSync` (Node).
+2. If header value is `unknown` → skip version check, proceed directly to §6.2 step 1 (graceful — install was performed without telepty present; current runtime telepty status is irrelevant to v1 wire contract).
+3. If header value is a semver: invoke `telepty --version`. If telepty absent at runtime → log actionable error to stderr (`aigentry context-ref hook: telepty CLI not found on PATH; pass-through. Install or fix PATH; re-run \`aigentry doctor\`.`) → fall-open (print original prompt unchanged, exit 0).
+4. If telepty present at runtime: parse its version. If runtime version `<` recorded `min telepty version` → log actionable error to stderr (`aigentry context-ref hook: telepty <RUNTIME-VER> is older than required <MIN-VER>; pass-through. Run \`telepty --update\` or reinstall hooks.`) → fall-open (print original prompt unchanged, exit 0).
+5. If runtime version `>=` recorded min version → proceed to §6.2 step 1.
+
+**Comparison semantics**: semver `>=` per Node's `semver` package convention (or shell-equivalent: split into major/minor/patch ints, lexicographic compare). Pre-release tags (e.g., `0.4.0-beta.1`) treated per semver 2.0 ordering rules (pre-release < release).
+
+**Why runtime re-check, not just install-time**: the ADR row mandates runtime re-check; if telepty is downgraded post-install (rare, but possible during environment debugging), the hook would otherwise silently produce wrong behavior. Runtime check is cheap (single subprocess; ≤ 50 ms typical) and runs only on first line of every prompt — negligible compared to AI CLI latency.
+
+**Failure-mode coverage** (Article 17 graceful degradation): every reachable failure path falls open with a stderr diagnostic; no path returns non-zero exit or blocks prompt submission.
 
 ### §6.4 Conformance fixture replay (devkit-side)
 
@@ -489,11 +545,26 @@ Until M6 lands and the upstream fixtures are materialized, devkit tests use an *
 
 | Gate | File | Status (2026-05-05) | Owner | Required for this spec? |
 |------|------|----------------------|-------|--------------------------|
-| G2 | `~/projects/aigentry-ssot/contracts/context-ref-v1.md` | UNMET | aigentry-architect (or orchestrator-designated) | YES — implementation cannot begin until G2 lands |
-| G3 | `~/projects/aigentry-ssot/contracts/scaffold-v1.md` | UNMET | aigentry-architect | YES — `aigentry scaffold` CLI surface registration |
+| G2 | `~/projects/aigentry-ssot/contracts/context-ref-v1.md` | UNMET | aigentry-architect (or orchestrator-designated) | YES — coder dispatch blocked until G2 lands |
+| G3 | `~/projects/aigentry-ssot/contracts/scaffold-v1.md` | UNMET | aigentry-architect | YES — coder dispatch blocked until G3 lands |
 | G4 | `~/projects/aigentry-ssot/contracts/scaffold-shim-v1.md` | UNMET | aigentry-architect | NO — telepty-side, not consumed here |
 
-Gates G2 and G3 must land **before coder dispatch**. Their content is sketched in Appendix A and Appendix B of this spec to facilitate registration; final SSOT files are written by the orchestrator-designated session (typically a follow-on architect dispatch or a quick-win coder if scope permits) before this spec moves to implementation.
+**Acceptance gate (this spec).** This spec's `status` transitions from `proposed` → `accepted` ONLY after the orchestrator confirms G2 + G3 verifications pass. The verifications are the verbatim ADR §6.5.1 commands:
+
+```bash
+# G2 verification (verbatim from ADR §6.5.1)
+test -f ~/projects/aigentry-ssot/contracts/context-ref-v1.md \
+  && grep -q 'context-ref/v1' ~/projects/aigentry-ssot/contracts/context-ref-v1.md \
+  && grep -q '§3.1.2.1.1' ~/projects/aigentry-ssot/contracts/context-ref-v1.md
+
+# G3 verification (verbatim from ADR §6.5.1)
+test -f ~/projects/aigentry-ssot/contracts/scaffold-v1.md \
+  && grep -q 'scaffold/v1' ~/projects/aigentry-ssot/contracts/scaffold-v1.md
+```
+
+Both commands MUST exit 0 before this spec can be marked `accepted` and before any coder dispatch is allowed.
+
+Appendix A (G2) and Appendix B (G3) of this spec sketch the SSOT stub content that satisfies the grep predicates. Those stubs are **spec-internal text only**; an orchestrator-designated session (architect or quick-wins coder) must commit them as actual files at the SSOT paths above. This spec does NOT itself create the SSOT files (Architect AGENTS.md §5.2 — devkit spec writes only into devkit `docs/`).
 
 ### §7.2 Conformance fixtures owned by telepty (ADR §3.1.2.1 + §3.1.2.2 r3)
 
@@ -646,7 +717,7 @@ Tests that exercise telepty must use `process.env.PATH` shimmed (tests own a `bi
 | 1 | Does this serve the AI tech-gap mission? | **PASS** | Per-CLI hook receivers let any user with claude/codex/gemini receive `[context-ref]` payloads transparently; closes the "I just got a long inject and lost the structure" gap that motivated the protocol in #10. |
 | 2 | Is this the right component's role (Article 3)? | **PASS** | Devkit owns per-CLI receiver-side per ADR §3.1.2 + §3.3 row "Per-CLI hook integrations"; telepty install-hooks subcommand explicitly REJECTED per §3.1.2.5; this spec stays inside devkit's lane. |
 | 3 | Is the framework necessary (Article 1 — 경량)? | **PASS** | Approach 3 (declarative manifest + generic editor) was rejected for over-engineering 3 known CLIs; chosen Approach 1 ships ~3 per-CLI files + 1 shared lib + 3 templates ≈ 7 source files; no new external dependencies. |
-| 4 | Cross-platform (Article 2)? | **PASS** | claude script is bash (POSIX-only — acceptable; Claude Code already requires POSIX env for hooks); gemini script is Node.js (cross-platform); codex is markdown-only (text). Windows considered: bash hook works under Git-Bash / WSL; documented in §3.5 help text. |
+| 4 | Cross-platform (Article 2)? | **PARTIAL** | gemini script is Node.js (truly cross-platform); codex is markdown-only (platform-irrelevant); claude script is **bash** — works on macOS/Linux/WSL/Git-Bash but NOT on native Windows cmd/PowerShell. Native-Windows claude users must install WSL or Git-Bash (a precondition Claude Code itself effectively imposes for its existing hook framework). Documented as a known limitation in §3.5 help text; native PowerShell receiver is §13 Out-of-Scope (deferred to v1.x once Windows-native demand surfaces). Article 2 not fully met for native-Windows claude — recorded as known partial gap, not a hidden defect. |
 | 5 | Does this avoid forcing "how" on the user (Article 5)? | **PASS** | User opts in per-CLI; no auto-install; `--dry-run` lets users preview before commit; `--uninstall` is symmetric and clean. Article 17 (no mandate) honored: the protocol works without hooks installed (telepty inject still emits the file; the receiving CLI just won't auto-decode). |
 
 Articles **9 (독립)** and **17 (무의존)** also explicitly cleared in §9.4 (test isolation) and §6.3 (telepty handshake graceful degradation).
@@ -667,14 +738,27 @@ Articles **9 (독립)** and **17 (무의존)** also explicitly cleared in §9.4 
 | M6 | `--dry-run` non-mutation | Run `--dry-run` on a fresh scope; verify no files written. | filesystem unchanged (mtime equal pre/post) |
 | M7 | Help text completeness | `--help` includes usage line, flag table, exit codes, ADR pointer, examples. | manual checklist; CI lint script verifies presence of all 5 elements |
 
-### §12.2 Pre-implementation gates (orchestrator-checked)
+### §12.2 Pre-implementation gates (orchestrator-checked, verbatim ADR §6.5.1 commands)
 
-Before coder dispatch, orchestrator MUST verify:
-- ADR §6.5.1 G2 (`context-ref-v1.md`) PASS — `~/projects/aigentry-ssot/contracts/context-ref-v1.md` exists and cites §3.1.2.1.1.
-- ADR §6.5.1 G3 (`scaffold-v1.md`) PASS — file exists.
-- ADR §6.5.1 G7 (telepty README cleanup) PASS — `! grep -nE 'telepty install hooks' ~/projects/aigentry-telepty/README.md`.
+Before coder dispatch, orchestrator MUST verify all three gates pass. The verifications are the verbatim ADR §6.5.1 shell commands:
 
-If any gate fails, dispatch is blocked per ADR §6.5 BLOCKER policy.
+```bash
+# G2 (verbatim from ADR §6.5.1)
+test -f ~/projects/aigentry-ssot/contracts/context-ref-v1.md \
+  && grep -q 'context-ref/v1' ~/projects/aigentry-ssot/contracts/context-ref-v1.md \
+  && grep -q '§3.1.2.1.1' ~/projects/aigentry-ssot/contracts/context-ref-v1.md
+
+# G3 (verbatim from ADR §6.5.1)
+test -f ~/projects/aigentry-ssot/contracts/scaffold-v1.md \
+  && grep -q 'scaffold/v1' ~/projects/aigentry-ssot/contracts/scaffold-v1.md
+
+# G7 (verbatim from ADR §6.5.1)
+! grep -nE 'telepty install hooks' ~/projects/aigentry-telepty/README.md
+```
+
+ALL three commands MUST exit 0. Any non-zero exit → coder dispatch blocked per ADR §6.5 BLOCKER policy.
+
+**Additional precondition for gemini-portion only** (per §4.3.0): dustcraw research dispatch returns PASS or has supplied a corrected schema integrated into §4.3.2-§4.3.3 via architect re-dispatch. claude-portion and codex-portion coder dispatches are not blocked by this gemini-specific precondition.
 
 ### §12.3 Post-implementation gate (M0 7-day window)
 
@@ -737,9 +821,13 @@ This spec must complete (status: accepted) within the M0 window (7 days from ADR
 
 ## §15 Open Questions
 
-**None at submit time.** All six dispatch-envelope questions resolved (§2.3). All ADR ambiguities (e.g., gemini hook schema, telepty handshake fidelity) resolved by adapter clauses (§4.3.2 directs coder to adapt to gemini's actual schema while preserving wire contract; §6.3 simplifies handshake without changing semantic).
+**Spec-blocking questions: zero.** All six dispatch-envelope questions (§2.3 Q1-Q6) resolved.
 
-If implementation surfaces an unforeseen blocker (e.g., gemini's hook schema differs incompatibly), coder MUST file an architect re-dispatch with the specific blocker; coder MUST NOT change the wire contract or per-CLI target file paths unilaterally.
+**Implementation-precondition questions: one** (does NOT block spec acceptance; blocks only gemini-portion coder dispatch):
+
+- **Q7 — Gemini hook framework schema validation.** §4.3.0 mandates a dustcraw research dispatch to validate the §4.3.2 settings.json shape (`hooks.userPromptSubmit[].name` + `command` + `version` triple) and the §4.3.3 hook-script output envelope (`additionalContext` outer key). PASS → no spec change. FAIL with corrected schema → architect re-dispatch revises §4.3.2-§4.3.3 verbatim from research output. Claude-portion + codex-portion implementations are independent of Q7 outcome and may proceed in parallel.
+
+If any implementation surfaces an additional unforeseen blocker (e.g., a new third-party CLI hook framework constraint), coder MUST file an architect re-dispatch with the specific blocker; coder MUST NOT change the wire contract or per-CLI target file paths unilaterally.
 
 ---
 
@@ -748,8 +836,8 @@ If implementation surfaces an unforeseen blocker (e.g., gemini's hook schema dif
 ### §16.1 Failure modes
 
 - **F1 — User-modified hook script silently overwritten**: mitigated by script-sha256 check + `.bak.<ISO8601>` always; refusal without `--force`.
-- **F2 — settings.json corruption from concurrent edit**: mitigated by atomic write-temp-rename (§5.4); if user concurrently edits, rename will overwrite their edit but their file's mtime + backup chain shows the lost edit. Not a guarantee against lost edits — install operations should not be run with the AI CLI active. Documented in `--help`.
-- **F3 — Telepty version mismatch during hook execution**: covered by §6.3 — fall-open handles missing files; v2 prefix changes trigger fall-open until devkit hook v2 lands. Graceful by design.
+- **F2 — settings.json corruption from concurrent edit**: mitigated by atomic write-temp-rename (§5.4) **plus advisory `flock(2)` on settings.json during the read-modify-write critical section** (Linux/macOS only; Windows skipped — install on Windows users blocked by §11 row 4 anyway). If a user edits settings.json concurrently while holding their own file lock, atomic rename may still overwrite — install operations SHOULD NOT be run with the AI CLI active; documented in `--help` text. Backup chain (`.bak.<ISO8601>`) preserves any pre-install state for recovery.
+- **F3 — Telepty version mismatch during hook execution**: covered by §6.3 runtime re-check — if telepty absent or older than recorded `min telepty version`, hook logs actionable stderr error then falls open (passes prompt unchanged). v2 prefix lines fail the v1 literal-prefix match in §6.2 step 2, also triggering fall-open. Graceful by design at every reachable failure path.
 - **F4 — Half-applied install on disk full**: mitigated by atomic per-file rename + script-then-settings ordering — if disk full, the installer aborts with exit 4 before mutating settings.json (script written first; settings entry last). Re-run after freeing space resumes safely.
 - **F5 — codex AGENTS.md sentinel deleted partially by user**: detected as "BEGIN without END"; refused install without `--force`. With `--force`, full block rewrite + backup.
 
