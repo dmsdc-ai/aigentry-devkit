@@ -46,6 +46,7 @@
     "skills/upsell-trigger/**",
     "skills/youtube-analyzer/**",
     "templates/workspace/**",
+    "templates/scaffold/**",
     "templates/aigentry/**",
     "templates/knowledge/**",
     "tools/wtm/**",

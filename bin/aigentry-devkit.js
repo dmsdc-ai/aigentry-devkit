@@ -54,6 +54,7 @@ function printHelp() {
     "    --cli <claude|codex|gemini>       Target CLI (required)",
     "    --dry-run                         Emit planned actions without writing",
     "    --backup|--no-backup              Backup merge/uninstall targets (default: backup)",
+    "  aigentry scaffold install-hooks <cli>  Install [context-ref/v1] receiver hooks",
     "  aigentry-devkit up                  Start enabled modules (telepty daemon, health checks)",
     "  aigentry-devkit start              Start all workspace sessions (kitty/tmux tabs)",
     "  aigentry-devkit stop               Stop all workspace sessions",
@@ -1425,8 +1426,13 @@ if (extras.length > 0 && command !== "session" && command !== "workspace-init" &
 }
 
 if (command === "scaffold" && options.help) {
-  printScaffoldHelp();
-  process.exit(0);
+  if (extras[0] === "install-hooks") {
+    const { run: runScaffoldInstallHooks } = require("../lib/scaffold/install-hooks/dispatcher");
+    process.exit(runScaffoldInstallHooks(extras, { ...options, help: true }));
+  } else {
+    printScaffoldHelp();
+    process.exit(0);
+  }
 }
 
 if (command === "help" || options.help) {
@@ -1459,6 +1465,10 @@ try {
       runInit();
       break;
     case "scaffold": {
+      if (extras[0] === "install-hooks") {
+        const { run: runScaffoldInstallHooks } = require("../lib/scaffold/install-hooks/dispatcher");
+        process.exit(runScaffoldInstallHooks(extras, options));
+      }
       let scaffoldOpts;
       try {
         scaffoldOpts = parseProjectArgv(extras, options);
