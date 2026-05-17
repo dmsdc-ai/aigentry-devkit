@@ -11,6 +11,8 @@ test("template-dir overrides bundled workspace templates", () => {
   const { project } = makeProject("template-override");
   const templateDir = tempRoot("templates");
   fs.writeFileSync(path.join(templateDir, "AGENTS.codex.md"), "# Custom Codex Template\n");
+  fs.mkdirSync(path.join(templateDir, "bin"), { recursive: true });
+  fs.writeFileSync(path.join(templateDir, "bin", "snyk-scan.sh"), "#!/usr/bin/env bash\n# stub\n");
 
   const result = runScaffold(["--project", project, "--cli", "codex", "--template-dir", templateDir]);
 

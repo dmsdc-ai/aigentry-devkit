@@ -17,6 +17,7 @@ test("reapply is idempotent and does not rewrite unchanged files", () => {
   const files = [
     "AGENTS.md",
     "CLAUDE.md",
+    path.join("bin", "snyk-scan.sh"),
     path.join("state", "task-queue.json"),
     path.join("state", "lessons.json"),
     path.join(".claude", "settings.json"),
@@ -32,6 +33,7 @@ test("reapply is idempotent and does not rewrite unchanged files", () => {
   assert.deepEqual(lines, [
     `skip ${path.join(project, "AGENTS.md")} (exists)`,
     `skip ${path.join(project, "CLAUDE.md")} (exists)`,
+    `skip ${path.join(project, "bin", "snyk-scan.sh")} (exists)`,
     `skip ${path.join(project, "state", "task-queue.json")} (exists)`,
     `skip ${path.join(project, "state", "lessons.json")} (exists)`,
     `skip ${path.join(project, ".claude", "settings.json")} (unchanged)`,

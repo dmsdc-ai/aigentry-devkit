@@ -17,6 +17,7 @@ test("dry-run emits the plan without project or HOME writes", () => {
   assert.deepEqual(lines, [
     `create ${path.join(project, "AGENTS.md")}`,
     `create ${path.join(project, "CLAUDE.md")}`,
+    `create ${path.join(project, "bin", "snyk-scan.sh")}`,
     `create ${path.join(project, "state", "task-queue.json")}`,
     `create ${path.join(project, "state", "lessons.json")}`,
     `create ${path.join(project, ".claude", "settings.json")}`,

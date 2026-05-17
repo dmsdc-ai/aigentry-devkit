@@ -24,6 +24,7 @@ test("fresh claude scaffold creates the project matrix and preserves golden temp
   assert.deepEqual(lines, [
     `create ${path.join(project, "AGENTS.md")}`,
     `create ${path.join(project, "CLAUDE.md")}`,
+    `create ${path.join(project, "bin", "snyk-scan.sh")}`,
     `create ${path.join(project, "state", "task-queue.json")}`,
     `create ${path.join(project, "state", "lessons.json")}`,
     `create ${path.join(project, ".claude", "settings.json")}`,
