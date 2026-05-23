@@ -6,6 +6,9 @@ const { spawnSync } = require("child_process");
 const { loadLicense, generateFreeLicense, getCurrentTier, checkEntitlement, getTierInfo, LICENSE_PATH } = require("../lib/entitlement");
 const { workspaceInit, scaffoldProject, parseProjectArgv, printScaffoldHelp } = require("../lib/workspace-init");
 const { updateMd } = require("../lib/update-md");
+// δ2 (#440) — telemetry emit wrapper. Fire-and-forget; failures swallowed
+// internally so the CLI is never blocked by a logger transport hiccup.
+const { emitModuleEvent } = require("../lib/logger-emit");
 
 const rootDir = path.resolve(__dirname, "..");
 const HOME = process.env.HOME || process.env.USERPROFILE || "";
@@ -1439,6 +1442,8 @@ if (command === "help" || options.help) {
   printHelp();
   process.exit(0);
 }
+
+emitModuleEvent("module_load", { entry: "aigentry-devkit", command, argc: argv.length });
 
 try {
   switch (command) {

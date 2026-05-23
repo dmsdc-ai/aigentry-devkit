@@ -32,6 +32,9 @@ function runDevkit(command, args, options = {}) {
     HOME: home,
     USERPROFILE: home,
     ATERM_ORCHESTRATOR_SESSION: "",
+    // δ2 (#440) — scaffold tests verify no HOME writes; telemetry emit
+    // would create ~/.aigentry/telemetry/. Disable for the subprocess.
+    AIGENTRY_LOGGER_DISABLED: "1",
     ...options.env,
   };
   return spawnSync(process.execPath, [BIN, command, ...args], {
