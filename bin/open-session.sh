@@ -152,7 +152,7 @@ detect_terminal() {
 fallback_spawn() {
   local _sid="$1" _cwd="$2" _cli_cmd="$3"
   if command -v tmux >/dev/null 2>&1 && platform::has_tmux_session; then
-    platform::spawn_tmux_window "$_sid" "$_cwd" "telepty allow --id '$_sid' $_cli_cmd"
+    platform::spawn_tmux_window "$_sid" "$_cwd" "telepty allow --id '$_sid' --auto-restart $_cli_cmd"
     echo "$_sid"
   else
     telepty spawn --id "$_sid" -- bash -c "cd '$_cwd' && exec $_cli_cmd" >/dev/null
@@ -173,7 +173,7 @@ open_in_terminal() {
       # cmux --command sends text+Enter; telepty allow runs as the workspace's foreground process.
       # bash -c 'cd ... && exec ...' wrapper: cmux --cwd only affects workspace shell, not the
       # telepty-allow-wrapped CLI. Explicit cd inside wrapper guarantees claude inherits cwd (#311).
-      out=$(cmux new-workspace --cwd "$cwd" --command "bash -c 'cd $cwd && exec telepty allow --id $sid $cli_cmd'" 2>&1)
+      out=$(cmux new-workspace --cwd "$cwd" --command "bash -c 'cd $cwd && exec telepty allow --id $sid --auto-restart $cli_cmd'" 2>&1)
       ref=$(echo "$out" | grep -oE 'workspace:[0-9]+' | head -1)
       [ -z "$ref" ] && { echo "ERR cmux new-workspace failed: $out" >&2; exit 2; }
       cmux rename-workspace --workspace "$ref" "$title" >/dev/null 2>&1 || true
@@ -182,7 +182,7 @@ open_in_terminal() {
     aterm)
       # bash -c wrapper for cwd propagation into claude (#311).
       if command -v aterm >/dev/null 2>&1 \
-        && aterm new-session --cwd "$cwd" --cmd "bash -c 'cd $cwd && exec telepty allow --id $sid $cli_cmd'" 2>/dev/null; then
+        && aterm new-session --cwd "$cwd" --cmd "bash -c 'cd $cwd && exec telepty allow --id $sid --auto-restart $cli_cmd'" 2>/dev/null; then
         echo "$sid"
       else
         fallback_spawn "$sid" "$cwd" "$cli_cmd"
@@ -190,20 +190,20 @@ open_in_terminal() {
       ;;
     tmux)
       # tmux new-window -c propagates cwd correctly via platform::spawn_tmux_window.
-      platform::spawn_tmux_window "$title" "$cwd" "telepty allow --id '$sid' $cli_cmd"
+      platform::spawn_tmux_window "$title" "$cwd" "telepty allow --id '$sid' --auto-restart $cli_cmd"
       echo "$sid"
       ;;
     wezterm)
       if command -v wezterm >/dev/null 2>&1; then
         # Explicit cd inside bash -c guarantees cwd propagation into claude (#311).
-        wezterm cli spawn --cwd "$cwd" -- bash -c "cd '$cwd' && exec telepty allow --id $sid $cli_cmd" >/dev/null
+        wezterm cli spawn --cwd "$cwd" -- bash -c "cd '$cwd' && exec telepty allow --id $sid --auto-restart $cli_cmd" >/dev/null
         echo "$sid"
       else
         fallback_spawn "$sid" "$cwd" "$cli_cmd"
       fi
       ;;
     iterm)
-      platform::spawn_iterm_tab "$cwd" "telepty allow --id $sid $cli_cmd" \
+      platform::spawn_iterm_tab "$cwd" "telepty allow --id $sid --auto-restart $cli_cmd" \
         || { echo "ERR iTerm spawn failed" >&2; exit 2; }
       echo "$sid"
       ;;
