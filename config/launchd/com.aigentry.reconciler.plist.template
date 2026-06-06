@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.aigentry.reconciler</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>@REPO_PATH@/bin/session-reconciler.sh</string>
+    <string>--loop</string>
+  </array>
+  <!-- KeepAlive long-lived daemon (SPEC §5.2; analyst root-cause 2026-06-06): a
+       StartInterval timer does NOT re-arm after battery/clamshell maintenance-
+       sleep, so the reconciler went dormant. KeepAlive=true relaunches the
+       `--loop` wrapper whenever it exits and survives sleep. The 60s cadence
+       lives inside `--loop` (RECONCILER_LOOP_INTERVAL), not in launchd.
+       @REPO_PATH@ / @LOG_PATH@ / @NODE_BIN_DIR@ are substituted at install time
+       (generate-not-copy) — never hardcode a machine-specific path here. -->
+  <key>KeepAlive</key>
+  <true/>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>@LOG_PATH@</string>
+  <key>StandardErrorPath</key>
+  <string>@LOG_PATH@</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>@NODE_BIN_DIR@:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+</dict>
+</plist>

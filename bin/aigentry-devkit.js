@@ -82,6 +82,7 @@ function printHelp() {
     "",
     "Examples:",
     "  npx @dmsdc-ai/aigentry-devkit setup --profile core",
+    "  npx @dmsdc-ai/aigentry-devkit setup --profile orchestrator",
     "  npx @dmsdc-ai/aigentry-devkit install --profile autoresearch-public",
     "  npx @dmsdc-ai/aigentry-devkit profiles",
     "  npx @dmsdc-ai/aigentry-devkit doctor",
@@ -458,6 +459,78 @@ function runDoctor() {
     if (!ok) {
       console.log(`       → ${check.fix}`);
       allPassed = false;
+    }
+  }
+
+  // Orchestrator profile checks (#518) — auto-detected: only shown when the
+  // orchestrator profile is installed (installer-state has orchestrator-role /
+  // an orchestrator block, or $ORCH_DIR exists). A core-only user is unaffected.
+  const orchStateFile = path.join(
+    process.env.XDG_CONFIG_HOME || path.join(HOME, ".config"),
+    "aigentry-devkit", "install-state.json"
+  );
+  const orchState = readJson(orchStateFile) || {};
+  const orchDir = (orchState.orchestrator && orchState.orchestrator.repo_dir) ||
+    process.env.AIGENTRY_ORCH_DIR || "";
+  const orchInstalled = !!orchState.orchestrator ||
+    (Array.isArray(orchState.components) && orchState.components.includes("orchestrator-role")) ||
+    (!!orchDir && fs.existsSync(orchDir));
+  if (orchInstalled) {
+    const aigentryHome = process.env.AIGENTRY_HOME || path.join(HOME, ".aigentry");
+    const orchChecks = [
+      {
+        name: "instruction tree present",
+        test: () => fs.existsSync(path.join(aigentryHome, "instructions", "roles", "orchestrator.md")),
+        fix: `bash ${orchDir || "$ORCH_DIR"}/bin/install-instructions.sh`,
+      },
+      {
+        name: "dispatch.sh on PATH",
+        test: () => commandExists("dispatch.sh"),
+        fix: "add ~/.local/bin to PATH / re-run setup --profile orchestrator",
+      },
+      {
+        name: "config.json roles present",
+        test: () => {
+          const c = readJson(path.join(aigentryHome, "config.json"));
+          return !!(c && c.roles && Object.values(c.roles).some((r) => r && r.path));
+        },
+        fix: "re-run setup --profile orchestrator",
+      },
+      {
+        name: "deliberation MCP registered",
+        test: () => {
+          const cfg = readJson(path.join(HOME, ".claude", ".mcp.json"));
+          return !!(cfg && cfg.mcpServers && cfg.mcpServers.deliberation);
+        },
+        fix: "npx @dmsdc-ai/aigentry-devkit setup",
+      },
+      {
+        // Info-only (tolerant of AIGENTRY_SKIP_DAEMON / headless): never fails doctor.
+        name: "reconciler daemon loaded",
+        optional: true,
+        test: () => {
+          if (process.platform === "darwin") {
+            return spawnSync("launchctl", ["print", `gui/${process.getuid()}/com.aigentry.reconciler`], { stdio: "ignore" }).status === 0;
+          }
+          if (process.platform === "linux") {
+            return spawnSync("systemctl", ["--user", "is-active", "aigentry-reconciler"], { stdio: "ignore" }).status === 0;
+          }
+          return true;
+        },
+        fix: "re-run setup / load the generated unit",
+      },
+    ];
+
+    console.log("\n  🪐 Orchestrator Profile:");
+    for (const check of orchChecks) {
+      let ok = false;
+      try { ok = check.test(); } catch { ok = false; }
+      const icon = ok ? "✅" : (check.optional ? "➖" : "❌");
+      console.log(`    ${icon} ${check.name}`);
+      if (!ok && !check.optional) {
+        console.log(`       → ${check.fix}`);
+        allPassed = false;
+      }
     }
   }
 

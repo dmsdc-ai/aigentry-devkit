@@ -36,6 +36,15 @@
         "deliberation"
       ]
     },
+    "orchestrator": {
+      "description": "full aigentry orchestrator env: core + cloned-built orchestrator repo, instruction tree, reconciler daemon, hooks",
+      "components": [
+        "devkit-core",
+        "telepty",
+        "deliberation",
+        "orchestrator-role"
+      ]
+    },
     "autoresearch-public": {
       "description": "experiment runner + registry wiring + optional brain",
       "components": [
@@ -71,7 +80,8 @@
         "brain",
         "dustcraw",
         "registry-wiring",
-        "amplify"
+        "amplify",
+        "orchestrator-role"
       ]
     }
   },
@@ -215,6 +225,26 @@
       },
       "health_checks": [
         "bridge-cli"
+      ],
+      "failure_policy": "soft"
+    },
+    "orchestrator-role": {
+      "phase": 8,
+      "required": false,
+      "depends_on": [
+        "devkit-core",
+        "telepty",
+        "deliberation"
+      ],
+      "install": {
+        "kind": "adapter"
+      },
+      "health_checks": [
+        "orchestrator-repo-built",
+        "instructions-tree-present",
+        "reconciler-daemon-loaded",
+        "dispatch-on-path",
+        "deliberation-mcp-registered"
       ],
       "failure_policy": "soft"
     }

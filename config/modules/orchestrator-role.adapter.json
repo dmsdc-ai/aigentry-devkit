@@ -1,0 +1,54 @@
+{
+  "name": "orchestrator-role",
+  "version": "managed-by-devkit",
+  "capabilities": {
+    "cli": true,
+    "daemon": true,
+    "skill_provider": false,
+    "hook_provider": true,
+    "mcp_server": false,
+    "transport": false
+  },
+  "healthcheck": {
+    "command": "command -v dispatch.sh >/dev/null 2>&1 && test -d \"${AIGENTRY_HOME:-$HOME/.aigentry}/instructions\"",
+    "timeout_ms": 8000
+  },
+  "attach": {
+    "config_path": "~/.aigentry/config.json",
+    "env_vars": {
+      "AIGENTRY_HOME": "~/.aigentry",
+      "AIGENTRY_PROJECTS_ROOT": "(declared/discovered at install time)"
+    }
+  },
+  "depends_on": [
+    "devkit-core",
+    "telepty",
+    "deliberation"
+  ],
+  "x-git-install": {
+    "repo": "https://github.com/dmsdc-ai/aigentry-orchestrator.git",
+    "ref": "main",
+    "build": "npm ci && npm run build",
+    "bin_link": [
+      "dispatch.sh",
+      "session-reconciler.sh",
+      "install-instructions.sh"
+    ],
+    "self_symlink_repoint": [
+      "open-session.sh",
+      "tq-focus.sh",
+      "tq-status.sh",
+      "tq-track.sh",
+      "trust-aigentry.sh",
+      "trust-path.sh"
+    ]
+  },
+  "install": {
+    "fallback": [
+      {
+        "kind": "skip",
+        "message": "orchestrator-role unavailable (git/build/daemon) — orchestrator features disabled; core install unaffected"
+      }
+    ]
+  }
+}

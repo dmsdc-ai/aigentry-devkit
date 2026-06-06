@@ -715,7 +715,202 @@ if should_run_phase 7; then
   info "Wrote env fan-out: $DEVKIT_ENV_FILE"
 fi
 
-header "Phase 8. Cross-platform Notes"
+# Phase 8 — orchestrator-role (#518). Soft-policy: every step degrades (warn +
+# continue) rather than failing the installer, so a core user is never blocked.
+# New logic is confined to this one gated block + the config/launchd|systemd
+# templates (§1 경량 — no new framework, reuses the existing phase pipeline).
+if should_run_phase 8 && component_selected "orchestrator-role"; then
+  header "Phase 8. Orchestrator Role"
+
+  ORCH_ADAPTER="$DEVKIT_DIR/config/modules/orchestrator-role.adapter.json"
+  ORCH_STATUS="skipped"
+  ORCH_DIR=""
+
+  # adapter_field <dotted.path> — read a value from the orchestrator adapter's
+  # x-git-install block (data, not hardcoded shell). Arrays join on spaces.
+  adapter_field() {
+    node -e 'const a=require(process.argv[1]);const v=process.argv[2].split(".").reduce((o,k)=>(o==null?o:o[k]),a);if(v==null)process.exit(1);process.stdout.write(Array.isArray(v)?v.join(" "):String(v));' "$ORCH_ADAPTER" "$1" 2>/dev/null
+  }
+
+  ORCH_REPO="${AIGENTRY_ORCH_REPO:-$(adapter_field 'x-git-install.repo')}"
+  # ref pinned to "main" in the adapter for now — switch to a release tag once
+  # the orchestrator publishes one (override per-install via AIGENTRY_ORCH_REF).
+  ORCH_REF="${AIGENTRY_ORCH_REF:-$(adapter_field 'x-git-install.ref')}"
+  ORCH_BUILD_CMD="$(adapter_field 'x-git-install.build')"
+  ORCH_BIN_LINK="$(adapter_field 'x-git-install.bin_link')"
+  ORCH_REPOINT="$(adapter_field 'x-git-install.self_symlink_repoint')"
+
+  # 8.1 Preflight + resolve PROJECTS_ROOT (discover → prompt → default) and ORCH_DIR.
+  PROJECTS_ROOT="${AIGENTRY_PROJECTS_ROOT:-}"
+  if [ -z "$PROJECTS_ROOT" ]; then
+    if [ -n "${AIGENTRY_ORCH_DIR:-}" ]; then
+      PROJECTS_ROOT="$(dirname "$AIGENTRY_ORCH_DIR")"
+    elif [ -d "$HOME/projects" ]; then
+      PROJECTS_ROOT="$HOME/projects"
+    fi
+  fi
+  prompt_value PROJECTS_ROOT "Projects root (where aigentry-* repos live)" "${PROJECTS_ROOT:-$HOME/projects}"
+  ORCH_DIR="${AIGENTRY_ORCH_DIR:-$PROJECTS_ROOT/aigentry-orchestrator}"
+
+  if ! command -v git >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+    warn "orchestrator-role skipped (need git+node+npm)"
+    ORCH_STATUS="skipped"
+  else
+    # 8.2 Clone or update (idempotent; dirty tree → keep local).
+    if [ -d "$ORCH_DIR/.git" ]; then
+      info "Updating orchestrator repo at $ORCH_DIR"
+      git -C "$ORCH_DIR" fetch --quiet origin "$ORCH_REF" 2>/dev/null || warn "git fetch failed (offline?) — using local checkout"
+      if [ -n "$(git -C "$ORCH_DIR" status --porcelain 2>/dev/null)" ]; then
+        warn "orchestrator repo has local changes — skipping pull, keeping local"
+      else
+        git -C "$ORCH_DIR" checkout --quiet "$ORCH_REF" 2>/dev/null || true
+        git -C "$ORCH_DIR" pull --ff-only --quiet 2>/dev/null || warn "git pull --ff-only failed — keeping local"
+      fi
+      ORCH_STATUS="installed"
+    else
+      info "Cloning orchestrator repo → $ORCH_DIR"
+      mkdir -p "$(dirname "$ORCH_DIR")"
+      if git clone --branch "$ORCH_REF" --depth 1 "$ORCH_REPO" "$ORCH_DIR" 2>/dev/null \
+        || git clone "$ORCH_REPO" "$ORCH_DIR" 2>/dev/null; then
+        ORCH_STATUS="installed"
+      else
+        warn "orchestrator clone failed — orchestrator-role degraded (core install unaffected)"
+        ORCH_STATUS="degraded"
+      fi
+    fi
+
+    if [ "$ORCH_STATUS" = "installed" ] && [ -d "$ORCH_DIR" ]; then
+      # 8.3 Build (registry deps resolve post-#520). AIGENTRY_ORCH_BUILD=true
+      # bypasses the real build for CI/hermetic tests.
+      if [ "${AIGENTRY_ORCH_BUILD:-}" = "true" ]; then
+        info "AIGENTRY_ORCH_BUILD=true → skipping real build (CI/test)"
+      else
+        build_cmd="$ORCH_BUILD_CMD"
+        [ -f "$ORCH_DIR/package-lock.json" ] || build_cmd="${build_cmd/npm ci/npm install}"
+        info "Building orchestrator: $build_cmd"
+        ( cd "$ORCH_DIR" && eval "$build_cmd" ) || warn "orchestrator built incompletely — continuing best-effort"
+      fi
+
+      # 8.4 PATH-link the orchestrator's own real scripts (dispatch.sh,
+      # session-reconciler.sh, install-instructions.sh) into the user bin dir.
+      mkdir -p "$WTM_BIN"
+      for b in $ORCH_BIN_LINK; do
+        if [ -e "$ORCH_DIR/bin/$b" ]; then
+          ln -sf "$ORCH_DIR/bin/$b" "$WTM_BIN/$b"
+          info "Linked $b → $WTM_BIN/$b"
+        else
+          warn "orchestrator bin missing: $b (skipped link)"
+        fi
+      done
+      if ! echo "$PATH" | tr ':' '\n' | grep -q "$WTM_BIN"; then
+        warn "Add to your shell profile: export PATH=\"\$HOME/.local/bin:\$PATH\""
+      fi
+
+      # 8.5 Re-point the orchestrator's self-symlinks. In the orchestrator repo
+      # these (open-session.sh, tq-*.sh, trust-*.sh) are committed as symlinks to
+      # an absolute reference-machine devkit path → DANGLING on a fresh clone.
+      # Re-point them to THIS installed devkit's bin/. The targets are shipped in
+      # the published tarball via package.json files[] (§8.5 resolution: option a).
+      for s in $ORCH_REPOINT; do
+        if [ -e "$DEVKIT_DIR/bin/$s" ]; then
+          ln -sfn "$DEVKIT_DIR/bin/$s" "$ORCH_DIR/bin/$s"
+        else
+          warn "devkit bin missing for re-point: $s (left as-is)"
+        fi
+      done
+
+      # 8.6 Instruction tree — reuse the orchestrator's own idempotent installer
+      # (no --force → preserves user edits; honors $AIGENTRY_HOME for tests).
+      if [ -f "$ORCH_DIR/bin/install-instructions.sh" ]; then
+        AIGENTRY_HOME="${AIGENTRY_HOME:-$HOME/.aigentry}" bash "$ORCH_DIR/bin/install-instructions.sh" \
+          || warn "install-instructions.sh exited non-zero — instruction tree may be incomplete"
+      else
+        warn "install-instructions.sh not found in clone — instruction tree skipped"
+      fi
+
+      # 8.7 Reconciler daemon — GENERATE from template (never copy); load
+      # idempotently. Non-macOS/non-systemd or AIGENTRY_SKIP_DAEMON=1 → print
+      # manual instructions and continue (soft).
+      NODE_BIN_DIR="$(dirname "$(command -v node)")"
+      case "$PLATFORM" in
+        Darwin) LOG_PATH="$HOME/Library/Logs/aigentry-orchestrator/reconciler.log" ;;
+        *)      LOG_PATH="${XDG_STATE_HOME:-$HOME/.local/state}/aigentry/reconciler.log" ;;
+      esac
+      mkdir -p "$(dirname "$LOG_PATH")"
+      RECONCILER_SKIP_LOAD="${AIGENTRY_SKIP_DAEMON:-0}"
+
+      case "$PLATFORM" in
+        Darwin)
+          PLIST_TMPL="$DEVKIT_DIR/config/launchd/com.aigentry.reconciler.plist.template"
+          PLIST_DEST="$HOME/Library/LaunchAgents/com.aigentry.reconciler.plist"
+          if [ -f "$PLIST_TMPL" ]; then
+            mkdir -p "$HOME/Library/LaunchAgents"
+            sed -e "s|@REPO_PATH@|$ORCH_DIR|g" -e "s|@LOG_PATH@|$LOG_PATH|g" -e "s|@NODE_BIN_DIR@|$NODE_BIN_DIR|g" "$PLIST_TMPL" > "$PLIST_DEST"
+            info "Generated launchd unit: $PLIST_DEST"
+            if [ "$RECONCILER_SKIP_LOAD" = "1" ]; then
+              info "AIGENTRY_SKIP_DAEMON=1 → not loading. Load manually: launchctl bootstrap gui/$(id -u) \"$PLIST_DEST\""
+            else
+              uid="$(id -u)"
+              launchctl bootout "gui/$uid" "$PLIST_DEST" 2>/dev/null || true
+              if launchctl bootstrap "gui/$uid" "$PLIST_DEST" 2>/dev/null; then
+                launchctl enable "gui/$uid/com.aigentry.reconciler" 2>/dev/null || true
+                info "Loaded reconciler daemon (launchd, KeepAlive)"
+              else
+                warn "launchctl bootstrap failed — load manually: launchctl bootstrap gui/$uid \"$PLIST_DEST\""
+              fi
+            fi
+          else
+            warn "launchd template missing — reconciler daemon not generated"
+          fi
+          ;;
+        Linux)
+          SVC_TMPL="$DEVKIT_DIR/config/systemd/aigentry-reconciler.service.template"
+          SVC_DEST="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/aigentry-reconciler.service"
+          if [ -f "$SVC_TMPL" ] && command -v systemctl >/dev/null 2>&1; then
+            mkdir -p "$(dirname "$SVC_DEST")"
+            sed -e "s|@REPO_PATH@|$ORCH_DIR|g" -e "s|@LOG_PATH@|$LOG_PATH|g" -e "s|@NODE_BIN_DIR@|$NODE_BIN_DIR|g" "$SVC_TMPL" > "$SVC_DEST"
+            info "Generated systemd unit: $SVC_DEST"
+            if [ "$RECONCILER_SKIP_LOAD" = "1" ]; then
+              info "AIGENTRY_SKIP_DAEMON=1 → not loading. Load manually: systemctl --user enable --now aigentry-reconciler.service"
+            else
+              systemctl --user daemon-reload 2>/dev/null || true
+              systemctl --user enable --now aigentry-reconciler.service 2>/dev/null \
+                || warn "systemctl enable failed — load manually: systemctl --user enable --now aigentry-reconciler.service"
+            fi
+          else
+            warn "systemd --user not available — reconciler not loaded. Run manually: bash $ORCH_DIR/bin/session-reconciler.sh --loop"
+          fi
+          ;;
+        *)
+          warn "No launchd/systemd on $PLATFORM — run reconciler manually: bash $ORCH_DIR/bin/session-reconciler.sh --loop"
+          ;;
+      esac
+
+      # 8.8 config.json — GENERATE parameterized role→path map (never copy a
+      # reference machine's deviceId/paths); deep-merge add-only.
+      ORCH_DEVICE_ID="device-$(hostname 2>/dev/null | tr -c 'A-Za-z0-9.-' '-' | sed 's/-*$//')"
+      if node -e 'require(process.argv[1]).writeOrchestratorConfig({projectsRoot:process.argv[2],deviceId:process.argv[3]})' "$DEVKIT_DIR/lib/bootstrap.js" "$PROJECTS_ROOT" "$ORCH_DEVICE_ID"; then
+        info "Generated ~/.aigentry/config.json (roles → $PROJECTS_ROOT)"
+      else
+        warn "config.json generation failed"
+      fi
+
+      # 8.9 Hooks deep-merge into ~/.claude/settings.json (PostToolUse rewritten
+      # to the absolute clone path; dedupe → re-runs are no-ops).
+      if node -e 'require(process.argv[1]).mergeClaudeHooks({orchDir:process.argv[2]})' "$DEVKIT_DIR/lib/bootstrap.js" "$ORCH_DIR"; then
+        info "Merged orchestrator Claude hooks into ~/.claude/settings.json"
+      else
+        warn "Claude hooks merge failed"
+      fi
+    fi
+  fi
+
+  # 8.10 State — append orchestrator-role outcome to the installer-state JSON.
+  node -e 'const fs=require("fs");const p=process.argv[1];let s={};try{s=JSON.parse(fs.readFileSync(p,"utf8"))}catch(_){};s.orchestrator={status:process.argv[2]||"skipped",repo_dir:process.argv[3]||""};fs.mkdirSync(require("path").dirname(p),{recursive:true});fs.writeFileSync(p,JSON.stringify(s,null,2));' "$DEVKIT_STATE_FILE" "$ORCH_STATUS" "$ORCH_DIR" 2>/dev/null || true
+  info "orchestrator-role: $ORCH_STATUS"
+fi
+
+header "Cross-platform Notes"
 info "Supported participant CLIs: claude, codex, gemini, qwen, chatgpt, aider, llm, opencode, cursor"
 info "Manage deliberation runtime with the canonical installer surface from aigentry-deliberation."
 info "Registry env fan-out is stored in $DEVKIT_ENV_FILE"

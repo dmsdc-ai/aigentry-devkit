@@ -1,0 +1,19 @@
+# aigentry session reconciler (systemd --user unit).
+# Generated from this template at install time (generate-not-copy):
+#   @REPO_PATH@ / @LOG_PATH@ / @NODE_BIN_DIR@ are substituted with derived,
+#   machine-specific values — never hardcode an absolute path here.
+[Unit]
+Description=aigentry session reconciler
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash @REPO_PATH@/bin/session-reconciler.sh --loop
+Restart=always
+RestartSec=5
+Environment=PATH=@NODE_BIN_DIR@:/usr/local/bin:/usr/bin:/bin
+StandardOutput=append:@LOG_PATH@
+StandardError=append:@LOG_PATH@
+
+[Install]
+WantedBy=default.target
