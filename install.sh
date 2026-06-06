@@ -365,7 +365,10 @@ if should_run_phase 1 && component_selected "devkit-core"; then
   header "Phase 1. Devkit Core Assets"
 
   mkdir -p "$SKILLS_DEST"
-  for skill_dir in "$DEVKIT_DIR"/skills/*/; do
+  # Bundled skills (skills/*) + distributable template skills (templates/skills/*)
+  # share the same install convention: cp -R into ~/.claude/skills, idempotent,
+  # honoring --force / skip semantics.
+  for skill_dir in "$DEVKIT_DIR"/skills/*/ "$DEVKIT_DIR"/templates/skills/*/; do
     skill_name=$(basename "$skill_dir")
     target="$SKILLS_DEST/$skill_name"
 

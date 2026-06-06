@@ -51,6 +51,7 @@
     "skills/youtube-analyzer/**",
     "templates/workspace/**",
     "templates/scaffold/**",
+    "templates/skills/**",
     "templates/aigentry/**",
     "templates/knowledge/**",
     "tools/wtm/**",
