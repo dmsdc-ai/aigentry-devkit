@@ -24,7 +24,7 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@aigentry/logger": "file:../aigentry-logger"
+    "@dmsdc-ai/aigentry-logger": "^0.2.0"
   },
   "files": [
     "bin/aigentry-devkit.js",
