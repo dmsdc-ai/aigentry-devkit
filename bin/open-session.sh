@@ -24,7 +24,7 @@
 # Default per-CLI flags (applied only when --extra-flags + config cli_flags both empty):
 #   claude default flags: --permission-mode bypassPermissions
 #   codex default flags: -c check_for_update_on_startup=false --dangerously-bypass-approvals-and-sandbox
-#   gemini default flags: -m gemini-3.1-pro-preview --approval-mode yolo
+#   gemini default flags: -m ${AIGENTRY_GEMINI_MODEL:-gemini-2.5-flash} --approval-mode yolo
 #
 # Output: session ref on stdout (cmux: "workspace:N", others: SID)
 set -euo pipefail
@@ -130,7 +130,7 @@ fi
 case "$cli" in
   claude) [ -z "$extra_flags" ] && extra_flags="--permission-mode bypassPermissions";;
   codex)  [ -z "$extra_flags" ] && extra_flags="-c check_for_update_on_startup=false --dangerously-bypass-approvals-and-sandbox";;
-  gemini) [ -z "$extra_flags" ] && extra_flags="-m gemini-3.1-pro-preview --approval-mode yolo";;
+  gemini) [ -z "$extra_flags" ] && extra_flags="-m ${AIGENTRY_GEMINI_MODEL:-gemini-2.5-flash} --approval-mode yolo";;
 esac
 
 # Detect host terminal environment
