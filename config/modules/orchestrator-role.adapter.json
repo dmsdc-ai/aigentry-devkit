@@ -35,7 +35,6 @@
       "install-instructions.sh"
     ],
     "self_symlink_repoint": [
-      "open-session.sh",
       "tq-focus.sh",
       "tq-status.sh",
       "tq-track.sh",

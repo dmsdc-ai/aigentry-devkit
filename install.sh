@@ -807,10 +807,13 @@ if should_run_phase 8 && component_selected "orchestrator-role"; then
       fi
 
       # 8.5 Re-point the orchestrator's self-symlinks. In the orchestrator repo
-      # these (open-session.sh, tq-*.sh, trust-*.sh) are committed as symlinks to
-      # an absolute reference-machine devkit path → DANGLING on a fresh clone.
-      # Re-point them to THIS installed devkit's bin/. The targets are shipped in
-      # the published tarball via package.json files[] (§8.5 resolution: option a).
+      # these (tq-*.sh, trust-*.sh) are committed as symlinks to an absolute
+      # reference-machine devkit path → DANGLING on a fresh clone. Re-point them to
+      # THIS installed devkit's bin/. The targets are shipped in the published
+      # tarball via package.json files[] (§8.5 resolution: option a).
+      # #613 A2: open-session.sh is NO LONGER repointed — it is now an orchestrator
+      # real file (owns its runtime spawn entrypoint + adapter libs). Removed from
+      # self_symlink_repoint in orchestrator-role.adapter.json. (tq/trust = #614.)
       for s in $ORCH_REPOINT; do
         if [ -e "$DEVKIT_DIR/bin/$s" ]; then
           ln -sfn "$DEVKIT_DIR/bin/$s" "$ORCH_DIR/bin/$s"
