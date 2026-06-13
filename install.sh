@@ -812,8 +812,10 @@ if should_run_phase 8 && component_selected "orchestrator-role"; then
       # THIS installed devkit's bin/. The targets are shipped in the published
       # tarball via package.json files[] (§8.5 resolution: option a).
       # #613 A2: open-session.sh is NO LONGER repointed — it is now an orchestrator
-      # real file (owns its runtime spawn entrypoint + adapter libs). Removed from
-      # self_symlink_repoint in orchestrator-role.adapter.json. (tq/trust = #614.)
+      # real file (owns its runtime spawn entrypoint + adapter libs). #614: tq-*.sh
+      # and trust-*.sh likewise own themselves as orchestrator real files. All five
+      # were removed from self_symlink_repoint in orchestrator-role.adapter.json, so
+      # this loop is now a no-op until a future self-symlink is declared (forward-compat).
       for s in $ORCH_REPOINT; do
         if [ -e "$DEVKIT_DIR/bin/$s" ]; then
           ln -sfn "$DEVKIT_DIR/bin/$s" "$ORCH_DIR/bin/$s"

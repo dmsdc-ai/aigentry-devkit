@@ -34,13 +34,7 @@
       "session-reconciler.sh",
       "install-instructions.sh"
     ],
-    "self_symlink_repoint": [
-      "tq-focus.sh",
-      "tq-status.sh",
-      "tq-track.sh",
-      "trust-aigentry.sh",
-      "trust-path.sh"
-    ]
+    "self_symlink_repoint": []
   },
   "install": {
     "fallback": [
