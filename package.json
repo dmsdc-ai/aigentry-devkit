@@ -17,7 +17,6 @@
   },
   "bin": {
     "aigentry-devkit": "bin/aigentry-devkit.js",
-    "aigentry": "bin/aigentry-devkit.js",
     "aigentry-devkit-bootstrap": "bin/aigentry-devkit-bootstrap.js"
   },
   "engines": {

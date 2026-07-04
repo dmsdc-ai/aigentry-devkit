@@ -5,6 +5,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Removed
+
+- **`aigentry` bin alias dropped to resolve a cross-package bin-name
+  collision (public-hygiene sweep).** `aigentry` is owned by the meta package
+  `@dmsdc-ai/aigentry`; devkit exposed it as a duplicate alias of
+  `aigentry-devkit` (same target script). The `aigentry-devkit` and
+  `aigentry-devkit-bootstrap` bins are unaffected. Install `@dmsdc-ai/aigentry`
+  for the `aigentry` command.
+
 ### Added
 
 - **`@aigentry/logger` emit wiring at JS entry points (#440).** New
