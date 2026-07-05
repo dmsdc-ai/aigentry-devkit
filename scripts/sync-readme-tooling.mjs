@@ -16,9 +16,10 @@ const devkitRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const projectsRoot = join(devkitRoot, '..');
 
 // Repos that vendor the generator + ecosystem snapshot (devkit is the canonical source).
-// telepty is DEFERRED (#697): add 'aigentry-telepty' here once fix/694-busy-submit lands
-// and its readme-regen wiring ships, so this tool can't touch 694's active working tree.
+// telepty's readme-regen wiring shipped at #697's deferred item (clean at 0.6.11), so it's
+// now a sync target like the rest.
 const TARGETS = [
+  'aigentry-telepty',
   'aigentry-deliberation',
   'aigentry-brain',
   'aigentry',
