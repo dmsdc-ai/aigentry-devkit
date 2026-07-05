@@ -1,10 +1,16 @@
 # aigentry-devkit
 
-Part of the [aigentry platform](https://github.com/dmsdc-ai) — AI 의사결정을 감사 가능하게 만드는 오픈소스 엔진. aigentry-devkit is Layer 3: developer tools, hooks, and automation for the aigentry ecosystem.
+**One installer for your AI dev environment** — bundles skills, hooks, MCP servers, HUD/statusline, and config templates for Claude Code, Codex CLI, and other MCP-compatible CLIs. Install once, use everywhere.
 
-**Your AI development environment, packaged.**
+Part of the [aigentry platform](https://github.com/dmsdc-ai).
 
-A comprehensive development kit that bundles skills, hooks, MCP servers, HUD/statusline, and configuration templates for Claude Code, Codex CLI, and other MCP-compatible CLIs. Install once, use everywhere.
+## Quickstart
+
+```bash
+npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit install
+```
+
+Then restart your CLI so new MCP/skill settings load. List available profiles with `npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit profiles`; full walkthrough in [`docs/quickstart.md`](docs/quickstart.md).
 
 ## Features
 
@@ -112,6 +118,57 @@ The installer will:
 8. Write local install state and env fan-out
 
 Detailed walkthrough: [`docs/quickstart.md`](docs/quickstart.md)
+
+## Offline / Firewalled Install
+
+`aigentry-devkit` uses a generic **install-with-fallback** system for all aigentry components. Each component (brain, telepty, deliberation, dustcraw, amplify) declares a fallback chain in its adapter manifest at `config/modules/<component>.adapter.json`. When the primary install method fails, the installer automatically tries the next entry in the chain.
+
+### Environment variables
+
+| Variable | Values | Description |
+|----------|--------|-------------|
+| `AIGENTRY_INSTALL_FALLBACK_MODE` | `auto` (default) · `prompt` · `never` | `auto`: silent fallback. `prompt`: ask on TTY (auto on CI). `never`: fail loudly on first error. |
+| `AIGENTRY_INSTALL_TIMEOUT` | seconds (default `180`) | Total wall-clock budget for a chain (all entries summed). |
+| `AIGENTRY_VERBOSE` | `1` | Stream every install attempt's full output. |
+| `AIGENTRY_QUIET` | `1` | Only print the final result line per component. |
+
+### CLI flags
+
+```bash
+aigentry setup --verbose
+aigentry setup --quiet
+aigentry setup --install-timeout 300
+aigentry setup --fallback-mode never     # hard fail on any primary failure
+```
+
+### Error classification
+
+The installer classifies failures before deciding to retry or fallback:
+
+| Class | Action |
+|-------|--------|
+| `network` (ETIMEDOUT, ECONNRESET, ENOTFOUND, EAI_AGAIN) | 2 attempts with 2s / 4s backoff, then next chain entry |
+| `not-found` (E404, "Not Found") | Skip retry, immediately next entry |
+| `auth` (E401, E403, 401, 403) | **HALT** — never fallback (may mask credential issue) |
+| `permission` (EACCES) | **HALT** — hint: try `sudo` or `npm install --prefix "$HOME/.npm-global"` |
+| `disk` (ENOSPC) | **HALT** |
+| `unknown` | 1 attempt, then next entry (full stderr logged) |
+
+### Logs
+
+Each install attempt writes a structured log to:
+
+```
+${XDG_CONFIG_HOME:-$HOME/.config}/aigentry-devkit/logs/install-<timestamp>-<component>.log
+```
+
+Logs contain the exact command, exit code, stderr tail, error class, and decision (retry / fallback / halt) per attempt.
+
+### Troubleshooting
+
+- **All attempts fail, company proxy suspected**: Set `HTTPS_PROXY` + `NODE_EXTRA_CA_CERTS` and re-run. If the 403 persists, check with your IT team — the installer will not silently bypass auth-class errors.
+- **Brain unavailable (package not yet on npm)**: The brain fallback chain includes a **stub** entry that registers a local MCP stub server (`bin/aigentry-brain-stub.mjs`) so other ecosystem components keep working with a degraded `brain_status_degraded` tool until the real package is available.
+- **Want a no-fallback run**: `AIGENTRY_INSTALL_FALLBACK_MODE=never aigentry setup`.
 
 ### Post-Installation
 
