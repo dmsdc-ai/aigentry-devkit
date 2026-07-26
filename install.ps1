@@ -232,7 +232,14 @@ if (Should-RunPhase 1 -and (Test-ComponentSelected "devkit-core")) {
   Write-Header "Phase 1. Devkit Core Assets"
 
   New-Item -ItemType Directory -Path $skillsDest -Force | Out-Null
-  foreach ($skillDir in (Get-ChildItem (Join-Path $DevkitDir "skills") -Directory)) {
+  # Parity with install.sh: bundled skills (skills/*) + distributable template
+  # skills (templates/skills/*) install the same way (#739 D2).
+  # De-listed skills (#739 D1/D4): kept in git, never shipped and never installed.
+  # Keep in sync with package.json "files" (which omits the same directories).
+  $skillsDelisted = @("project-ops", "clipboard-image", "youtube-analyzer")
+  $skillSources = @((Join-Path $DevkitDir "skills"), (Join-Path $DevkitDir "templates\skills"))
+  foreach ($skillDir in ($skillSources | Where-Object { Test-Path $_ } | ForEach-Object { Get-ChildItem $_ -Directory })) {
+    if ($skillsDelisted -contains $skillDir.Name) { continue }
     $target = Join-Path $skillsDest $skillDir.Name
     if (Test-Path $target) {
       if ($Force) { Remove-Item -Recurse -Force $target } else { Write-Warn "$($skillDir.Name) already exists (skipping, use -Force to overwrite)"; continue }

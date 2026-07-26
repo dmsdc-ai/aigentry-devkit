@@ -18,12 +18,37 @@ Then restart your CLI so new MCP/skill settings load. List available profiles wi
 
 Bundled skills that extend Claude Code, Codex CLI, and other MCP-compatible CLIs:
 
-- **Clipboard Image Viewer** - Capture and analyze clipboard images directly from your terminal
 - **AI Deliberation** - Multi-session parallel debates across arbitrary CLI participants with structured turn-taking and synthesis
 - **Deliberation Executor** - Convert deliberation synthesis into concrete implementation tasks and execute them
+- **Deliberation Gate** - Route a design doc, code review, or dead-ended debug session into a multi-AI verification pass
+- **Diagnose** - Reproduce-first diagnosis loop for hard bugs and performance regressions
+- **Grill with ADR** - Adversarial spec interview that captures crystallised decisions into ADRs and the project glossary
+- **SAWE** - Session Autonomous Workflow Engine: spec to implement, build, test, verify without babysitting
+- **Session Create** - Bootstrap a new project and its terminal-agnostic session, with grid layout
+- **Work Breakdown** - Decompose a spec into parallelisable tasks and assign them to available sessions
+- **Workspace Lifecycle** - Foreground open, inject, wait, read, close automation for cmux/aterm workspaces
+- **Context Manage** - Context-window pressure detection with snapshot and compact staging
+- **Caveman** - Ultra-compressed reply mode (~75% fewer output tokens) for multi-session fan-out
 - **Environment Manager** - direnv-based hierarchical environment variable management with global and project-scoped variables
 - **Telepty Deliberate** - Start bidirectional multi-session deliberation across active telepty sessions with session mapping and fallback routing
-- **YouTube Analyzer** - Extract and analyze YouTube video metadata, captions, and transcripts without downloading
+
+#### Un-bundled skills (written fallback)
+
+`clipboard-image`, `youtube-analyzer`, and `project-ops` live in this repository but are **not** shipped in
+the npm tarball and are **not** installed by `install.sh` / `install.ps1`. Each depends on host tooling the
+devkit does not own (`pbpaste`/`xclip`, `yt-dlp` + Python, an authenticated `gh` CLI with org-wide secret
+scope), so bundling them would push an external dependency onto every installer run — Constitution Article 17
+(zero external dependency) requires a written fallback instead of a hard dependency.
+
+Fallback — do the same work without the skill:
+
+| Skill | Fallback |
+| --- | --- |
+| `clipboard-image` | macOS `pbpaste`, Linux `xclip -selection clipboard -t image/png -o > /tmp/clip.png`, then point your CLI at the file. Or copy `skills/clipboard-image/` from this repo into `~/.claude/skills/` yourself. |
+| `youtube-analyzer` | `pip install yt-dlp`, then `yt-dlp --skip-download --write-auto-sub --sub-lang en <url>` and feed the `.vtt` to your CLI. Or copy `skills/youtube-analyzer/` into `~/.claude/skills/`. |
+| `project-ops` | `gh secret set NPM_TOKEN --repo <org>/<repo>` per repository, and copy `.github/workflows/release.yml` from an already-configured repo. Or copy `skills/project-ops/` into `~/.claude/skills/`. |
+
+Installing a fallback copy by hand is supported: `cp -R skills/<name> ~/.claude/skills/`.
 
 ### MCP Deliberation Server
 
@@ -201,15 +226,6 @@ npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit repair-gemini-mcp
 
 Skills are automatically available in Claude Code, Codex CLI, and compatible MCP clients. They activate based on keywords:
 
-#### Clipboard Image
-Triggers: "clipboard", "paste image", "캡처 확인"
-
-View and analyze images from your clipboard:
-```
-"Analyze this screenshot: [image in clipboard]"
-"What's on my clipboard?"
-```
-
 #### AI Deliberation
 Triggers: "deliberation", "토론", "debate", "deliberate"
 
@@ -264,15 +280,6 @@ Manage environment variables hierarchically:
 "env check" - Audit environment setup
 "env init /path/to/project" - Initialize new project
 "env add API_KEY value" - Add global or project variable
-```
-
-#### YouTube Analyzer
-Triggers: "youtube", "유튜브", "영상 분석", "video analysis"
-
-Extract and analyze YouTube content:
-```
-"Analyze this video: https://youtube.com/watch?v=xxx"
-"유튜브 영상 요약: https://youtu.be/xxx"
 ```
 
 ### Workspace Initialization
@@ -385,13 +392,22 @@ aigentry-devkit/
 │       ├── index.js         # Main server implementation
 │       ├── package.json
 │       └── session-monitor.sh
-├── skills/                  # Reusable AI skills
-│   ├── clipboard-image/     # Image clipboard capture
+├── skills/                  # Cross-cutting AI skills (devkit is the SSOT)
+│   ├── caveman/             # Ultra-compressed reply mode
+│   ├── context-manage/      # Context-window pressure handling
 │   ├── deliberation/        # Debate management
 │   ├── deliberation-executor/ # Synthesis-to-implementation execution
+│   ├── deliberation-gate/   # Multi-AI verification gate
+│   ├── deliberation-test/   # Deliberation test orchestration
+│   ├── diagnose/            # Reproduce-first bug diagnosis loop
 │   ├── env-manager/         # Environment variables
+│   ├── grill-with-adr/      # Adversarial spec interview -> ADR
+│   ├── sawe/                # Session autonomous workflow engine
+│   ├── session-create/      # Project + session bootstrap
 │   ├── telepty-deliberate/  # Multi-session telepty deliberation kickoff
-│   └── youtube-analyzer/    # YouTube content analysis
+│   ├── work-breakdown/      # Spec -> parallel task decomposition
+│   ├── workspace-lifecycle/ # Workspace open/inject/wait/close automation
+│   └── (clipboard-image, youtube-analyzer, project-ops — present but un-bundled)
 ├── install.sh               # Installation script (macOS/Linux)
 ├── install.ps1              # Installation script (Windows PowerShell)
 ├── package.json             # npm package metadata (@dmsdc-ai/aigentry-devkit)
@@ -501,12 +517,6 @@ If auto-scan is still unavailable, use the clipboard fallback:
 3. Allow the directory: `direnv allow`
 4. Test: `direnv exec /bin/bash 'echo $VARIABLE_NAME'`
 
-### YouTube Analyzer errors
-
-1. Verify Python 3.8+: `python3 --version`
-2. Check yt-dlp: `python3 -c "import yt_dlp; print('OK')"`
-3. Install if missing: `pip install yt-dlp`
-
 ## Development
 
 ### Adding new skills
@@ -538,7 +548,8 @@ Add templates to `config/` and update both `install.sh` and `install.ps1` to dep
 - **direnv**: Latest (optional, for environment management)
 - **PowerShell**: 7+ recommended on Windows
 
-Language-specific requirements for skills:
+Language-specific requirements for the un-bundled skills (only if you install them by hand — see
+"Un-bundled skills (written fallback)"):
 
 - **YouTube Analyzer**: Python 3.8+, yt-dlp
 - **Clipboard Image**: xclip or pbpaste (platform-dependent)

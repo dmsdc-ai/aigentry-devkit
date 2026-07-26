@@ -5,7 +5,7 @@ source "${HOME}/.wtm/lib/common.sh"
 
 if [[ $# -lt 3 ]]; then
   echo "Usage: wtm init <alias> <repo> <local-path>"
-  echo "Example: wtm init aigentry dmsdc-ai/aigentry /Users/duckyoungkim/projects/aigentry"
+  echo "Example: wtm init aigentry dmsdc-ai/aigentry ~/projects/aigentry"
   exit 1
 fi
 
