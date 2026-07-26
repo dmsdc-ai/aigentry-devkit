@@ -3,9 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
-const { loadLicense, generateFreeLicense, getCurrentTier, checkEntitlement, getTierInfo, LICENSE_PATH } = require("../lib/entitlement");
 const { workspaceInit, scaffoldProject, parseProjectArgv, printScaffoldHelp } = require("../lib/workspace-init");
-const { updateMd } = require("../lib/update-md");
 // δ2 (#440) — telemetry emit wrapper. Fire-and-forget; failures swallowed
 // internally so the CLI is never blocked by a logger transport hiccup.
 const { emitModuleEvent } = require("../lib/logger-emit");
@@ -14,20 +12,6 @@ const rootDir = path.resolve(__dirname, "..");
 const HOME = process.env.HOME || process.env.USERPROFILE || "";
 const defaultManifestPath = path.join(rootDir, "config", "installer-manifest.json");
 
-function findKittySocket() {
-  const { readdirSync, statSync } = require("fs");
-  try {
-    const files = readdirSync("/tmp").filter((f) => f.startsWith("kitty-sock"));
-    for (const f of files) {
-      const sockPath = `/tmp/${f}`;
-      try {
-        const st = statSync(sockPath);
-        if (st.isSocket()) return sockPath;
-      } catch (_) {}
-    }
-  } catch (_) {}
-  return null;
-}
 
 function resolveFullPath(cmd) {
   const result = spawnSync("which", [cmd], { stdio: "pipe", timeout: 3000 });
@@ -59,18 +43,9 @@ function printHelp() {
     "    --dry-run                         Emit planned actions without writing",
     "    --backup|--no-backup              Backup merge/uninstall targets (default: backup)",
     "  aigentry scaffold install-hooks <cli>  Install [context-ref/v1] receiver hooks",
-    "  aigentry-devkit up                  Start enabled modules (telepty daemon, health checks)",
-    "  aigentry-devkit start              Start all workspace sessions (kitty/tmux tabs)",
-    "  aigentry-devkit stop               Stop all workspace sessions",
-    "  aigentry-devkit demo                Run 5-minute guided demo walkthrough",
-    "  aigentry-devkit session <cmd>        Manage sessions (create/list/kill/inject)",
-    "  aigentry-devkit tier                Show current license tier and features",
     "  aigentry-devkit breakdown            Decompose task into sub-tasks for parallel assignment",
     "    --task-id <id>                     Task ID from task-queue.json (required)",
     "    --cwd <path>                       Workspace directory (default: cwd)",
-    "  aigentry-devkit update-md [path]     Update MD files (replace old patterns, add sections)",
-    "    --all                             Scan all ~/projects/aigentry-* projects",
-    "    --dry-run                         Show changes without writing",
     "  aigentry-devkit bootstrap           Provision ~/.aigentry/ structure and MCP configs",
     "  aigentry-devkit --help              Show this help",
     "",
@@ -91,12 +66,8 @@ function printHelp() {
     "  npx @dmsdc-ai/aigentry-devkit update",
     "  npx @dmsdc-ai/aigentry-devkit status",
     "  npx @dmsdc-ai/aigentry-devkit init",
-    "  npx @dmsdc-ai/aigentry-devkit up",
-    "  npx @dmsdc-ai/aigentry-devkit demo",
-    "  aigentry start                     Start full ecosystem (one-click)",
-    "  aigentry stop                      Stop all sessions",
-    "  aigentry session create aigentry-amplify",
-    "  aigentry session inject aigentry-amplify-claude \"implement the plan\"",
+    "",
+    "Sessions: use telepty (lifecycle/inject) + bin/open-session.sh (terminal spawn).",
   ].join("\n");
   process.stdout.write(`${text}\n`);
 }
@@ -107,11 +78,6 @@ function commandExists(command) {
   return result.status === 0;
 }
 
-function detectTerminal() {
-  if (process.env.KITTY_PID || process.env.KITTY_WINDOW_ID) return "kitty";
-  if (process.env.TMUX) return "tmux";
-  return null;
-}
 
 function loadMcpRegistry() {
   try {
@@ -378,13 +344,6 @@ function runInstall(options = {}) {
   const args = [scriptPath];
   if (options.force) args.push("--force");
   run("bash", args, installerEnv);
-
-  // Generate free license if none exists
-  if (!loadLicense()) {
-    const license = generateFreeLicense();
-    process.stdout.write(`\n✅ License generated: ${getTierInfo(license.tier).display_name} tier\n`);
-    process.stdout.write(`   License: ${LICENSE_PATH}\n`);
-  }
 }
 
 // #739 drift guard — `doctor --skills`. Runs standalone (not part of the full
@@ -422,11 +381,6 @@ function runDoctorSkills() {
 
 function runDoctor() {
   const checks = [
-    {
-      name: "License file",
-      test: () => !!loadLicense(),
-      fix: "Run 'aigentry setup' to generate a license",
-    },
     {
       name: "Node.js 18+",
       test: () => {
@@ -751,773 +705,11 @@ function runInit() {
     "Next steps:",
     `  1. Edit ${configDest} to enable/configure modules`,
     "  2. Run: aigentry-devkit setup   — to install all components",
-    "  3. Run: aigentry-devkit up      — to start enabled modules",
-    "  4. Run: aigentry-devkit status  — to verify module health",
+    "  3. Run: aigentry-devkit status  — to verify module health",
     "",
   ].join("\n"));
 }
 
-function readAigentrYml() {
-  const locations = [
-    path.join(process.cwd(), "aigentry.yml"),
-    path.join(HOME, ".config", "aigentry", "aigentry.yml"),
-  ];
-  for (const loc of locations) {
-    if (fs.existsSync(loc)) {
-      try {
-        // Simple key: value YAML parser for flat module.enabled checks
-        const raw = fs.readFileSync(loc, "utf-8");
-        return { raw, path: loc };
-      } catch {
-        // ignore
-      }
-    }
-  }
-  return null;
-}
-
-function isModuleEnabled(raw, moduleName) {
-  if (!raw) return true; // default enabled when no config
-  // Look for:  <moduleName>:\n    enabled: true
-  const re = new RegExp(
-    `^\\s*${moduleName}:\\s*\\n(?:[^\\n]*\\n)*?\\s*enabled:\\s*(true|false)`,
-    "m"
-  );
-  const match = raw.match(re);
-  if (!match) return true; // not explicitly set → assume enabled
-  return match[1] === "true";
-}
-
-function parseWorkspace(raw) {
-  if (!raw) return null;
-
-  const wsIdx = raw.search(/^workspace:\s*$/m);
-  if (wsIdx === -1) return null;
-
-  const afterWs = raw.slice(wsIdx + raw.slice(wsIdx).indexOf("\n") + 1);
-  const nextTopLevel = afterWs.search(/^\S/m);
-  const wsBlock = nextTopLevel === -1 ? afterWs : afterWs.slice(0, nextTopLevel);
-
-  const getValue = (key) => {
-    const m = wsBlock.match(new RegExp(`^\\s+${key}:\\s*["']?(.+?)["']?\\s*$`, "m"));
-    return m ? m[1] : null;
-  };
-
-  const root = (getValue("root") || "").replace(/^~/, HOME);
-  const aiCli = getValue("ai_cli") || "claude";
-  const autoPermissions = getValue("auto_permissions") === "true";
-  const orchestrator = getValue("orchestrator") || null;
-
-  const sessions = [];
-  const sessIdx = wsBlock.search(/^\s+sessions:\s*$/m);
-  if (sessIdx !== -1) {
-    const afterSess = wsBlock.slice(sessIdx + wsBlock.slice(sessIdx).indexOf("\n") + 1);
-    for (const line of afterSess.split("\n")) {
-      const m = line.match(/^\s+-\s+["']?(.+?)["']?\s*$/);
-      if (m) {
-        sessions.push(m[1]);
-      } else if (line.trim() && !line.match(/^\s*#/) && !line.match(/^\s+-/)) {
-        break;
-      }
-    }
-  }
-
-  return { root, aiCli, autoPermissions, orchestrator, sessions };
-}
-
-function autoDetectWorkspace() {
-  const projectsDir = path.join(HOME, "projects");
-  if (!fs.existsSync(projectsDir)) return null;
-
-  let dirs;
-  try {
-    dirs = fs.readdirSync(projectsDir).filter((d) => {
-      const full = path.join(projectsDir, d);
-      return d.startsWith("aigentry-") && fs.statSync(full).isDirectory();
-    });
-  } catch {
-    return null;
-  }
-
-  if (dirs.length === 0) return null;
-
-  return {
-    root: projectsDir,
-    aiCli: "claude",
-    autoPermissions: false,
-    orchestrator: dirs.find((d) => d.includes("orchestrator")) || null,
-    sessions: dirs.sort(),
-  };
-}
-
-function runUp() {
-  const cfg = readAigentrYml();
-  if (cfg) {
-    process.stdout.write(`Using config: ${cfg.path}\n\n`);
-  } else {
-    process.stdout.write("No aigentry.yml found. Using defaults (all modules enabled).\n");
-    process.stdout.write("Run 'aigentry-devkit init' to create a config file.\n\n");
-  }
-
-  const raw = cfg ? cfg.raw : null;
-
-  // Start telepty daemon if enabled
-  if (isModuleEnabled(raw, "telepty")) {
-    if (commandExists("telepty")) {
-      process.stdout.write("Starting telepty daemon...\n");
-      const result = spawnSync("telepty", ["daemon"], {
-        stdio: "inherit",
-        shell: process.platform === "win32",
-        timeout: 10000,
-      });
-      if (result.error) {
-        process.stdout.write(`  Warning: telepty daemon may not have started (${result.error.message})\n`);
-      } else {
-        process.stdout.write("  telepty daemon started (or already running).\n");
-      }
-    } else {
-      process.stdout.write("  telepty not installed. Run: npm install -g @dmsdc-ai/aigentry-telepty\n");
-    }
-  } else {
-    process.stdout.write("telepty: disabled (skipping)\n");
-  }
-
-  process.stdout.write("\nRunning health checks...\n");
-  runStatus();
-}
-
-function runStart() {
-  const cfg = readAigentrYml();
-  const raw = cfg ? cfg.raw : null;
-  let workspace = parseWorkspace(raw);
-
-  if (!workspace || workspace.sessions.length === 0) {
-    process.stdout.write("No workspace config found. Auto-detecting aigentry-* projects...\n");
-    workspace = autoDetectWorkspace();
-  }
-
-  if (!workspace || workspace.sessions.length === 0) {
-    process.stderr.write([
-      "No aigentry projects found.",
-      "",
-      "Either:",
-      "  1. Add a workspace section to aigentry.yml (aigentry-devkit init)",
-      "  2. Create aigentry-* directories in ~/projects/",
-      "",
-    ].join("\n"));
-    process.exit(1);
-  }
-
-  process.stdout.write([
-    "",
-    "aigentry start",
-    "==============",
-    "",
-    `  Root:         ${workspace.root}`,
-    `  AI CLI:       ${workspace.aiCli}`,
-    `  Sessions:     ${workspace.sessions.length}`,
-    `  Orchestrator: ${workspace.orchestrator || "(none)"}`,
-    `  Permissions:  ${workspace.autoPermissions ? "auto" : "manual"}`,
-    "",
-  ].join("\n"));
-
-  // 1. Start telepty daemon
-  if (isModuleEnabled(raw, "telepty") && commandExists("telepty")) {
-    process.stdout.write("Starting telepty daemon...\n");
-    spawnSync("telepty", ["daemon"], { stdio: "pipe", timeout: 5000 });
-    process.stdout.write("  telepty daemon ready.\n\n");
-  } else if (!commandExists("telepty")) {
-    process.stderr.write([
-      "telepty not installed. Sessions require telepty.",
-      "  npm install -g @dmsdc-ai/aigentry-telepty",
-      "",
-    ].join("\n"));
-    process.exit(1);
-  }
-
-  // 2. Detect terminal
-  const terminal = detectTerminal();
-
-  // 3. Detect kitty socket for remote control
-  let kittyOk = false;
-  let kittySock = null;
-  if (terminal === "kitty") {
-    kittySock = findKittySocket();
-    if (kittySock) {
-      const test = spawnSync("kitty", ["@", "--to", `unix:${kittySock}`, "ls"], { stdio: "pipe", timeout: 3000 });
-      kittyOk = test.status === 0;
-    }
-    if (!kittyOk) {
-      process.stdout.write([
-        "  kitty detected but no reachable socket found.",
-        "  Add to kitty.conf:",
-        "    allow_remote_control yes",
-        "    listen_on unix:/tmp/kitty-sock",
-        "",
-        "  Falling back to manual mode.",
-        "",
-      ].join("\n"));
-    }
-  }
-
-  const useKitty = terminal === "kitty" && kittyOk;
-  const useTmux = !useKitty && terminal === "tmux";
-  const modeLabel = useKitty ? "kitty tabs" : useTmux ? "tmux windows" : "manual";
-  process.stdout.write(`  Launch mode: ${modeLabel}\n\n`);
-
-  // 4. Build sessions
-  const root = workspace.root;
-  const aiCli = workspace.aiCli;
-  const sessions = workspace.sessions.map((name) => ({
-    name,
-    id: `${name}-${aiCli}`,
-    dir: path.join(root, name),
-    isOrchestrator: name === workspace.orchestrator,
-  }));
-
-  // 5. Validate directories
-  for (const session of sessions) {
-    if (!fs.existsSync(session.dir)) {
-      process.stdout.write(`  skip: ${session.name} (directory not found: ${session.dir})\n`);
-      session.skip = true;
-    }
-  }
-
-  const active = sessions.filter((s) => !s.skip);
-  if (active.length === 0) {
-    process.stderr.write("No valid session directories found.\n");
-    process.exit(1);
-  }
-
-  // 6. Sort: orchestrator last (so other tabs spawn first)
-  const bgSessions = active.filter((s) => !s.isOrchestrator);
-  const orchSession = active.find((s) => s.isOrchestrator);
-
-  // 7. Build session command
-  const teleptyPath = resolveFullPath("telepty");
-  const aiCliPath = resolveFullPath(aiCli);
-
-  const buildSessionCmd = (session) => {
-    const parts = ["telepty", "allow", "--id", session.id, aiCli];
-    if (workspace.autoPermissions) parts.push("--dangerously-skip-permissions");
-    return parts;
-  };
-
-  const buildKittySessionArgs = (session) => {
-    const parts = [process.execPath, teleptyPath, "allow", "--id", session.id, aiCliPath];
-    if (workspace.autoPermissions) parts.push("--dangerously-skip-permissions");
-    return [
-      "--env", "TELEPTY_SESSION_ID=",
-      "--env", `PATH=${process.env.PATH}`,
-      "--", ...parts,
-    ];
-  };
-
-  // 8. Launch background sessions
-  for (const session of bgSessions) {
-    const cmd = buildSessionCmd(session);
-    process.stdout.write(`  launching: ${session.name} (${session.id})\n`);
-
-    if (useKitty) {
-      const kittyArgs = buildKittySessionArgs(session);
-      const result = spawnSync("kitty", [
-        "@", "--to", `unix:${kittySock}`,
-        "launch",
-        "--type=tab",
-        "--tab-title", session.name,
-        "--cwd", session.dir,
-        ...kittyArgs,
-      ], { stdio: "pipe", timeout: 5000 });
-      if (result.status !== 0) {
-        process.stdout.write(`    warning: kitty tab launch failed for ${session.name}\n`);
-      }
-    } else if (useTmux) {
-      spawnSync("tmux", [
-        "new-window", "-d",
-        "-n", session.name,
-        "-c", session.dir,
-        cmd.join(" "),
-      ], { stdio: "pipe", timeout: 5000 });
-    } else {
-      process.stdout.write(`    cd ${session.dir} && ${cmd.join(" ")}\n`);
-    }
-  }
-
-  // 9. Launch orchestrator
-  if (orchSession) {
-    const cmd = buildSessionCmd(orchSession);
-
-    if (useKitty || useTmux) {
-      process.stdout.write(`  launching: ${orchSession.name} (orchestrator)\n`);
-      if (useKitty) {
-        const kittyArgs = buildKittySessionArgs(orchSession);
-        spawnSync("kitty", [
-          "@", "--to", `unix:${kittySock}`,
-          "launch",
-          "--type=tab",
-          "--tab-title", orchSession.name,
-          "--cwd", orchSession.dir,
-          ...kittyArgs,
-        ], { stdio: "pipe", timeout: 5000 });
-        // Focus the orchestrator tab
-        spawnSync("kitty", ["@", "--to", `unix:${kittySock}`, "focus-tab", "--match", `title:${orchSession.name}`], {
-          stdio: "pipe",
-          timeout: 3000,
-        });
-      } else {
-        spawnSync("tmux", [
-          "new-window",
-          "-n", orchSession.name,
-          "-c", orchSession.dir,
-          cmd.join(" "),
-        ], { stdio: "pipe", timeout: 5000 });
-      }
-
-      process.stdout.write([
-        "",
-        `${active.length} sessions launched.`,
-        "Switch tabs to interact with each session.",
-        "",
-      ].join("\n"));
-    } else {
-      // No terminal multiplexer — print all commands, then exec into orchestrator
-      process.stdout.write([
-        "",
-        `  orchestrator: cd ${orchSession.dir} && ${cmd.join(" ")}`,
-        "",
-        "Launching orchestrator in current terminal...",
-        "",
-      ].join("\n"));
-      const result = spawnSync(cmd[0], cmd.slice(1), {
-        stdio: "inherit",
-        cwd: orchSession.dir,
-      });
-      process.exit(result.status == null ? 1 : result.status);
-    }
-  } else {
-    process.stdout.write([
-      "",
-      `${active.length} sessions launched.`,
-      "",
-    ].join("\n"));
-  }
-}
-
-function runStop() {
-  const cfg = readAigentrYml();
-  const raw = cfg ? cfg.raw : null;
-  let workspace = parseWorkspace(raw);
-
-  if (!workspace || workspace.sessions.length === 0) {
-    workspace = autoDetectWorkspace();
-  }
-
-  if (!workspace || workspace.sessions.length === 0) {
-    process.stderr.write("No workspace config found.\n");
-    process.exit(1);
-  }
-
-  process.stdout.write("aigentry stop\n\n");
-
-  const aiCli = workspace.aiCli;
-  let stopped = 0;
-
-  for (const name of workspace.sessions) {
-    const sessionId = `${name}-${aiCli}`;
-    if (commandExists("telepty")) {
-      const result = spawnSync("telepty", ["kill", "--id", sessionId], {
-        stdio: "pipe",
-        timeout: 5000,
-      });
-      if (result.status === 0) {
-        process.stdout.write(`  stopped: ${sessionId}\n`);
-        stopped++;
-      } else {
-        process.stdout.write(`  skip: ${sessionId} (not running)\n`);
-      }
-    }
-  }
-
-  process.stdout.write(`\n${stopped} sessions stopped.\n`);
-}
-
-function runSession(subcommand, args) {
-  if (!subcommand || subcommand === "help") {
-    process.stdout.write([
-      "aigentry session — dynamic session management",
-      "",
-      "Usage:",
-      "  aigentry session create <project-name>    Create new session (opens kitty terminal)",
-      "  aigentry session list                      List active telepty sessions",
-      "  aigentry session kill <project-name>       Kill a session",
-      "  aigentry session inject <project-name> <message>  Send task to session",
-      "",
-      "Examples:",
-      "  aigentry session create aigentry-amplify",
-      "  aigentry session list",
-      "  aigentry session inject aigentry-amplify-claude \"implement the plan\"",
-      "  aigentry session kill aigentry-amplify",
-      "",
-    ].join("\n"));
-    return;
-  }
-
-  const sessionCfg = readAigentrYml();
-  const sessionRaw = sessionCfg ? sessionCfg.raw : null;
-  const sessionWorkspace = parseWorkspace(sessionRaw);
-  const aiCli = sessionWorkspace ? sessionWorkspace.aiCli : "claude";
-
-  switch (subcommand) {
-    case "create": {
-      const projectName = args[0];
-      if (!projectName) {
-        process.stderr.write("Missing project name. Usage: aigentry session create <project-name>\n");
-        process.exit(1);
-      }
-
-      const projectDir = path.join(HOME, "projects", projectName);
-      const sessionId = `${projectName}-${aiCli}`;
-
-      // 1. Create directory if not exists
-      if (!fs.existsSync(projectDir)) {
-        fs.mkdirSync(projectDir, { recursive: true });
-        process.stdout.write(`Created directory: ${projectDir}\n`);
-      }
-
-      // 2. Detect terminal and open new tab/window
-      const kSock = findKittySocket();
-      const useKitty = !!kSock;
-      const teleptyPath = resolveFullPath("telepty");
-      const cliPath = resolveFullPath(aiCli);
-      const nodeExec = process.execPath;
-      const currentPath = process.env.PATH || "";
-
-      if (useKitty) {
-        process.stdout.write(`Opening kitty tab for ${projectName} (socket: ${kSock})...\n`);
-        const result = spawnSync("kitty", [
-          "@", "--to", `unix:${kSock}`,
-          "launch",
-          "--type=tab",
-          "--tab-title", projectName,
-          "--cwd", projectDir,
-          "--env", "TELEPTY_SESSION_ID=",
-          "--env", `PATH=${currentPath}`,
-          "--", nodeExec, teleptyPath, "allow", "--id", sessionId, cliPath, "--dangerously-skip-permissions",
-        ], { stdio: "pipe" });
-
-        if (result.status !== 0) {
-          // Fallback: spawn new kitty process
-          process.stdout.write("  Socket launch failed, spawning new kitty process...\n");
-          const fallback = spawnSync("kitty", [
-            "--directory", projectDir,
-            "-e", nodeExec, teleptyPath, "allow", "--id", sessionId, cliPath, "--dangerously-skip-permissions",
-          ], { stdio: "pipe", detached: true, env: { ...process.env, TELEPTY_SESSION_ID: "" } });
-          if (fallback.error) {
-            process.stderr.write(`Failed to open kitty: ${fallback.error.message}\n`);
-            process.exit(1);
-          }
-        }
-      } else if (process.env.TMUX) {
-        process.stdout.write(`Creating tmux window for ${projectName}...\n`);
-        spawnSync("tmux", [
-          "new-window", "-d",
-          "-n", projectName,
-          "-c", projectDir,
-          `${teleptyPath} allow --id ${sessionId} ${cliPath} --dangerously-skip-permissions`,
-        ], { stdio: "pipe" });
-      } else {
-        process.stdout.write([
-          `Directory ready: ${projectDir}`,
-          "",
-          "Run manually in a new terminal:",
-          `  cd ${projectDir}`,
-          `  ${teleptyPath} allow --id ${sessionId} ${cliPath} --dangerously-skip-permissions`,
-          "",
-        ].join("\n"));
-        return;
-      }
-
-      process.stdout.write([
-        `Session: ${sessionId}`,
-        `Directory: ${projectDir}`,
-        "",
-        "Waiting for session registration...",
-        "Once registered, inject tasks with:",
-        `  aigentry session inject ${sessionId} "your task here"`,
-        "",
-      ].join("\n"));
-      break;
-    }
-
-    case "list": {
-      if (!commandExists("telepty")) {
-        process.stderr.write("telepty not installed.\n");
-        process.exit(1);
-      }
-      const result = spawnSync("telepty", ["list"], { stdio: "inherit" });
-      process.exit(result.status || 0);
-      break;
-    }
-
-    case "kill": {
-      const target = args[0];
-      if (!target) {
-        process.stderr.write("Missing project/session name. Usage: aigentry session kill <name>\n");
-        process.exit(1);
-      }
-      const killId = target.includes(`-${aiCli}`) ? target : `${target}-${aiCli}`;
-
-      if (!commandExists("telepty")) {
-        process.stderr.write("telepty not installed.\n");
-        process.exit(1);
-      }
-
-      const result = spawnSync("telepty", ["kill", "--id", killId], { stdio: "pipe" });
-      if (result.status === 0) {
-        process.stdout.write(`Killed session: ${killId}\n`);
-      } else {
-        process.stderr.write(`Session not found or already stopped: ${killId}\n`);
-        process.exit(1);
-      }
-      break;
-    }
-
-    case "inject": {
-      const targetSession = args[0];
-      const message = args.slice(1).join(" ");
-      if (!targetSession || !message) {
-        process.stderr.write("Usage: aigentry session inject <session-id> <message>\n");
-        process.exit(1);
-      }
-
-      if (!commandExists("telepty")) {
-        process.stderr.write("telepty not installed.\n");
-        process.exit(1);
-      }
-
-      const result = spawnSync("telepty", ["inject", targetSession, message], { stdio: "inherit" });
-      process.exit(result.status || 0);
-      break;
-    }
-
-    default:
-      process.stderr.write(`Unknown session subcommand: ${subcommand}\n`);
-      runSession("help", []);
-      process.exit(1);
-  }
-}
-
-function runDemo() {
-  const lines = [
-    "",
-    "aigentry 5-minute demo walkthrough",
-    "===================================",
-    "",
-    "This demo shows the key aigentry capabilities:",
-    "  - Multi-LLM deliberation (claude + codex + gemini)",
-    "  - Structured debate rounds",
-    "  - Synthesized conclusions",
-    "",
-    "Prerequisites",
-    "-------------",
-    "",
-  ];
-
-  const nodeOk = (() => {
-    const v = process.versions.node.split(".").map(Number);
-    return v[0] >= 18;
-  })();
-  lines.push(`  Node.js 18+    : ${nodeOk ? "OK" : "MISSING — install from https://nodejs.org/"}`);
-
-  const teleptyOk = commandExists("telepty");
-  lines.push(`  telepty        : ${teleptyOk ? "OK" : "not installed (optional for transport)"}`);
-
-  const deliberationOk = fs.existsSync(
-    path.join(HOME, ".local", "lib", "mcp-deliberation", "index.js")
-  );
-  lines.push(`  deliberation   : ${deliberationOk ? "installed" : "not installed — run: aigentry-devkit setup"}`);
-
-  const deliberationCliAvailable = (() => {
-    const result = spawnSync(
-      "npx",
-      ["--yes", "--package", "@dmsdc-ai/aigentry-deliberation", "deliberation-cli", "--help"],
-      { stdio: "pipe", shell: process.platform === "win32", timeout: 15000 }
-    );
-    return result.status === 0;
-  })();
-  lines.push(`  deliberation-cli: ${deliberationCliAvailable ? "available via npx" : "not available (will show manual commands)"}`);
-
-  lines.push("");
-  lines.push("Demo: Multi-LLM deliberation on testing strategy");
-  lines.push("-------------------------------------------------");
-  lines.push("");
-  lines.push('Topic: "aigentry demo: which testing strategy is best for a CLI tool?"');
-  lines.push("Speakers: claude, codex, gemini");
-  lines.push("Rounds: 2");
-  lines.push("");
-
-  if (deliberationCliAvailable) {
-    process.stdout.write(lines.join("\n") + "\n");
-    process.stdout.write("Running live deliberation...\n\n");
-
-    const topic = "aigentry demo: which testing strategy is best for a CLI tool?";
-    const speakers = ["claude", "codex", "gemini"];
-
-    // Step 1: Start deliberation
-    process.stdout.write("Step 1/4  Starting deliberation...\n");
-    const startResult = spawnSync(
-      "npx",
-      [
-        "--yes",
-        "--package", "@dmsdc-ai/aigentry-deliberation",
-        "deliberation-cli",
-        "start",
-        "--topic", topic,
-        "--speakers", speakers.join(","),
-      ],
-      { stdio: "inherit", shell: process.platform === "win32", timeout: 30000 }
-    );
-    if (startResult.status !== 0) {
-      process.stdout.write("\nCould not start deliberation. Falling back to guided walkthrough.\n\n");
-      printDemoGuide(topic, speakers);
-      return;
-    }
-
-    // Step 2: Round 1
-    process.stdout.write("\nStep 2/4  Running round 1...\n");
-    spawnSync(
-      "npx",
-      [
-        "--yes",
-        "--package", "@dmsdc-ai/aigentry-deliberation",
-        "deliberation-cli",
-        "run",
-        "--rounds", "1",
-      ],
-      { stdio: "inherit", shell: process.platform === "win32", timeout: 60000 }
-    );
-
-    // Step 3: Round 2
-    process.stdout.write("\nStep 3/4  Running round 2...\n");
-    spawnSync(
-      "npx",
-      [
-        "--yes",
-        "--package", "@dmsdc-ai/aigentry-deliberation",
-        "deliberation-cli",
-        "run",
-        "--rounds", "1",
-      ],
-      { stdio: "inherit", shell: process.platform === "win32", timeout: 60000 }
-    );
-
-    // Step 4: Synthesize
-    process.stdout.write("\nStep 4/4  Synthesizing results...\n");
-    spawnSync(
-      "npx",
-      [
-        "--yes",
-        "--package", "@dmsdc-ai/aigentry-deliberation",
-        "deliberation-cli",
-        "synthesize",
-      ],
-      { stdio: "inherit", shell: process.platform === "win32", timeout: 30000 }
-    );
-
-    process.stdout.write([
-      "",
-      "Demo complete.",
-      "",
-      "What you just saw:",
-      "  - Three LLMs debated a question in structured rounds",
-      "  - Each speaker built on prior arguments",
-      "  - A synthesized conclusion was produced automatically",
-      "",
-      "Next steps:",
-      "  aigentry-devkit init    — set up your config",
-      "  aigentry-devkit setup   — install all components",
-      "  aigentry-devkit up      — start the stack",
-      "  aigentry-devkit status  — check module health",
-      "",
-    ].join("\n"));
-  } else {
-    process.stdout.write(lines.join("\n") + "\n");
-    printDemoGuide(
-      "aigentry demo: which testing strategy is best for a CLI tool?",
-      ["claude", "codex", "gemini"]
-    );
-  }
-}
-
-function printDemoGuide(topic, speakers) {
-  const speakersStr = speakers.join(",");
-  process.stdout.write([
-    "Guided walkthrough — run these commands yourself:",
-    "",
-    "  # 1. Install deliberation",
-    "  npx --yes --package @dmsdc-ai/aigentry-deliberation deliberation-install",
-    "",
-    "  # 2. Start a deliberation session",
-    `  npx --yes --package @dmsdc-ai/aigentry-deliberation deliberation-cli \\`,
-    `    start --topic "${topic}" \\`,
-    `    --speakers ${speakersStr}`,
-    "",
-    "  # 3. Run 2 rounds (run this command twice)",
-    "  npx --yes --package @dmsdc-ai/aigentry-deliberation deliberation-cli run --rounds 1",
-    "",
-    "  # 4. Synthesize the results",
-    "  npx --yes --package @dmsdc-ai/aigentry-deliberation deliberation-cli synthesize",
-    "",
-    "  # 5. View full history",
-    "  npx --yes --package @dmsdc-ai/aigentry-deliberation deliberation-cli history",
-    "",
-    "Or use the MCP tools inside Claude Code:",
-    "  deliberation_start, deliberation_run_until_blocked, deliberation_synthesize",
-    "",
-    "Next steps:",
-    "  aigentry-devkit init    — set up your config",
-    "  aigentry-devkit setup   — install all components",
-    "  aigentry-devkit up      — start the stack",
-    "  aigentry-devkit status  — check module health",
-    "",
-  ].join("\n"));
-}
-
-function runTier() {
-  const tier = getCurrentTier();
-  const info = getTierInfo(tier);
-  const license = loadLicense();
-
-  process.stdout.write(`\n  Tier: ${info.display_name}\n`);
-  if (license) {
-    process.stdout.write(`  Licensed: ${license.issued_at}\n`);
-    if (license.expires_at) {
-      process.stdout.write(`  Expires: ${license.expires_at}\n`);
-    }
-  } else {
-    process.stdout.write(`  No license file. Run 'aigentry setup' to generate.\n`);
-  }
-
-  process.stdout.write(`\n  Features:\n`);
-  const features = require("../lib/entitlement").getFeaturesForTier(tier);
-  for (const f of features) {
-    process.stdout.write(`    ✅ ${f}\n`);
-  }
-
-  const allFeatures = Object.keys(require("../lib/entitlement").FEATURES);
-  const locked = allFeatures.filter(f => !features.includes(f));
-  if (locked.length > 0) {
-    process.stdout.write(`\n  Locked (upgrade to Pro):\n`);
-    for (const f of locked.slice(0, 10)) {
-      process.stdout.write(`    🔒 ${f}\n`);
-    }
-    if (locked.length > 10) {
-      process.stdout.write(`    ... and ${locked.length - 10} more\n`);
-    }
-    process.stdout.write(`\n  Upgrade: https://aigentry.dev/upgrade\n`);
-  }
-  process.stdout.write(`\n`);
-}
 
 // ── CLI Entry Point ──
 
@@ -1536,7 +728,7 @@ try {
 }
 const { options, extras } = parsed;
 
-if (extras.length > 0 && command !== "session" && command !== "workspace-init" && command !== "scaffold" && command !== "breakdown" && command !== "update-md") {
+if (extras.length > 0 && command !== "session" && command !== "workspace-init" && command !== "scaffold" && command !== "breakdown") {
   process.stderr.write(`Unexpected arguments: ${extras.join(" ")}\n\n`);
   printHelp();
   process.exit(1);
@@ -1619,41 +811,24 @@ try {
       }
       break;
     }
-    case "update-md": {
-      const umArgs = { projectPath: null, all: false, dryRun: options.dryRun || false };
-      for (let i = 0; i < extras.length; i++) {
-        if (extras[i] === "--all") {
-          umArgs.all = true;
-        } else if (!extras[i].startsWith("-")) {
-          umArgs.projectPath = extras[i];
-        }
-      }
-      updateMd(umArgs);
-      break;
-    }
+    // #773 — `up/start/stop/session` removed: telepty owns session lifecycle
+    // and bin/open-session.sh owns terminal spawning. Point users at those.
     case "up":
-      runUp();
-      break;
-    case "demo":
-      runDemo();
-      break;
     case "start":
-      runStart();
-      break;
     case "stop":
-      runStop();
-      break;
     case "session":
-      runSession(extras[0], extras.slice(1));
+      process.stderr.write(
+        `'aigentry-devkit ${command}' was removed.\n` +
+        "  Session lifecycle (create/list/kill/inject): telepty\n" +
+        "  Terminal spawning: bin/open-session.sh\n"
+      );
+      process.exit(1);
       break;
     case "bootstrap": {
       const { bootstrap } = require("../lib/bootstrap");
       bootstrap();
       break;
     }
-    case "tier":
-      runTier();
-      break;
     case "breakdown": {
       const { runBreakdown } = require("../lib/breakdown");
       const bArgs = {};

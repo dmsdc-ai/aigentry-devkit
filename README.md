@@ -12,6 +12,29 @@ npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit install
 
 Then restart your CLI so new MCP/skill settings load. List available profiles with `npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit profiles`; full walkthrough in [`docs/quickstart.md`](docs/quickstart.md).
 
+## 5-minute demo
+
+Multi-LLM deliberation end to end, from the shell. Run `aigentry-devkit doctor` first — it covers the prerequisites (Node 18+, telepty, deliberation server).
+
+```bash
+# 1. Install deliberation
+npx --yes --package @dmsdc-ai/aigentry-deliberation deliberation-install
+
+# 2. Start a session
+npx --yes --package @dmsdc-ai/aigentry-deliberation deliberation-cli \
+  start --topic "which testing strategy is best for a CLI tool?" \
+  --speakers claude,codex,gemini
+
+# 3. Run 2 rounds (repeat this command twice)
+npx --yes --package @dmsdc-ai/aigentry-deliberation deliberation-cli run --rounds 1
+
+# 4. Synthesize, then review
+npx --yes --package @dmsdc-ai/aigentry-deliberation deliberation-cli synthesize
+npx --yes --package @dmsdc-ai/aigentry-deliberation deliberation-cli history
+```
+
+Inside Claude Code the same flow is available as MCP tools — see [MCP Deliberation Server](#mcp-deliberation-server).
+
 ## Features
 
 ### Skills (Reusable AI Capabilities)
