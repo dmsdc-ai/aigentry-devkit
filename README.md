@@ -12,29 +12,6 @@ npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit install
 
 Then restart your CLI so new MCP/skill settings load. List available profiles with `npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit profiles`; full walkthrough in [`docs/quickstart.md`](docs/quickstart.md).
 
-## 5-minute demo
-
-Multi-LLM deliberation end to end, from the shell. Run `aigentry-devkit doctor` first — it covers the prerequisites (Node 18+, telepty, deliberation server).
-
-```bash
-# 1. Install deliberation
-npx --yes --package @dmsdc-ai/aigentry-deliberation deliberation-install
-
-# 2. Start a session
-npx --yes --package @dmsdc-ai/aigentry-deliberation deliberation-cli \
-  start --topic "which testing strategy is best for a CLI tool?" \
-  --speakers claude,codex,gemini
-
-# 3. Run 2 rounds (repeat this command twice)
-npx --yes --package @dmsdc-ai/aigentry-deliberation deliberation-cli run --rounds 1
-
-# 4. Synthesize, then review
-npx --yes --package @dmsdc-ai/aigentry-deliberation deliberation-cli synthesize
-npx --yes --package @dmsdc-ai/aigentry-deliberation deliberation-cli history
-```
-
-Inside Claude Code the same flow is available as MCP tools — see [MCP Deliberation Server](#mcp-deliberation-server).
-
 ## Features
 
 ### Skills (Reusable AI Capabilities)
@@ -668,10 +645,10 @@ aigentry-devkit is one component of the aigentry platform — an open-source eng
 
 | Module | Package | Version | Role | Maturity |
 | --- | --- | --- | --- | --- |
-| **telepty** | `@dmsdc-ai/aigentry-telepty` | 0.6.11 | Cross-terminal / cross-machine prompt transport (PTY daemon) | Shipping |
+| **telepty** | `@dmsdc-ai/aigentry-telepty` | 0.6.19 | Cross-terminal / cross-machine prompt transport (PTY daemon) | Shipping |
 | **brain** | `@dmsdc-ai/aigentry-brain` | 0.2.8 | Persistent cross-session memory (MCP server) | Early |
 | **deliberation** | `@dmsdc-ai/aigentry-deliberation` | 0.0.47 | Multi-AI structured debate + synthesis (MCP server) | Early |
-| **devkit** | `@dmsdc-ai/aigentry-devkit` | 0.0.22 | Installer/scaffold for the AI dev environment | Early |
+| **devkit** | `@dmsdc-ai/aigentry-devkit` | 0.1.14 | Installer/scaffold for the AI dev environment | Early |
 | **aterm** | `@dmsdc-ai/aterm` | 0.2.14 | Terminal launcher with native session IPC | Early |
 | **orchestrator** | *(unpublished)* | — | Control tower that drives sessions via telepty | Internal |
 
