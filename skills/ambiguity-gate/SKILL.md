@@ -5,7 +5,7 @@ description: |
   enter plan mode with the competing interpretations written out; dispatched workers send a HOLD
   inject instead (plan-approval UI is on a screen nobody watches). Fires on task-shaped requests
   only. Use when a request has ≥2 plausible readings of target/scope/deliverable/success-criteria,
-  or implies an unbounded destructive operation.
+  or implies a destructive operation that is unbounded or irreversible.
   Triggers: "ambiguous", "not sure what you mean", "plan mode", "which one", "모호", "애매",
   "플랜 모드", "뭘 말하는지", "범위가", "어디까지".
 version: 0.1.0
@@ -65,9 +65,21 @@ session, stale cleanup, AUTO_REPORT — Rule 30 autonomy is untouched by this ga
 
 ## Step 2 — Resolve by reading first (the brake)
 
-Cheap disambiguation comes **first**. If ~3 tool calls (a grep, a file read, a `tq-status`) resolve
-the referent, it was never ambiguous and **the gate must not fire**. Only **residual ambiguity that
-survives reading** triggers the gate.
+Cheap disambiguation comes **first**. Only **residual ambiguity that survives reading** triggers
+the gate.
+
+The stopping condition is a criterion, not a budget — an effort count is not a test two readers can
+apply:
+
+> **Does the residual difference between the readings concern the user's *intent*, or the
+> repository's *facts*?** Facts are readable — keep reading. **Intent is not in the repo** — no
+> amount of further reading will settle it, and that is exactly when the gate fires.
+
+A targeted search (grep the named symbol, read the named file, `tq-status`) settles fact-shaped
+differences; roughly three such calls is the practical point past which a fact-shaped difference
+would already have resolved. That figure is **guidance for the judgment, not the threshold** — the
+decidable test is the intent-vs-facts distinction above, and a reader who reaches a different call
+count but the same intent-vs-facts verdict has applied the rule correctly.
 
 This is the single most important step in the skill.
 
@@ -123,13 +135,22 @@ Set to `1` by `bin/dispatch.sh` in the generated per-session `worker-launcher.sh
 `TELEPTY_SESSION_ID` — the first is empirically wrong under cwd decoupling, the second is invisible
 to a skill, the third is present for the orchestrator too.
 
-**Default when unset ⇒ interactive.** Deliberately fail-open, because the two errors are not
-symmetric. A false *worker* verdict on the orchestrator silently removes the user's own gate —
-reintroducing exactly the failure this gate exists to eliminate, invisibly. A false *interactive*
-verdict on a worker produces a plan-mode stall on an unwatched screen: bad, but already instrumented
-— `dispatch-tracker.sh check` classifies it and AUTO_REPORTs or re-dispatches within 30 minutes. A
-public devkit user running `claude` directly has no env var and *is* interactive; the default is
-correct for them by construction.
+**Default when unset ⇒ interactive.** Fail-open — and the reason is *which population the default's
+error lands on*, not how loudly it fails:
+
+| Default | Who has the var unset | Error population |
+|---|---|---|
+| **unset ⇒ interactive** (chosen) | the orchestrator; any human-driven CLI; every public devkit user running `claude` directly — **all genuinely interactive** | only a worker whose launcher env failed to propagate — **a regression, not a population** |
+| unset ⇒ worker | same set | **every human user, by construction** — each one's gate replaced by a HOLD inject to an orchestrator that, for a public user, does not exist |
+
+The chosen default is wrong only when something else is already broken. The inverse is wrong for the
+entire population it was meant to serve. That asymmetry — not fault visibility — is the argument.
+
+The residual error is bounded but **only partly instrumented**: a worker wrongly judged interactive
+stalls in plan mode on an unwatched screen. It is caught within the 30-minute window **only if that
+session is registered in `state/dispatch/active.json`**, and even then only as a *generic* stall —
+neither `SessionProbe` nor `dispatch-tracker.sh` has a plan-mode classifier, so the diagnosis will
+not name the cause. A session spawned outside `bin/dispatch.sh` is not caught at all.
 
 > **If skipped (worker enters plan mode):** the approval modal renders on a screen nobody watches,
 > the session looks hung, and the injects sent to wake it are swallowed by the modal (#737/#743).
@@ -160,8 +181,11 @@ telepty inject --from "$TELEPTY_SESSION_ID" orchestrator \
 Then **wait**. This is not idling — the orchestrator marks you `awaiting_user`, which excludes the
 session from AUTO_REPORT, re-dispatch, and GC.
 
-**The skill never runs `bin/hitl.sh`.** Opening the HITL Gate is the orchestrator's job on receipt
-of the HOLD. A worker that opens its own gate has bypassed the human it was trying to reach.
+**The skill never runs `bin/hitl.sh`.** Opening the HITL Gate is the orchestrator's job **on receipt**
+of the HOLD (`docs/adr/2026-07-26-hitl-gate-primitive.md` producer (c)). A worker that opens its own
+gate has bypassed the human it was trying to reach — and, load-bearing twice, invoking `bin/hitl.sh`
+by path would flip this skill's SSOT out of devkit and into the orchestrator repo under the §2.4
+tiebreak.
 
 ## Step 5 — Context preservation while gated
 
@@ -170,20 +194,51 @@ A blocking modal swallows injects (#737) and plan-mode windows have demonstrably
 **exit before acting**.
 
 ```sh
-# entry — one 0-byte marker
+# entry — unique marker; the skill records $MARKER and carries the literal path for this plan
 mkdir -p "$HOME/.aigentry/plan-mode"
-: > "$HOME/.aigentry/plan-mode/${TELEPTY_SESSION_ID:-local}.entry"
+find "$HOME/.aigentry/plan-mode" -name 'entry.*' -mtime +1 -exec rm -f {} +   # reap orphans
+MARKER=$(mktemp "$HOME/.aigentry/plan-mode/entry.XXXXXX")
 
-# turn boundary + exit — sweep, read anything new BEFORE acting
-[ -d "$HOME/.telepty/shared" ] && find "$HOME/.telepty/shared" -name '*.md' \
-  -newer "$HOME/.aigentry/plan-mode/${TELEPTY_SESSION_ID:-local}.entry" 2>/dev/null
+# turn boundary + exit — sweep BEFORE acting. A lost window must be loud, never swallowed.
+if [ -f "$MARKER" ] && [ -d "$HOME/.telepty/shared" ]; then
+  find "$HOME/.telepty/shared" -name '*.md' -newer "$MARKER"
+else
+  echo "SWEEP-WINDOW-LOST"
+fi
 
-# exit — remove marker (no GC needed: the file that creates it also removes it)
-rm -f "$HOME/.aigentry/plan-mode/${TELEPTY_SESSION_ID:-local}.entry"
+# exit — after the sweep, after acting
+rm -f "$MARKER"
 ```
 
-`-newer FILE` is POSIX and universal. Do **not** substitute `-newermt` — it is a GNU/BSD extension
-and `bfs` (macOS `find` on many setups) rejects relative timestamps outright (Rule 26 cross-OS).
+**Never name the marker after the session.** `${TELEPTY_SESSION_ID:-local}` collides across
+concurrent local interactive sessions — two plain `claude` windows both resolve to `local`, and the
+second session's marker re-stamps the first's, silently shortening its sweep window. `mktemp` +
+carrying the returned path removes the naming scheme rather than fixing it: there is no name to
+collide, and entry/exit are the same conversation, so you already hold the path. Orphans from a
+session that died mid-plan are handled by the one-line POSIX reap.
+
+**`SWEEP-WINDOW-LOST` is not an error to silence.** `find … -newer <deleted>` exits non-zero and,
+under `set -e`, aborts the block mid-flow. The guard exists to make the loss *loud* — a silently
+skipped sweep is precisely how #743 happened. State it in the plan and treat the prior injects as
+unverified.
+
+**The sweep returns a candidate list, not context to ingest.** `~/.telepty/shared` is shared across
+all sessions, so a sweep sees refs addressed elsewhere — a live test during the ADR's own drafting
+returned exactly one hit, that session's **own outbound report**. Triage first: **discard refs this
+session authored** (their paths were printed by `telepty inject`), then read only what is addressed
+here. Per-session scoping is not implementable today — the directory is content-addressed (sha256
+filenames) with no addressee metadata, so nothing short of reading each file can tell recipient from
+sender.
+
+`-newer FILE`, `-mtime`, and `-exec … {} +` are POSIX and `mktemp` is universal. Do **not**
+substitute `-newermt`: it is a GNU/BSD extension, not POSIX (Rule 26 cross-OS), and the agent
+running this skill may have `find` shimmed — via a shell function in a CLI shell snapshot, for
+instance — to an implementation it cannot observe and did not choose. POSIX `-newer` removes the bet.
+
+**Inherent race — named, not solved.** The exit sweep closes only the window it can see. A ref
+written *after* the final sweep starts but *before* the first state-mutating action is still missed;
+no sweep-side fix closes it (it is a transport-delivery problem, and #760 is the full fix). So place
+the exit sweep **as late as possible — immediately before the first mutation, not at plan approval.**
 
 **Coverage limit, stated honestly:** this recovers **ref-carrying** injects only (`shared/*.md`).
 Inline `telepty inject "<text>"` leaves no file and is not recoverable this way. Acceptable because
