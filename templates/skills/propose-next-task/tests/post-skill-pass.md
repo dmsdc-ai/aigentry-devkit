@@ -3,7 +3,7 @@ phase: GREEN
 date: 2026-05-25
 scenario: orchestrator idle turn — propose next task WITH skill installed (~/.claude/skills/propose-next-task/SKILL.md symlinked to devkit SSOT)
 subagent_type: general-purpose
-input_file: /Users/duckyoungkim/projects/aigentry-orchestrator/state/task-queue.json
+input_file: <ORCH_DIR>/state/task-queue.json
 result: PARTIAL-PASS — every baseline failure F1–F7 closed, BUT 5 new rationalizations (L1–L5) surfaced; REFACTOR required
 ---
 

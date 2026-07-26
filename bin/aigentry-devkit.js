@@ -46,6 +46,7 @@ function printHelp() {
     "  aigentry-devkit install [options]   Alias for setup",
     "  aigentry-devkit profiles            List installer profiles from manifest",
     "  aigentry-devkit doctor              Diagnose installation health",
+    "    --skills                          Only check installed skills against the devkit SSOT (drift guard)",
     "  aigentry-devkit repair-gemini-mcp   Re-run canonical Gemini MCP registration for deliberation",
     "  aigentry-devkit update [options]    Update to latest version",
     "  aigentry-devkit status              Show health status of all modules",
@@ -148,6 +149,7 @@ function parseCommandArgs(args) {
     profile: null,
     manifest: null,
     resume: null,
+    skills: false,
   };
   const extras = [];
 
@@ -163,6 +165,10 @@ function parseCommandArgs(args) {
     }
     if (arg === "--dry-run") {
       options.dryRun = true;
+      continue;
+    }
+    if (arg === "--skills") {
+      options.skills = true;
       continue;
     }
     if (arg === "--profile" || arg === "--manifest" || arg === "--resume") {
@@ -381,6 +387,39 @@ function runInstall(options = {}) {
   }
 }
 
+// #739 drift guard — `doctor --skills`. Runs standalone (not part of the full
+// doctor sweep) so it stays a fast, focused check.
+function runDoctorSkills() {
+  const { checkSkillsDrift } = require("../lib/skills-drift");
+  const installedDir = path.join(HOME, ".claude", "skills");
+
+  console.log("🔍 aigentry-devkit Doctor — Skills\n");
+  console.log(`  devkit:    ${path.join(rootDir, "skills")}`);
+  console.log(`  installed: ${installedDir}\n`);
+
+  const results = checkSkillsDrift(rootDir, installedDir);
+  let drifted = 0;
+  for (const r of results) {
+    if (r.status === "ok") {
+      console.log(`    ✅ ${r.name}`);
+    } else if (r.status === "missing") {
+      console.log(`    ➖ ${r.name} — not installed`);
+      console.log("       → npx @dmsdc-ai/aigentry-devkit setup");
+    } else {
+      drifted += 1;
+      console.log(`    ❌ ${r.name} — installed copy differs from devkit SSOT`);
+      console.log("       → npx @dmsdc-ai/aigentry-devkit setup --force");
+    }
+  }
+
+  console.log(
+    drifted === 0
+      ? `\n✅ ${results.length}개 스킬 SSOT 일치`
+      : `\n⚠️ ${drifted}개 스킬 드리프트 감지`
+  );
+  process.exit(drifted === 0 ? 0 : 1);
+}
+
 function runDoctor() {
   const checks = [
     {
@@ -421,8 +460,10 @@ function runDoctor() {
       name: "Skills 심볼릭 링크",
       test: () => {
         const skillsDir = path.join(HOME, ".claude", "skills");
+        // clipboard-image was de-listed (#739 D1/D4) and no longer installs —
+        // env-manager is the second always-shipped marker.
         return fs.existsSync(path.join(skillsDir, "deliberation")) ||
-               fs.existsSync(path.join(skillsDir, "clipboard-image"));
+               fs.existsSync(path.join(skillsDir, "env-manager"));
       },
       fix: "npx @dmsdc-ai/aigentry-devkit setup 실행",
     },
@@ -1528,7 +1569,11 @@ try {
       runInstall(options);
       break;
     case "doctor":
-      runDoctor();
+      if (options.skills) {
+        runDoctorSkills();
+      } else {
+        runDoctor();
+      }
       break;
     case "repair-gemini-mcp":
       runRepairGeminiMcp();

@@ -2,7 +2,7 @@
 phase: REFACTOR
 date: 2026-05-25
 total_iterations: 2 (proposed convergence — orchestrator decision pending)
-input_file: /Users/duckyoungkim/projects/aigentry-orchestrator/state/task-queue.json
+input_file: <ORCH_DIR>/state/task-queue.json
 ---
 
 # REFACTOR iterations log

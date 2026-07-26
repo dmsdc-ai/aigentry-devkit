@@ -368,8 +368,14 @@ if should_run_phase 1 && component_selected "devkit-core"; then
   # Bundled skills (skills/*) + distributable template skills (templates/skills/*)
   # share the same install convention: cp -R into ~/.claude/skills, idempotent,
   # honoring --force / skip semantics.
+  # De-listed skills (#739 D1/D4): kept in git, never shipped and never installed.
+  # Keep in sync with package.json "files" (which omits the same directories).
+  SKILLS_DELISTED="project-ops clipboard-image youtube-analyzer"
   for skill_dir in "$DEVKIT_DIR"/skills/*/ "$DEVKIT_DIR"/templates/skills/*/; do
     skill_name=$(basename "$skill_dir")
+    case " $SKILLS_DELISTED " in
+      *" $skill_name "*) continue ;;
+    esac
     target="$SKILLS_DEST/$skill_name"
 
     if [ -e "$target" ]; then

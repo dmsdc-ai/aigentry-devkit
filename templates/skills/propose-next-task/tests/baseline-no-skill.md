@@ -3,7 +3,7 @@ phase: RED
 date: 2026-05-25
 scenario: orchestrator idle turn — propose next task without any helper skill (only AGENTS.md §4)
 subagent_type: general-purpose
-input_file: /Users/duckyoungkim/projects/aigentry-orchestrator/state/task-queue.json
+input_file: <ORCH_DIR>/state/task-queue.json
 input_state_snapshot:
   total_tasks: 429
   pending: 188

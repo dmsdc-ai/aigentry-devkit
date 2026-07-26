@@ -7,6 +7,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Removed
 
+- **`clipboard-image`, `youtube-analyzer`, `project-ops` un-bundled (#739
+  D1/D4).** They are no longer in the npm tarball and no longer installed by
+  `install.sh` / `install.ps1`; the directories stay in git. Each pulled in host
+  tooling the devkit does not own (`pbpaste`/`xclip`, `yt-dlp` + Python, an
+  authenticated `gh` with org secret scope), which Constitution Article 17
+  forbids as an installer-wide dependency. README gains an "Un-bundled skills
+  (written fallback)" section with a per-skill fallback and a hand-install
+  recipe (`cp -R skills/<name> ~/.claude/skills/`).
 - **`aigentry` bin alias dropped to resolve a cross-package bin-name
   collision (public-hygiene sweep).** `aigentry` is owned by the meta package
   `@dmsdc-ai/aigentry`; devkit exposed it as a duplicate alias of
@@ -14,8 +22,35 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `aigentry-devkit-bootstrap` bins are unaffected. Install `@dmsdc-ai/aigentry`
   for the `aigentry` command.
 
+### Fixed
+
+- **`install.ps1` never installed `templates/skills/` (#739 D2).** Windows
+  installs silently skipped every distributable template skill (e.g.
+  `propose-next-task`) that `install.sh` had been installing since it was
+  added. Both installers now walk `skills/*` and `templates/skills/*`.
+- **Machine-specific absolute paths shipped in the tarball (#739 D3).**
+  `templates/skills/propose-next-task/tests/*.md` embedded
+  `/Users/<name>/projects/aigentry-orchestrator/state/task-queue.json`; now
+  `<ORCH_DIR>/state/task-queue.json`. Same for the `wtm init` usage example.
+- **`doctor` used `clipboard-image` as an install marker.** With the skill
+  un-bundled that check would have gone red on a healthy install; it now probes
+  `env-manager`.
+
 ### Added
 
+- **10 cross-cutting skills promoted into the devkit SSOT (#739).** `caveman`,
+  `context-manage`, `deliberation-gate`, `deliberation-test`, `diagnose`,
+  `grill-with-adr`, `sawe`, `session-create`, `work-breakdown`, and
+  `workspace-lifecycle` now ship in the tarball and install through both
+  installers. `diagnose` carries the salvaged
+  `scripts/hitl-loop.template.sh` (human-in-the-loop repro driver), referenced
+  from Phase 1 of the skill.
+- **`aigentry-devkit doctor --skills` drift guard (#739).** Compares each
+  shipped skill against its installed `~/.claude/skills/` copy (content digest,
+  symlink-aware) and reports `ok` / not installed / drift; exits non-zero on
+  drift. The shipped set is derived from `package.json` `files[]`, so the
+  un-bundled skills need no second list. Logic in `lib/skills-drift.js`, tests
+  under `tests/skills-drift/v1/` (`npm run test:skills-drift`).
 - **`@aigentry/logger` emit wiring at JS entry points (#440).** New
   CJS→ESM bridge wrapper at `lib/logger-emit.js` (lazy `import()` of
   the ESM `@aigentry/logger` from the CJS devkit). Two emit call sites:

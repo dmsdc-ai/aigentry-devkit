@@ -42,9 +42,15 @@ allowed-tools: Bash, Read, Edit, Write, Glob, Grep
 요청 성격에 따라 필요한 보조 스킬을 함께 사용합니다:
 
 - 환경변수/배포 설정/direnv: `env-manager`
-- 스크린샷/클립보드 이미지 분석: `clipboard-image`
-- YouTube 링크 분석/요약 근거 추출: `youtube-analyzer`
+- 스크린샷/클립보드 이미지 분석: `clipboard-image` (미번들 — 아래 폴백 참고)
+- YouTube 링크 분석/요약 근거 추출: `youtube-analyzer` (미번들 — 아래 폴백 참고)
 - 설계 불확실성이 큰 경우: 짧은 `deliberation` 세션 재개 후 합의 업데이트
+
+`clipboard-image` / `youtube-analyzer` 는 devkit 이 번들하지 않습니다(호스트 도구 의존 — 헌법 제17조
+무의존, 서면 폴백 제공). 설치되어 있지 않으면 폴백으로 진행합니다: 클립보드 이미지는
+`pbpaste` / `xclip -selection clipboard -t image/png -o > /tmp/clip.png` 후 파일 경로 전달, YouTube 는
+`yt-dlp --skip-download --write-auto-sub <url>` 로 자막 추출. 전체 안내는 devkit README
+"Un-bundled skills (written fallback)" 절 참고.
 
 기본 원칙:
 - 구현은 이 스킬에서 진행
