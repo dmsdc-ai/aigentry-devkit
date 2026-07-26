@@ -52,8 +52,10 @@ allowed-tools: Bash, Read, Write, Edit, Glob, Grep
 | 세션 유형 | 스냅샷 경로 |
 |----------|-----------|
 | 프로젝트 세션 | `{project-root}/.context-snapshot.md` |
-| 오케스트레이터 | `~/projects/aigentry-orchestrator/.context-snapshot.md` |
+| 오케스트레이터 | `$AIGENTRY_ORCH_DIR/.context-snapshot.md` |
 | 벤치마크 세션 | `{cwd}/.context-snapshot.md` |
+
+`$AIGENTRY_ORCH_DIR` = your aigentry orchestrator project root. 미설정 시 `install.sh`와 동일하게 `<projects-root>/aigentry-orchestrator`로 해석하고 (projects-root 기본값 `~/projects`), 그 디렉토리도 없으면 세션의 프로젝트 루트에 저장합니다.
 
 ### 스냅샷 작성 템플릿
 

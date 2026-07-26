@@ -4,7 +4,7 @@ description: >
   Ultra-compressed reply mode. Cuts token usage ~75% by dropping filler,
   articles, and pleasantries while keeping full technical accuracy. Works
   across Claude / Codex / Gemini sessions and complements the Safe Compact
-  Protocol (~/projects/CLAUDE.md) for telepty multi-session fan-out. Trigger
+  Protocol for telepty multi-session fan-out. Trigger
   on "caveman mode", "talk like caveman", "use caveman", "less tokens",
   "be brief", "토큰 절약", "짧은 답변 모드", "케이브맨", or /caveman.
 license: MIT
@@ -33,7 +33,7 @@ Mode applies in any CLI: Claude Code, Codex, Gemini, etc. When dispatching via t
 
 ## Multi-session fan-out leverage
 
-In aigentry orchestrator → N-session fan-out, each report line is read serially by the orchestrator. Caveman mode on subordinate sessions cuts orchestrator read-time + context spend ~4x. Pair with the **Safe Compact Protocol** (`~/projects/CLAUDE.md` → 컨텍스트 관리 규칙): caveman is preventive (Stage 1, ≥50%), `.context-snapshot.md` + `/compact` is reactive (Stage 2, ≥70%). Caveman first, snapshot only if caveman alone insufficient.
+In aigentry orchestrator → N-session fan-out, each report line is read serially by the orchestrator. Caveman mode on subordinate sessions cuts orchestrator read-time + context spend ~4x. Pair with the **Safe Compact Protocol** (your projects-root `CLAUDE.md` → 컨텍스트 관리 규칙, if you keep one): caveman is preventive (Stage 1, ≥50%), `.context-snapshot.md` + `/compact` is reactive (Stage 2, ≥70%). Caveman first, snapshot only if caveman alone insufficient.
 
 REPORT lines via `telepty inject`: caveman by default. Format:
 `REPORT: [task] DONE | files: [paths] | <bullets>` — no preamble, no signoff.
