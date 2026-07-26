@@ -85,7 +85,7 @@ Fires if **≥1** signal holds:
 | **A2** | **Scope** | The change boundary has ≥2 defensible cut points (this call site / this module / every caller) |
 | **A3** | **Deliverable** | You cannot name the exact file(s) or artifact(s) that will exist when it is done |
 | **A4** | **Success criteria** | You cannot state one checkable pass/fail condition |
-| **A5** | **Unbounded destructive op** | delete / overwrite / push / publish / reset / kill without an explicit bound (which files, which remote, which sessions). **Fires alone, always** |
+| **A5** | **Destructive op: unbounded *or* irreversible** | delete / overwrite / force-push / reset / drop / publish / kill that **either** (i) lacks an explicit bound (which files, which remote, which sessions), **or** (ii) **irreversibly destroys work not recoverable from any remote or backup**, absent an explicit user acknowledgement of that loss. **Fires alone, always** |
 | **A6** | **Vague verb, no target** | improve / enhance / fix / refactor / 정리 / 개선 with no named file, function, or symbol |
 | **A7** | **Constraint conflict** | Proceeding requires choosing which standing rule, ADR, or constitutional article to violate |
 
