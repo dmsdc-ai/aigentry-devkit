@@ -54,6 +54,7 @@
     "skills/auto-multi-llm-review/**",
     "skills/orchestrator-response-style/**",
     "skills/upsell-trigger/**",
+    "skills/ambiguity-gate/**",
     "skills/caveman/**",
     "skills/context-manage/**",
     "skills/deliberation-gate/**",
