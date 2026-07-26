@@ -20,6 +20,12 @@ The user provides the project name (without `aigentry-` prefix). Examples:
 
 If no name is provided, ask the user.
 
+## Prerequisites
+
+`$AIGENTRY_ORCH_DIR` = your aigentry orchestrator project root (cloned by `aigentry-devkit setup --profile orchestrator`); `$AIGENTRY_PROJECTS_ROOT` = where your `aigentry-*` repos live. Both resolve the same way `install.sh` does, so unset is fine — Step 1 derives the defaults.
+
+Steps 4/5/7 execute scripts that live in the orchestrator repo. If `$ORCH_DIR` does not exist (you don't run an aigentry orchestrator), skip those three steps and spawn the session with your terminal's own tooling — steps 1-3, 6 and 8 still apply.
+
 ## Workflow
 
 Execute ALL 7 steps in order. Do not skip any.
@@ -28,7 +34,9 @@ Execute ALL 7 steps in order. Do not skip any.
 
 ```bash
 NAME="<user-provided-name>"
-PROJECT_DIR="$HOME/projects/aigentry-${NAME}"
+PROJECTS_ROOT="${AIGENTRY_PROJECTS_ROOT:-$HOME/projects}"
+ORCH_DIR="${AIGENTRY_ORCH_DIR:-$PROJECTS_ROOT/aigentry-orchestrator}"
+PROJECT_DIR="$PROJECTS_ROOT/aigentry-${NAME}"
 SESSION_ID="aigentry-${NAME}-claude"
 
 # Check if already exists
@@ -76,7 +84,7 @@ The role description should be inferred from the project name, or ask the user i
 
 ```bash
 telepty inject --from aigentry-orchestrator-claude aigentry-devkit-claude \
-  "~/projects/aigentry-${NAME}/ 프로젝트에 .claude/settings.json 생성해주세요. MCP 설정(deliberation, brain) + 권한 설정 포함."
+  "${PROJECT_DIR}/ 프로젝트에 .claude/settings.json 생성해주세요. MCP 설정(deliberation, brain) + 권한 설정 포함."
 ```
 
 Do not wait for devkit response — continue to next step.
@@ -89,7 +97,7 @@ Do not wait for devkit response — continue to next step.
 # title==sid), so a stale surface named $SESSION_ID is closed on ANY host
 # (cmux/aterm/tmux/wezterm/iterm/warp/headless). Idempotent no-op if none.
 if telepty list 2>/dev/null | grep -q "${SESSION_ID}"; then
-  ~/projects/aigentry-orchestrator/bin/session-cleanup.sh "${SESSION_ID}" || true
+  "$ORCH_DIR/bin/session-cleanup.sh" "${SESSION_ID}" || true
 fi
 ```
 
@@ -103,7 +111,7 @@ fi
 # SID convention: open-session.sh derives sid = "<track>-<name>", so
 # --track aigentry --name "${NAME}-claude" yields sid = "${SESSION_ID}".
 # NEVER hardcode kitty/cmux here.
-~/projects/aigentry-orchestrator/bin/open-session.sh \
+"$ORCH_DIR/bin/open-session.sh" \
   --track aigentry \
   --name "${NAME}-claude" \
   --cwd "${PROJECT_DIR}" \
@@ -127,7 +135,7 @@ If not found, wait 3 more seconds and retry once. If still not found, report err
 # no-op/error. Run it ONLY when the live host is genuinely kitty; under cmux the
 # workspace host owns its own tiling, so skip (no reimplementation of layout).
 if [ -z "${CMUX_WORKSPACE_ID:-}" ] && command -v kitty >/dev/null 2>&1 && kitty @ ls >/dev/null 2>&1; then
-  python3 ~/projects/aigentry-orchestrator/bin/session-layout.py || true
+  python3 "$ORCH_DIR/bin/session-layout.py" || true
 else
   echo "Skipping kitty grid layout — host terminal (cmux/other) owns tiling."
 fi
@@ -146,7 +154,7 @@ After all steps, report:
 
 ```
 ✅ 세션 생성 완료
-- 폴더: ~/projects/aigentry-{name}/
+- 폴더: {PROJECT_DIR}/
 - 세션: {session_id}
 - CLAUDE.md: 생성됨
 - devkit 부트스트랩: 요청됨

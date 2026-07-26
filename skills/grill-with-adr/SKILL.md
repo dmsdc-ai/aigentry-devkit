@@ -35,7 +35,7 @@ During codebase exploration, also look for existing documentation. The aigentry 
 └── src/ (or bin/, lib/, etc.)
 ```
 
-Glossary lives in `AGENTS.md` (role table + rule table) and `~/projects/aigentry/docs/CONSTITUTION.md` (18 articles + amendments). Treat both as the canonical glossary — terminology drift between them is itself a finding.
+Glossary lives in `AGENTS.md` (role table + rule table) and `~/.aigentry/CONSTITUTION.md` (18 articles + amendments, installed by devkit bootstrap). Treat both as the canonical glossary — terminology drift between them is itself a finding. If either is absent, grill against the one you have.
 
 Create files lazily — only when you have something to write. If no `docs/adr/` exists, create it when the first ADR is needed. Do not pre-scaffold.
 
@@ -43,7 +43,7 @@ Create files lazily — only when you have something to write. If no `docs/adr/`
 
 ### Challenge against the constitution and rules
 
-When the user uses a term that conflicts with the existing language in `~/projects/aigentry/docs/CONSTITUTION.md` or the project's `AGENTS.md`, call it out immediately. "The constitution Article 3 defines 'session role' as the component-boundary contract, but you seem to mean the running tmux pane — which is it?"
+When the user uses a term that conflicts with the existing language in `~/.aigentry/CONSTITUTION.md` or the project's `AGENTS.md`, call it out immediately. "The constitution Article 3 defines 'session role' as the component-boundary contract, but you seem to mean the running tmux pane — which is it?"
 
 When a proposed plan conflicts with a rule (e.g., AGENTS.md Rule 4-A mode selection, Rule 9 file-per-session, Rule 27 no-workaround), surface the rule reference and force a choice: amend the rule, or amend the plan.
 

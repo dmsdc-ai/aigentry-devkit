@@ -24,6 +24,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Promoted skills hard-coded `~/projects/aigentry-*` paths (#749).** Six
+  shipped skills (`caveman`, `context-manage`, `diagnose`, `grill-with-adr`,
+  `session-create`, `work-breakdown`) instructed sessions to read or execute
+  files under `~/projects/aigentry-orchestrator` / `~/projects/aigentry`, which
+  a public npm user does not have — the instructions dead-ended. Orchestrator
+  references now use the `$AIGENTRY_ORCH_DIR` convention already established by
+  `install.sh` / `doctor`, project-root discovery uses
+  `${AIGENTRY_PROJECTS_ROOT:-$HOME/projects}`, and constitution references point
+  at `~/.aigentry/CONSTITUTION.md` (installed by devkit bootstrap). Each
+  affected step states what to do when the orchestrator repo is absent
+  (Article 17.4 fallback).
 - **`install.ps1` never installed `templates/skills/` (#739 D2).** Windows
   installs silently skipped every distributable template skill (e.g.
   `propose-next-task`) that `install.sh` had been installing since it was

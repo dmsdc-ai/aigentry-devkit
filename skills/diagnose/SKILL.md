@@ -8,7 +8,7 @@ license: MIT
 
 A discipline for hard bugs. Skip phases only when explicitly justified.
 
-When exploring the codebase, use the project's domain glossary (`AGENTS.md`, `~/projects/aigentry/docs/CONSTITUTION.md`) to get a clear mental model of the relevant modules, and check ADRs in `docs/adr/` for the area you're touching.
+When exploring the codebase, use whichever domain glossary the project has (`AGENTS.md`, `~/.aigentry/CONSTITUTION.md` — installed by devkit bootstrap; skip if absent) to get a clear mental model of the relevant modules, and check ADRs in `docs/adr/` for the area you're touching.
 
 ## Where this skill fits
 
@@ -16,7 +16,7 @@ When exploring the codebase, use the project's domain glossary (`AGENTS.md`, `~/
 |---|---|
 | First-pass diagnosis on an active bug or regression | **`diagnose`** (this skill) — reproduce-first loop |
 | Loop fails / dead end / multiple failed hypotheses | **`superpowers:systematic-debugging`** — deeper structured framework |
-| Need cross-LLM second opinion after 3 failed attempts | Delegate to Codex/Gemini per `~/projects/CLAUDE.md` AI 작업 원칙 |
+| Need cross-LLM second opinion after 3 failed attempts | Delegate to Codex/Gemini per your projects-root `CLAUDE.md` AI 작업 원칙 (no such file → just delegate) |
 | Diagnosis target is "what should we build" not "why does it break" | Wrong skill — use `grill-with-adr` or `brainstorming` |
 
 This skill is also the canonical playbook for the **analyst session** role (AGENTS.md role table: "runtime 분석 (판단)"). Analyst takes already-collected runtime evidence (logs, stack traces, datasets) and runs this loop. Analyst does **not** collect external info — that is dustcraw's job.

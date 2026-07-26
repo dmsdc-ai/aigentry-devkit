@@ -54,7 +54,11 @@ telepty list --json 2>/dev/null
 **2-B: task-queue 교차 참조**
 
 ```bash
-cat ~/projects/aigentry-orchestrator/state/task-queue.json
+# $AIGENTRY_ORCH_DIR = your aigentry orchestrator project root.
+# 미설정 시 install.sh와 동일한 순서로 해석합니다.
+# 오케스트레이터 저장소가 없으면 2-B를 건너뛰고 telepty 상태만으로 판정합니다.
+PROJECTS_ROOT="${AIGENTRY_PROJECTS_ROOT:-$HOME/projects}"
+cat "${AIGENTRY_ORCH_DIR:-$PROJECTS_ROOT/aigentry-orchestrator}/state/task-queue.json"
 ```
 
 task-queue에서 `status == "delegated"`인 태스크의 `session` 필드를 수집합니다.
@@ -248,7 +252,7 @@ Phase 3 (T2, T3 완료 후): T4
 ## 품질 규칙
 
 - 파일 충돌 방지: 같은 파일을 두 세션이 동시에 수정하지 않도록 할당
-- lessons.json 참조: `~/projects/aigentry-orchestrator/state/lessons.json`에서 해당 프로젝트의 invariants와 failed approaches를 inject에 포함
+- lessons.json 참조: `$AIGENTRY_ORCH_DIR/state/lessons.json` (2-B와 동일하게 해석)에서 해당 프로젝트의 invariants와 failed approaches를 inject에 포함 — 파일이 없으면 생략
 - 헌법 준수: 제3조(역할 분리), 제9조(독립 동작) 기반 분해
 - CONNECTED 세션만 할당: DISCONNECTED 세션은 제외
 - 오케스트레이터 세션은 할당 대상에서 제외 (조율 전용)
