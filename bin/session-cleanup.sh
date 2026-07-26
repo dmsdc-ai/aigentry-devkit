@@ -73,9 +73,6 @@ main() {
     [[ -n "$ws_ref" ]] && cmux close-workspace --workspace "$ws_ref" 2>/dev/null || true
   fi
 
-  # 6. Trace cleanup: orchestrator-wide pid mutex (per-plan locks stay with the caller).
-  rm -f "$HOME/.wtm/contexts/orchestrator/multi-exec.pid" 2>/dev/null || true
-
   if [[ $tp_kill_ok -eq 1 ]]; then
     echo "[cleanup] session terminated: $sid"
   else
