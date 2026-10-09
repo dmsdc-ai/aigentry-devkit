@@ -467,35 +467,44 @@ if should_run_phase 1 && component_selected "devkit-core"; then
   fi
 fi
 
+TELEPTY_INSTALLED_VERSION="" # set only by Phase 2 from a verified observation (#1213)
 if should_run_phase 2 && component_selected "telepty"; then
   header "Phase 2. Telepty"
 
-  TELEPTY_PACKAGE="$(manifest_eval "manifest.components.telepty.install.package")" || TELEPTY_PACKAGE="@dmsdc-ai/aigentry-telepty"
-  TELEPTY_VERSION="$(manifest_eval "manifest.components.telepty.install.version")" || TELEPTY_VERSION="latest"
-  TELEPTY_SPEC="${TELEPTY_PACKAGE}@${TELEPTY_VERSION}"
+  # #1213: the shared policy (lib/telepty-version-policy.js, also used by
+  # install.ps1) decides from a bounded `telepty --version` probe (5s, 1024 bytes,
+  # run by the policy itself). npm runs only for an absent or too-old telepty; a
+  # newer compatible install is kept, and an incompatible/unidentifiable one is
+  # refused untouched. No `latest` fallback.
+  telepty_policy() { # <plan|verify> — prints one decision line, exits 1 on refusal
+    node "$DEVKIT_DIR/lib/telepty-version-policy.js" \
+      --mode "$1" --manifest "$MANIFEST_PATH" --probe bounded < /dev/null
+  }
+  telepty_policy_read() { # <decision line> — tab-separated, never evaluated
+    IFS=$'\t' read -r TELEPTY_ACTION TELEPTY_STATUS TELEPTY_SPEC TELEPTY_OBSERVED TELEPTY_MESSAGE \
+      < <(printf '%s\n' "$1") || true
+  }
 
-  info "Installing $TELEPTY_SPEC"
-  npm install -g "$TELEPTY_SPEC"
-
-  command -v telepty >/dev/null 2>&1 || die "telepty command not found after install"
-  TELEPTY_INSTALLED_VERSION="$(telepty --version 2>/dev/null || true)"
-  info "telepty version: ${TELEPTY_INSTALLED_VERSION:-unknown}"
-
-  # Semver comparison: warn if installed version is below target
-  TELEPTY_TARGET="$(manifest_eval "manifest.compatibility.telepty.target")" || TELEPTY_TARGET=""
-  if [ -n "$TELEPTY_TARGET" ] && [ -n "$TELEPTY_INSTALLED_VERSION" ]; then
-    version_gte() {
-      [ "$(printf '%s\n' "$1" "$2" | sort -V | head -n1)" = "$2" ]
-    }
-    # Strip any leading 'v' prefix
-    _installed="${TELEPTY_INSTALLED_VERSION#v}"
-    _target="${TELEPTY_TARGET#v}"
-    if ! version_gte "$_installed" "$_target"; then
-      warn "telepty $_installed is below target $_target — consider upgrading"
-    else
-      info "telepty version $_installed meets target $_target"
-    fi
-  fi
+  if TELEPTY_DECISION="$(telepty_policy plan)"; then TELEPTY_RC=0; else TELEPTY_RC=$?; fi
+  telepty_policy_read "$TELEPTY_DECISION"
+  case "$TELEPTY_RC:$TELEPTY_ACTION" in
+    0:keep)
+      info "$TELEPTY_MESSAGE"
+      ;;
+    0:install|0:upgrade)
+      info "$TELEPTY_MESSAGE"
+      npm install -g "$TELEPTY_SPEC" || die "npm install -g $TELEPTY_SPEC failed; no other telepty version was tried"
+      command -v telepty >/dev/null 2>&1 || die "telepty command not found after install"
+      if TELEPTY_DECISION="$(telepty_policy verify)"; then TELEPTY_RC=0; else TELEPTY_RC=$?; fi
+      telepty_policy_read "$TELEPTY_DECISION"
+      [ "$TELEPTY_RC:$TELEPTY_ACTION" = "0:keep" ] || die "${TELEPTY_MESSAGE:-telepty version policy failed after install}"
+      info "$TELEPTY_MESSAGE"
+      ;;
+    *)
+      die "${TELEPTY_MESSAGE:-telepty version policy failed (lib/telepty-version-policy.js)}"
+      ;;
+  esac
+  TELEPTY_INSTALLED_VERSION="$TELEPTY_OBSERVED"
 
   telepty daemon >/dev/null 2>&1 || true
 
@@ -948,7 +957,7 @@ for skills_dest in "${SKILLS_DESTS[@]}"; do
   echo -e "    Skills:     $(ls -d "$skills_dest"/*/ 2>/dev/null | wc -l | tr -d ' ') skills in $skills_dest"
 done
 echo -e "    HUD:        $HUD_DEST/simple-status.sh"
-echo -e "    telepty:    $(command -v telepty >/dev/null 2>&1 && telepty --version 2>/dev/null || echo not-installed)"
+echo -e "    telepty:    ${TELEPTY_INSTALLED_VERSION:-not checked}"
 echo -e "    deliberation: $( [ "${DELIBERATION_DOCTOR_OK:-false}" = "true" ] && echo healthy || echo not-run )"
 echo -e "    brain:      $( [ "${BRAIN_SELECTED:-false}" = "true" ] && echo selected || echo skipped )"
 echo -e "    dustcraw:   $( [ "${DUSTCRAW_SELECTED:-false}" = "true" ] && echo selected || echo skipped )"

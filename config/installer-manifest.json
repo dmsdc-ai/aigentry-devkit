@@ -4,7 +4,10 @@
     "node": ">=18",
     "telepty": {
       "required": true,
-      "target": "0.1.45"
+      "target": "0.8.5",
+      "minimum": "0.8.5",
+      "maximum_exclusive": "0.9.0",
+      "node_minimum": "20.0.0"
     },
     "deliberation": {
       "required": true,
@@ -106,7 +109,7 @@
       "install": {
         "kind": "npm-global",
         "package": "@dmsdc-ai/aigentry-telepty",
-        "version": "0.1.45"
+        "version": "0.8.5"
       },
       "health_checks": [
         "telepty-version",

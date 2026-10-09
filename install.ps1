@@ -286,15 +286,40 @@ if (Should-RunPhase 1 -and (Test-ComponentSelected "devkit-core")) {
 
 if (Should-RunPhase 2 -and (Test-ComponentSelected "telepty")) {
   Write-Header "Phase 2. Telepty"
-  $teleptyPackage = $Manifest.components.telepty.install.package
-  $teleptyVersion = $Manifest.components.telepty.install.version
-  $teleptySpec = "$teleptyPackage@$teleptyVersion"
-  Write-Info "Installing $teleptySpec"
-  npm install -g $teleptySpec
-  if ($LASTEXITCODE -ne 0) { throw "telepty installation failed" }
-  if (-not (Get-Command telepty -ErrorAction SilentlyContinue)) { throw "telepty command not found after install" }
-  $TeleptyInstalledVersion = telepty --version 2>$null
-  Write-Info "telepty version: $TeleptyInstalledVersion"
+  # #1213: same shared policy as install.sh (lib\telepty-version-policy.js), which runs
+  # the bounded `telepty --version` probe itself (5s, 1024 bytes). npm runs only for an
+  # absent or too-old telepty; a newer compatible install is kept, and an
+  # incompatible/unidentifiable one is refused untouched. No `latest` fallback.
+  $teleptyPolicy = Join-Path $DevkitDir "lib\telepty-version-policy.js"
+  function Invoke-TeleptyPolicy([string]$Mode) {
+    # The decision comes back as one tab-separated line.
+    $line = & node $teleptyPolicy --mode $Mode --manifest $ManifestPath --probe bounded
+    $policyExit = $LASTEXITCODE
+    $fields = @("$line" -split "`t", 5)
+    return [pscustomobject]@{
+      ExitCode = $policyExit
+      Action = $fields[0]
+      Spec = $(if ($fields.Count -gt 2) { $fields[2] } else { "-" })
+      Observed = $(if ($fields.Count -gt 3) { $fields[3] } else { "-" })
+      Message = $(if ($fields.Count -gt 4) { $fields[4] } else { "" })
+    }
+  }
+  $teleptyDecision = Invoke-TeleptyPolicy "plan"
+  if ($teleptyDecision.ExitCode -ne 0 -or $teleptyDecision.Action -notin @("keep", "install", "upgrade")) {
+    throw $(if ($teleptyDecision.Message) { $teleptyDecision.Message } else { "telepty version policy failed (lib\telepty-version-policy.js)" })
+  }
+  Write-Info $teleptyDecision.Message
+  if ($teleptyDecision.Action -ne "keep") {
+    npm install -g $teleptyDecision.Spec
+    if ($LASTEXITCODE -ne 0) { throw "npm install -g $($teleptyDecision.Spec) failed; no other telepty version was tried" }
+    if (-not (Get-Command telepty -ErrorAction SilentlyContinue)) { throw "telepty command not found after install" }
+    $teleptyDecision = Invoke-TeleptyPolicy "verify"
+    if ($teleptyDecision.ExitCode -ne 0 -or $teleptyDecision.Action -ne "keep") {
+      throw $(if ($teleptyDecision.Message) { $teleptyDecision.Message } else { "telepty version policy failed after install" })
+    }
+    Write-Info $teleptyDecision.Message
+  }
+  $TeleptyInstalledVersion = $teleptyDecision.Observed
   telepty daemon | Out-Null
   $healthy = $false
   for ($i = 0; $i -lt 10; $i++) {
@@ -453,7 +478,7 @@ foreach ($dest in $skillsDests) {
   Write-Host "    Skills:     $((Get-ChildItem $dest -Directory -ErrorAction SilentlyContinue | Measure-Object).Count) skills in $dest"
 }
 Write-Host "    HUD:        $(Join-Path $hudDest 'simple-status.sh')"
-Write-Host "    telepty:    $((if (Get-Command telepty -ErrorAction SilentlyContinue) { telepty --version 2>$null } else { 'not-installed' }))"
+Write-Host "    telepty:    $((if ($TeleptyInstalledVersion) { $TeleptyInstalledVersion } else { 'not checked' }))"
 Write-Host "    deliberation: $((if ($DeliberationDoctorOk) { 'healthy' } else { 'not-run' }))"
 Write-Host "    brain:      $((if ($BrainSelected) { 'selected' } else { 'skipped' }))"
 Write-Host "    dustcraw:   $((if ($DustcrawSelected) { 'selected' } else { 'skipped' }))"
