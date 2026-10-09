@@ -284,7 +284,7 @@ if (Should-RunPhase 1 -and (Test-ComponentSelected "devkit-core")) {
   }
 }
 
-if (Should-RunPhase 2 -and (Test-ComponentSelected "telepty")) {
+if ((Should-RunPhase 2) -and (Test-ComponentSelected "telepty")) {
   Write-Header "Phase 2. Telepty"
   # #1213: same shared policy as install.sh (lib\telepty-version-policy.js), which runs
   # the bounded `telepty --version` probe itself (5s, 1024 bytes). npm runs only for an
@@ -478,11 +478,11 @@ foreach ($dest in $skillsDests) {
   Write-Host "    Skills:     $((Get-ChildItem $dest -Directory -ErrorAction SilentlyContinue | Measure-Object).Count) skills in $dest"
 }
 Write-Host "    HUD:        $(Join-Path $hudDest 'simple-status.sh')"
-Write-Host "    telepty:    $((if ($TeleptyInstalledVersion) { $TeleptyInstalledVersion } else { 'not checked' }))"
-Write-Host "    deliberation: $((if ($DeliberationDoctorOk) { 'healthy' } else { 'not-run' }))"
-Write-Host "    brain:      $((if ($BrainSelected) { 'selected' } else { 'skipped' }))"
-Write-Host "    dustcraw:   $((if ($DustcrawSelected) { 'selected' } else { 'skipped' }))"
-Write-Host "    registry:   $((if ($RegistryMode) { $RegistryMode } else { 'skip' }))"
+Write-Host "    telepty:    $(if ($TeleptyInstalledVersion) { $TeleptyInstalledVersion } else { 'not checked' })"
+Write-Host "    deliberation: $(if ($DeliberationDoctorOk) { 'healthy' } else { 'not-run' })"
+Write-Host "    brain:      $(if ($BrainSelected) { 'selected' } else { 'skipped' })"
+Write-Host "    dustcraw:   $(if ($DustcrawSelected) { 'selected' } else { 'skipped' })"
+Write-Host "    registry:   $(if ($RegistryMode) { $RegistryMode } else { 'skip' })"
 Write-Host "    WTM:        $wtmDest"
 Write-Host "    Config:     $ClaudeDir"
 Write-Host "    State:      $DevkitStateFile"
