@@ -93,13 +93,18 @@ allowed-tools: Bash, Read, Write, Edit, Glob, Grep
 ```
 1. 현재 작업 상태를 위 템플릿으로 .context-snapshot.md에 저장
 2. 저장 확인 (파일 존재 + 내용 비어있지 않음)
-3. /compact 실행
-4. compact 후 즉시 Phase 3 실행
+3. compact 실행 — 사용자에게 /compact를 요청하지 않는다:
+   - 오케스트레이터: `bin/context-compact.sh` 실행. 스냅샷이 없거나 오래됐으면(기본 900초) 거부(exit 3)하고,
+     아니면 자기 telepty 세션에 `/compact`를 주입한다. 이 턴이 끝나면 compact가 일어난다.
+   - 하위 세션(telepty 자기 접근 없음): 오케스트레이터에 "CONTEXT: compact 예정" 보고 후 사용자/오케스트레이터의 /compact를 기다린다.
+4. compact 후 복원은 자동이다 — `.claude/settings.json`의 SessionStart(compact) 훅
+   `.claude/hooks/session-start-compact.sh`가 스냅샷을 새 컨텍스트에 출력한다. 훅 출력이 보이지 않으면 Phase 3를 직접 실행한다.
 ```
 
 ## Phase 3: 복원 (compact 후 필수)
 
-compact 직후 반드시 실행:
+compact 직후. 오케스트레이터에서는 SessionStart(compact) 훅이 1번을 자동으로 수행한다(출력 첫 줄
+"CONTEXT SNAPSHOT restored after compact"); 그 줄이 없으면 수동으로:
 
 ```
 1. .context-snapshot.md 읽기
