@@ -455,7 +455,8 @@ function afterPhase2(output) {
 }
 
 function effective(row) {
-  if (!RUNTIME_OK && !row.runtimeIndependent) return { kind: "refuse", npmSpecs: [], runtime: true };
+  // Manifest validation precedes the runtime gate: an invalid manifest is a config refusal on any Node.
+  if (!RUNTIME_OK && !row.runtimeIndependent && !row.expect.config) return { kind: "refuse", npmSpecs: [], runtime: true };
   return { npmSpecs: [], ...row.expect };
 }
 
@@ -505,6 +506,11 @@ function assertOutcome(r, row, sb) {
     }
     const tail = afterPhase2(r.output);
     if (e.runtime) assert.ok(/node/i.test(tail), `runtime refusal should name Node\n${d}`);
+    if (e.config) {
+      // Policy/CLI name the installer manifest; install.ps1 fails earlier in its own ConvertFrom-Json.
+      assert.ok(/installer manifest|ConvertFrom-Json/i.test(tail), `config refusal should name the installer manifest\n${d}`);
+      assert.ok(!/Node\.js \S+ is not supported/.test(tail), `config refusal must precede the runtime gate\n${d}`);
+    }
     for (const s of e.outputIncludes || []) assert.ok(tail.includes(s), `output should mention ${s}\n${d}`);
     return;
   }
@@ -573,11 +579,11 @@ const ROWS = [
   { id: "custom pin 0.8.7 keeps in-range older 0.8.6", callers: ["sh"], installed: "0.8.6", manifest: (m) => setPin(m, "0.8.7"), expect: { kind: "keep", observed: "0.8.6" } },
   { id: "raised minimum 0.8.7 upgrades 0.8.6 to exact 0.8.7", callers: ["sh", "pwsh"], installed: "0.8.6", manifest: (m) => { setPin(m, "0.8.7"); setBound(m, "minimum", "0.8.7"); }, expect: { kind: "upgrade", spec: `${PKG}@0.8.7`, after: "0.8.7" } },
   // configuration errors: refuse before npm, never @latest
-  { id: "manifest without install.version (absent) -> refuse, no npm", callers: ["sh", ...ALL_PS, "cli-setup"], installed: null, manifest: (m) => { delete m.components.telepty.install.version; }, expect: { kind: "refuse" } },
-  { id: "manifest without install.version (installed) -> refuse, no npm", callers: ["sh", "pwsh"], installed: PIN, manifest: (m) => { delete m.components.telepty.install.version; }, expect: { kind: "refuse" } },
-  { id: "pin 'latest' -> refuse", callers: ["sh", "pwsh"], installed: null, manifest: (m) => setPin(m, "latest"), expect: { kind: "refuse" } },
-  { id: "pin '^0.8.5' -> refuse", callers: ["sh"], installed: null, manifest: (m) => setPin(m, "^0.8.5"), expect: { kind: "refuse" } },
-  { id: "prerelease pin -> refuse", callers: ["sh"], installed: null, manifest: (m) => setPin(m, "0.8.5-rc.1"), expect: { kind: "refuse" } },
+  { id: "manifest without install.version (absent) -> refuse, no npm", callers: ["sh", ...ALL_PS, "cli-setup"], installed: null, manifest: (m) => { delete m.components.telepty.install.version; }, expect: { kind: "refuse", config: true } },
+  { id: "manifest without install.version (installed) -> refuse, no npm", callers: ["sh", "pwsh"], installed: PIN, manifest: (m) => { delete m.components.telepty.install.version; }, expect: { kind: "refuse", config: true } },
+  { id: "pin 'latest' -> refuse", callers: ["sh", "pwsh"], installed: null, manifest: (m) => setPin(m, "latest"), expect: { kind: "refuse", config: true } },
+  { id: "pin '^0.8.5' -> refuse", callers: ["sh"], installed: null, manifest: (m) => setPin(m, "^0.8.5"), expect: { kind: "refuse", config: true } },
+  { id: "prerelease pin -> refuse", callers: ["sh"], installed: null, manifest: (m) => setPin(m, "0.8.5-rc.1"), expect: { kind: "refuse", config: true } },
   {
     id: "pin with command substitution -> refuse, inert",
     callers: ["sh", "pwsh"],
@@ -586,15 +592,15 @@ const ROWS = [
       ? `0.8.5$(New-Item -ItemType File -Path ${psq(markerPaths(sb)[0])})`
       : `0.8.5$(touch ${markerPaths(sb)[0]});touch ${markerPaths(sb)[1]}`),
     markers: markerPaths,
-    expect: { kind: "refuse" },
+    expect: { kind: "refuse", config: true },
   },
-  { id: "missing minimum -> refuse", callers: ["sh", "pwsh"], installed: PIN, manifest: (m) => setBound(m, "minimum", undefined), expect: { kind: "refuse" } },
-  { id: "missing maximum_exclusive -> refuse", callers: ["sh", "pwsh"], installed: PIN, manifest: (m) => setBound(m, "maximum_exclusive", undefined), expect: { kind: "refuse" } },
-  { id: "missing node_minimum -> refuse", callers: ["sh", "pwsh"], installed: PIN, manifest: (m) => setBound(m, "node_minimum", undefined), expect: { kind: "refuse" } },
-  { id: "malformed maximum_exclusive '0.9' -> refuse", callers: ["sh"], installed: PIN, manifest: (m) => setBound(m, "maximum_exclusive", "0.9"), expect: { kind: "refuse" } },
-  { id: "pin above maximum_exclusive -> refuse", callers: ["sh", "pwsh"], installed: null, manifest: (m) => setPin(m, "0.9.1"), expect: { kind: "refuse" } },
-  { id: "pin below minimum -> refuse", callers: ["sh"], installed: null, manifest: (m) => setPin(m, "0.8.4"), expect: { kind: "refuse" } },
-  { id: "unparseable manifest -> refuse, no npm", callers: ["sh", "pwsh", "cli-setup"], installed: PIN, manifest: "malformed", expect: { kind: "refuse" } },
+  { id: "missing minimum -> refuse", callers: ["sh", "pwsh"], installed: PIN, manifest: (m) => setBound(m, "minimum", undefined), expect: { kind: "refuse", config: true } },
+  { id: "missing maximum_exclusive -> refuse", callers: ["sh", "pwsh"], installed: PIN, manifest: (m) => setBound(m, "maximum_exclusive", undefined), expect: { kind: "refuse", config: true } },
+  { id: "missing node_minimum -> refuse", callers: ["sh", "pwsh"], installed: PIN, manifest: (m) => setBound(m, "node_minimum", undefined), expect: { kind: "refuse", config: true } },
+  { id: "malformed maximum_exclusive '0.9' -> refuse", callers: ["sh"], installed: PIN, manifest: (m) => setBound(m, "maximum_exclusive", "0.9"), expect: { kind: "refuse", config: true } },
+  { id: "pin above maximum_exclusive -> refuse", callers: ["sh", "pwsh"], installed: null, manifest: (m) => setPin(m, "0.9.1"), expect: { kind: "refuse", config: true } },
+  { id: "pin below minimum -> refuse", callers: ["sh"], installed: null, manifest: (m) => setPin(m, "0.8.4"), expect: { kind: "refuse", config: true } },
+  { id: "unparseable manifest -> refuse, no npm", callers: ["sh", "pwsh", "cli-setup"], installed: PIN, manifest: "malformed", expect: { kind: "refuse", config: true } },
   // runtime gate driven by config (the real runtime is never faked)
   { id: "node_minimum above this runtime -> refuse before npm", callers: ["sh", ...ALL_PS, "cli-setup"], installed: null, manifest: (m) => setBound(m, "node_minimum", "99.0.0"), expect: { kind: "refuse", outputIncludes: ["99.0.0"] } },
   // phase-2 additions from candidate measurement (#1213 phase 2)
@@ -608,6 +614,7 @@ const ROWS = [
   { id: "telepty 0.9.0 only in a relative PATH entry -> refuse, no npm", callers: ["sh", "pwsh"], installed: null, extraBin: { relative: true, version: "0.9.0" }, expect: { kind: "refuse" } },
   { id: "control: telepty 0.9.0 in the same dir as an absolute PATH entry -> refuse", callers: ["sh", "pwsh"], installed: null, extraBin: { relative: false, version: "0.9.0" }, expect: { kind: "refuse", outputIncludes: ["0.9.0"] } },
   { id: "control: empty relative PATH entry, truly absent -> install exact pin", callers: ["sh", "pwsh"], installed: null, extraBin: { relative: true, version: null }, expect: { kind: "install" } },
+  { id: "telepty 0.9.0 only in a literal ~/relbin PATH entry -> refuse, no npm", callers: ["sh"], installed: null, extraBin: { tilde: true, version: "0.9.0" }, expect: { kind: "refuse" } },
   { id: "telepty 0.9.0 only as telepty.ps1 (no .cmd) -> refuse, no npm", callers: ["pwsh"], installed: null, extraBin: { relative: false, version: "0.9.0", ps1Only: true }, expect: { kind: "refuse" } },
 ];
 
@@ -640,7 +647,7 @@ function prepare(sb, row) {
   if (row.lateHang) fs.writeFileSync(path.join(sb.state, "telepty.hang-late"), String(LATE_HANG_MS));
   if (row.extraBin) {
     // A second telepty first on PATH, with its own modeled version; npm never touches it.
-    const dir = path.join(sb.root, "relbin");
+    const dir = path.join(row.extraBin.tilde ? sb.home : sb.root, "relbin");
     const state = path.join(sb.root, "relstate");
     fs.mkdirSync(dir);
     fs.mkdirSync(state);
@@ -650,7 +657,8 @@ function prepare(sb, row) {
       if (row.extraBin.ps1Only) fs.unlinkSync(path.join(dir, "telepty.cmd"));
     }
     sb.extraStates = [state];
-    sb.extraPath = row.extraBin.relative ? "relbin" : dir;
+    // tilde: a literal "~/relbin" entry, which bash (non-POSIX mode) expands with HOME during command search.
+    sb.extraPath = row.extraBin.tilde ? "~/relbin" : row.extraBin.relative ? "relbin" : dir;
   }
 }
 
@@ -665,7 +673,7 @@ for (const row of ROWS) {
           // Fixture precondition: the user's shell really resolves the extra telepty from the run cwd.
           const pre = spawnSync(path.join(sb.fakebin, "bash"), ["-c", "command -v telepty"],
             { cwd: sb.root, env: baseEnv(sb, null), encoding: "utf8", timeout: 30000 });
-          assert.equal(path.resolve(sb.root, pre.stdout.trim()), path.join(sb.root, "relbin", "telepty"), `extra telepty not resolvable: ${pre.stdout}`);
+          assert.equal(path.resolve(sb.root, pre.stdout.trim()), path.join(row.extraBin.tilde ? sb.home : sb.root, "relbin", "telepty"), `extra telepty not resolvable: ${pre.stdout}`);
         }
         const r = await runCaller(caller, sb, row);
         if (row.hang) {
@@ -721,8 +729,10 @@ for (const caller of ["pwsh", "ps51"]) {
         { env: baseEnv(sb, null), encoding: "utf8", timeout: 100000, windowsHide: true });
       const lines = String(r.stdout).split(/\r?\n/).filter(Boolean);
       assert.equal(r.status, 0, `${r.stderr}`);
-      assert.ok(lines[0].toLowerCase().startsWith(sb.fakebin.toLowerCase()), `npm resolves to ${lines[0]}`);
-      assert.ok(lines[1].toLowerCase().startsWith(sb.globalbin.toLowerCase()), `telepty resolves to ${lines[1]}`);
+      // TEMP may be an 8.3 alias (C:\Users\RUNNER~1) while Get-Command reports the long path; compare canonical paths.
+      const inDir = (file, dir) => path.dirname(fs.realpathSync.native(file)).toLowerCase() === fs.realpathSync.native(dir).toLowerCase();
+      assert.ok(inDir(lines[0], sb.fakebin), `npm resolves to ${lines[0]}, not into ${sb.fakebin}`);
+      assert.ok(inDir(lines[1], sb.globalbin), `telepty resolves to ${lines[1]}, not into ${sb.globalbin}`);
       assert.equal(path.dirname(lines[2]).toLowerCase(), path.dirname(process.execPath).toLowerCase(), `node resolves to ${lines[2]}`);
     } finally {
       if (!KEEP) fs.rmSync(sb.root, { recursive: true, force: true, maxRetries: 5 });
