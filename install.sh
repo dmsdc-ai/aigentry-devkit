@@ -356,6 +356,17 @@ else
 fi
 
 SKILLS_DEST="$CLAUDE_DIR/skills"
+# Every agent CLI reads skills from its own user dir (#1204). Claude Code's is
+# always a destination; another CLI's only when it is on PATH or its config dir
+# already exists. agy's global customization root is ~/.gemini/config.
+SKILLS_DESTS=("$SKILLS_DEST")
+add_skills_dest() { # <cli> <config-dir> <skills-dir>
+  if command -v "$1" >/dev/null 2>&1 || [ -d "$2" ]; then SKILLS_DESTS+=("$3"); fi
+}
+add_skills_dest codex "$HOME/.codex" "$HOME/.codex/skills"
+add_skills_dest gemini "$HOME/.gemini" "$HOME/.gemini/skills"
+add_skills_dest agy "$HOME/.gemini/config" "$HOME/.gemini/config/skills"
+add_skills_dest grok "$HOME/.grok" "$HOME/.grok/skills"
 HUD_DEST="$CLAUDE_DIR/hud"
 WTM_SRC="$DEVKIT_DIR/tools/wtm"
 WTM_DEST="$HOME/.local/lib/wtm"
@@ -364,36 +375,38 @@ WTM_BIN="$HOME/.local/bin"
 if should_run_phase 1 && component_selected "devkit-core"; then
   header "Phase 1. Devkit Core Assets"
 
-  mkdir -p "$SKILLS_DEST"
   # Bundled skills (skills/*) + distributable template skills (templates/skills/*)
-  # share the same install convention: cp -R into ~/.claude/skills, idempotent,
-  # honoring --force / skip semantics.
+  # share the same install convention: cp -R into each skills destination,
+  # idempotent, honoring --force / skip semantics.
   # De-listed skills (#739 D1/D4): kept in git, never shipped and never installed.
   # Keep in sync with package.json "files" (which omits the same directories).
   SKILLS_DELISTED="project-ops clipboard-image youtube-analyzer"
-  for skill_dir in "$DEVKIT_DIR"/skills/*/ "$DEVKIT_DIR"/templates/skills/*/; do
-    skill_name=$(basename "$skill_dir")
-    case " $SKILLS_DELISTED " in
-      *" $skill_name "*) continue ;;
-    esac
-    target="$SKILLS_DEST/$skill_name"
+  for skills_dest in "${SKILLS_DESTS[@]}"; do
+    mkdir -p "$skills_dest"
+    for skill_dir in "$DEVKIT_DIR"/skills/*/ "$DEVKIT_DIR"/templates/skills/*/; do
+      skill_name=$(basename "$skill_dir")
+      case " $SKILLS_DELISTED " in
+        *" $skill_name "*) continue ;;
+      esac
+      target="$skills_dest/$skill_name"
 
-    if [ -e "$target" ]; then
-      if [ "$FORCE" -eq 1 ]; then
-        rm -rf "$target"
-      else
-        warn "$skill_name already exists (skipping, use --force to overwrite)"
+      if [ -e "$target" ]; then
+        if [ "$FORCE" -eq 1 ]; then
+          rm -rf "$target"
+        else
+          warn "$skill_name already exists in $skills_dest (skipping, use --force to overwrite)"
+          continue
+        fi
+      fi
+
+      if [ ! -d "$skill_dir" ]; then
+        warn "Skill source missing: $skill_dir"
         continue
       fi
-    fi
 
-    if [ ! -d "$skill_dir" ]; then
-      warn "Skill source missing: $skill_dir"
-      continue
-    fi
-
-    cp -R "$skill_dir" "$target"
-    info "Installed skill: $skill_name"
+      cp -R "$skill_dir" "$target"
+      info "Installed skill: $skill_name → $skills_dest"
+    done
   done
 
   mkdir -p "$HUD_DEST"
@@ -931,7 +944,9 @@ info "Browser/provider auth may still require CLI restart or manual login."
 header "Installation Complete!"
 echo ""
 echo -e "  ${BOLD}Installed components:${NC}"
-echo -e "    Skills:     $(ls -d "$SKILLS_DEST"/*/ 2>/dev/null | wc -l | tr -d ' ') skills in $SKILLS_DEST"
+for skills_dest in "${SKILLS_DESTS[@]}"; do
+  echo -e "    Skills:     $(ls -d "$skills_dest"/*/ 2>/dev/null | wc -l | tr -d ' ') skills in $skills_dest"
+done
 echo -e "    HUD:        $HUD_DEST/simple-status.sh"
 echo -e "    telepty:    $(command -v telepty >/dev/null 2>&1 && telepty --version 2>/dev/null || echo not-installed)"
 echo -e "    deliberation: $( [ "${DELIBERATION_DOCTOR_OK:-false}" = "true" ] && echo healthy || echo not-run )"

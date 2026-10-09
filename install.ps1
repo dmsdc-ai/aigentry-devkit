@@ -224,6 +224,17 @@ if (Get-Command claude -ErrorAction SilentlyContinue) {
 }
 
 $skillsDest = Join-Path $ClaudeDir "skills"
+# Parity with install.sh (#1204): every agent CLI reads skills from its own user dir.
+# Claude Code's is always a destination; another CLI's only when it is on PATH or its
+# config dir already exists. agy's global customization root is ~/.gemini/config.
+$skillsDests = @($skillsDest)
+foreach ($cliDest in @(
+    @("codex", (Join-Path $HOME ".codex"), (Join-Path $HOME ".codex\skills")),
+    @("gemini", (Join-Path $HOME ".gemini"), (Join-Path $HOME ".gemini\skills")),
+    @("agy", (Join-Path $HOME ".gemini\config"), (Join-Path $HOME ".gemini\config\skills")),
+    @("grok", (Join-Path $HOME ".grok"), (Join-Path $HOME ".grok\skills")))) {
+  if ((Get-Command $cliDest[0] -ErrorAction SilentlyContinue) -or (Test-Path $cliDest[1])) { $skillsDests += $cliDest[2] }
+}
 $hudDest = Join-Path $ClaudeDir "hud"
 $wtmSrc = Join-Path $DevkitDir "tools\wtm"
 $wtmDest = Join-Path $HOME ".local\lib\wtm"
@@ -231,21 +242,23 @@ $wtmDest = Join-Path $HOME ".local\lib\wtm"
 if (Should-RunPhase 1 -and (Test-ComponentSelected "devkit-core")) {
   Write-Header "Phase 1. Devkit Core Assets"
 
-  New-Item -ItemType Directory -Path $skillsDest -Force | Out-Null
   # Parity with install.sh: bundled skills (skills/*) + distributable template
   # skills (templates/skills/*) install the same way (#739 D2).
   # De-listed skills (#739 D1/D4): kept in git, never shipped and never installed.
   # Keep in sync with package.json "files" (which omits the same directories).
   $skillsDelisted = @("project-ops", "clipboard-image", "youtube-analyzer")
   $skillSources = @((Join-Path $DevkitDir "skills"), (Join-Path $DevkitDir "templates\skills"))
-  foreach ($skillDir in ($skillSources | Where-Object { Test-Path $_ } | ForEach-Object { Get-ChildItem $_ -Directory })) {
-    if ($skillsDelisted -contains $skillDir.Name) { continue }
-    $target = Join-Path $skillsDest $skillDir.Name
-    if (Test-Path $target) {
-      if ($Force) { Remove-Item -Recurse -Force $target } else { Write-Warn "$($skillDir.Name) already exists (skipping, use -Force to overwrite)"; continue }
+  foreach ($dest in $skillsDests) {
+    New-Item -ItemType Directory -Path $dest -Force | Out-Null
+    foreach ($skillDir in ($skillSources | Where-Object { Test-Path $_ } | ForEach-Object { Get-ChildItem $_ -Directory })) {
+      if ($skillsDelisted -contains $skillDir.Name) { continue }
+      $target = Join-Path $dest $skillDir.Name
+      if (Test-Path $target) {
+        if ($Force) { Remove-Item -Recurse -Force $target } else { Write-Warn "$($skillDir.Name) already exists in $dest (skipping, use -Force to overwrite)"; continue }
+      }
+      Copy-Item -Path $skillDir.FullName -Destination $target -Recurse
+      Write-Info "Installed skill: $($skillDir.Name) -> $dest"
     }
-    Copy-Item -Path $skillDir.FullName -Destination $target -Recurse
-    Write-Info "Installed skill: $($skillDir.Name)"
   }
 
   New-Item -ItemType Directory -Path $hudDest -Force | Out-Null
@@ -262,6 +275,7 @@ if (Should-RunPhase 1 -and (Test-ComponentSelected "devkit-core")) {
     (Get-Content $settingsTemplate -Raw).Replace("{{HOME}}", $HOME) | Set-Content -Path $settingsDest -Encoding utf8
     Write-Info "Created settings.json from template"
   }
+  # TODO(#1204): merge the SessionStart(compact) hooks\post-compact-restore.sh entry (install.sh 8.9 mergeClaudeHooks) — no PowerShell settings.json merge path exists yet.
 
   if (Test-Path $wtmSrc) {
     New-Item -ItemType Directory -Path $wtmDest -Force | Out-Null
@@ -435,7 +449,9 @@ Write-Info "Browser/provider auth may still require CLI restart or manual login.
 Write-Header "Installation Complete!"
 Write-Host ""
 Write-Host "  Installed components:"
-Write-Host "    Skills:     $((Get-ChildItem $skillsDest -Directory -ErrorAction SilentlyContinue | Measure-Object).Count) skills in $skillsDest"
+foreach ($dest in $skillsDests) {
+  Write-Host "    Skills:     $((Get-ChildItem $dest -Directory -ErrorAction SilentlyContinue | Measure-Object).Count) skills in $dest"
+}
 Write-Host "    HUD:        $(Join-Path $hudDest 'simple-status.sh')"
 Write-Host "    telepty:    $((if (Get-Command telepty -ErrorAction SilentlyContinue) { telepty --version 2>$null } else { 'not-installed' }))"
 Write-Host "    deliberation: $((if ($DeliberationDoctorOk) { 'healthy' } else { 'not-run' }))"
