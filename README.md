@@ -79,7 +79,7 @@ Pre-configured settings with template substitution:
 
 ### Prerequisites
 
-- Node.js 18+
+- Node.js 18+ (Node.js 20+ when the `telepty` component is selected, which every built-in profile does)
 - npm (included with Node.js)
 - Optional: Claude Code CLI (`npm install -g @anthropic-ai/claude-code`)
 - Optional: tmux (for deliberation monitoring)
@@ -143,6 +143,32 @@ The installer will:
 8. Write local install state and env fan-out
 
 Detailed walkthrough: [`docs/quickstart.md`](docs/quickstart.md)
+
+### telepty version compatibility
+
+`install.sh` and `install.ps1` share one decision (`lib/telepty-version-policy.js`), driven by
+`config/installer-manifest.json`: the tested pin `components.telepty.install.version` (`0.8.5`) and the
+supported range `compatibility.telepty.minimum` / `maximum_exclusive` (`>=0.8.5 <0.9.0`), plus
+`compatibility.telepty.node_minimum` (`20.0.0`). These are the tested bounds, not a claim about the latest
+telepty release. The installer reads the installed `telepty --version` (stable `X.Y.Z`, optional `v`)
+before any npm call, allowing it 5 seconds to answer and at most 1024 bytes of output. A probe that misses
+that deadline is stopped (on Windows, stopping the probe's own process tree may take up to 5 more seconds, so
+one probe takes at most 10 seconds):
+
+| Installed telepty | Installer action |
+|---|---|
+| none | `npm install -g @dmsdc-ai/aigentry-telepty@<pin>` |
+| below `minimum` | upgrade to exactly `<pin>` |
+| within the range, including newer than the pin | kept as is, no npm call (works offline) |
+| at or above `maximum_exclusive` | left unchanged, never downgraded; the install stops with a non-zero exit and instructions |
+| unidentifiable (prerelease/build/free text, or `telepty --version` fails, does not answer within 5 seconds, or prints more than 1024 bytes) | left unchanged; the install stops with a non-zero exit |
+
+The install also stops before any npm or daemon step when Node.js is below `node_minimum`, or when the
+manifest pin or bounds are missing, malformed, or inconsistent (pin outside the range). There is no
+fallback to `latest`, and a failed npm install is not retried with another version. After an install or
+upgrade, the new `telepty --version` must fall inside the range; only that observed version is recorded in
+`install-state.json`. The final install summary shows that recorded version without running telepty again,
+or `not checked` when the telepty phase did not run.
 
 ## Offline / Firewalled Install
 
