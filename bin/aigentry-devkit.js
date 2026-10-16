@@ -786,6 +786,8 @@ function recoveryJournalReport() {
   }
 
   const setupLines = [];
+  const assetOutcome = require("../lib/install-state").assetOutcome(read.journal);
+  if (assetOutcome) setupLines.push("Partial local assets: " + assetOutcome + "; full profile installation gated; runtime not verified.");
   if (read.journal && read.journal.setup) {
     try {
       const choice = require("../lib/install-state").validateSetupChoice(read.journal.setup);
@@ -808,9 +810,9 @@ function recoveryJournalReport() {
   return [
     ...setupLines,
     `Recovery journal: ok — phases not proven resolved: ${named}`,
-    "Replay handling depends on each phase's policy and the selected components/start phase.",
-    "If the installer refuses an unknown external effect, AIGENTRY_INSTALL_UNKNOWN_EFFECT=skip",
-    "leaves it alone; =replay explicitly retries it. During a live install the phase in flight",
+    "Replay handling depends on each phase's policy in the legacy writer API; public replay is unavailable.",
+    "Partial asset installation refuses every unresolved phase. Environment skip/replay/force-unlock flags do not grant consent.",
+    "During a live install the phase in flight",
     "is listed here too; this is not a claim that anything died.",
     "",
   ];

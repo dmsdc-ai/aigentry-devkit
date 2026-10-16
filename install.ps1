@@ -2,6 +2,10 @@ param(
   [switch]$Force
 )
 
+# D2: refuse in-process before manifest access, resolution, children or journal.
+[Console]::Error.WriteLine("setup: Windows asset writes unavailable; native private storage proof required. Legacy installation is gated.")
+exit 1
+
 $ErrorActionPreference = "Stop"
 
 $DevkitDir = Split-Path -Parent $MyInvocation.MyCommand.Path

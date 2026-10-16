@@ -4,11 +4,18 @@ const fs=require("fs"), path=require("path"), os=require("os");
 const {spawnSync}=require("child_process");
 const REPO=path.resolve(__dirname,"..");
 const KEEP=process.env.AIGENTRY_TEST_KEEP==="1";
+const assetChoices=["--non-interactive","--profile","core","--runtime","defer","--install-assets","skills,hud"];
 process.umask(0o077);
+test("partial asset receipts cannot resolve unknown legacy phase 1",()=>{
+  const state=require("../lib/install-state");
+  const journal={attempts:[{phases:[{phase:1,status:"unknown"}]},{installer:"setup-assets",outcome:"completed",phases:[{phase:1,status:"completed",partial:true}]}]};
+  assert.deepEqual(state.unresolvedPhases(journal),[1]);
+  assert.equal(state.assetOutcome(journal),"completed");
+});
 // This observer is a bounded JavaScript tripwire, not a native descendant observer.
 const GUARD=String.raw`
 "use strict";
-const Module=require("module");
+const Module=require("module"),fs=require("fs"),path=require("path");
 const fail=()=>{throw Error("EARLY_EFFECT");};
 for(const id of ["child_process","net","tls","http","https","dgram"]){
  const m=require(id);
@@ -22,6 +29,48 @@ const load=Module._load;
 Module._load=function(id,...rest){
  if(/logger|workspace-init/.test(id))throw Error("EARLY_IMPORT");
  return load.call(this,id,...rest);
+};
+const home=path.resolve(__dirname,"../tree/home"),journal=path.join(home,".config/aigentry-devkit/install-journal.json");
+function durable(target){
+ if(typeof target!=="string" || !target.startsWith(path.join(home,".claude")+path.sep) && target!==path.join(home,".claude"))return;
+ const j=JSON.parse(fs.readFileSync(journal)),a=j.attempts.at(-1);
+ if(a.outcome!=="running" || a.phases[0].phase!==1 || a.phases[0].status!=="running")throw Error("ASSET_BEFORE_DURABLE_BEGIN");
+ fs.appendFileSync(path.join(__dirname,"durable.jsonl"),JSON.stringify({target,run:a.run_id})+"\n");
+}
+const mkdir=fs.mkdirSync,open=fs.openSync;
+const assetFds=new Set(),write=fs.writeFileSync,lstat=fs.lstatSync;
+const rename=fs.renameSync;
+fs.renameSync=function(from,to){
+ if(typeof from==="string" && path.basename(from).startsWith(".aigentry-assets-")){
+  if(process.env.TEST_ASSET_EXIT==="before-publication")process.exit(72);
+  const result=rename.apply(this,arguments);
+  if(process.env.TEST_ASSET_EXIT==="after-publication")process.exit(73);
+  return result;
+ }
+ return rename.apply(this,arguments);
+};
+fs.mkdirSync=function(target,...rest){durable(target);return mkdir.call(this,target,...rest);};
+fs.openSync=function(target,flags,...rest){
+ if(flags==="wx"){
+  durable(target);
+  if(process.env.TEST_ASSET_FAILURE==="1" && target===path.join(home,".claude/hud/simple-status.sh"))throw Error("OWNED_ASSET_FAILURE");
+ }
+ const fd=open.call(this,target,flags,...rest);
+ if(flags==="wx" && typeof target==="string" && target.startsWith(path.join(home,".claude")+path.sep))assetFds.add(fd);
+ return fd;
+};
+fs.writeFileSync=function(target,...rest){
+ const result=write.call(this,target,...rest);
+ if(assetFds.has(target) && process.env.TEST_ASSET_EXIT==="after-first-file")process.exit(71);
+ return result;
+};
+fs.lstatSync=function(target,...rest){
+ if(process.env.TEST_ASSET_CONFLICT==="skill" && target===path.join(home,".claude/skills/ambiguity-gate") &&
+    fs.existsSync(journal) && fs.existsSync(path.dirname(target)) &&
+    fs.readdirSync(path.dirname(target)).some(n=>n.startsWith(".aigentry-assets-")) && !fs.existsSync(target)){
+  mkdir(target,{mode:0o700});write(path.join(target,"preserve.txt"),"concurrent owned fixture");
+ }
+ return lstat.call(this,target,...rest);
 };
 `;
 function snapshot(root){
@@ -49,14 +98,54 @@ function fixture(){
  const observer=path.join(root,"observers","guard.cjs");fs.writeFileSync(observer,GUARD);
  return {root,tree,pkg,observer,home:path.join(tree,"home"),seq:0};
 }
-function call(f,args,entry="bin/aigentry-devkit.js"){
+function call(f,args,entry="bin/aigentry-devkit.js",extraEnv={}){
  const env={HOME:f.home,USERPROFILE:f.home,XDG_CONFIG_HOME:path.join(f.home,".config"),
-  TMPDIR:path.join(f.tree,"tmp"),TMP:path.join(f.tree,"tmp"),TEMP:path.join(f.tree,"tmp"),PATH:""};
+  TMPDIR:path.join(f.tree,"tmp"),TMP:path.join(f.tree,"tmp"),TEMP:path.join(f.tree,"tmp"),PATH:"",...extraEnv};
  const result=spawnSync(process.execPath,["--require",f.observer,path.join(f.pkg,entry),...args],{env,encoding:"utf8",timeout:10000});
  fs.writeFileSync(path.join(f.root,"observers",++f.seq+".json"),JSON.stringify({args,entry,env,...result},null,2));
  return result;
 }
 function withFixture(fn){const f=fixture();try{fn(f);}finally{if(!KEEP)fs.rmSync(f.root,{recursive:true,force:true});}}
+for(const stale of [false,true])test("D2 actual in-process interactive asset consent "+(stale?"rejects stale source":"copies HUD"),()=>withFixture(f=>{
+ const caller=path.join(f.root,"observers/interactive.cjs");
+ fs.writeFileSync(caller,String.raw`"use strict";
+const {PassThrough,Writable}=require("stream"),fs=require("fs"),path=require("path");
+const input=new PassThrough();input.isTTY=true;let output="",answered=false;
+const out=new Writable({write(chunk,encoding,done){
+ const text=chunk.toString();output+=text;process.stdout.write(chunk);
+ if(!answered && text.includes("To save type")){
+  answered=true;
+  queueMicrotask(()=>{
+   if(process.env.TEST_INTERACTIVE_STALE==="1")fs.appendFileSync(path.join(__dirname,"../tree/package/hud/simple-status.sh"),"\n# changed after preview\n");
+   input.end(output.match(/--accept-plan ([a-f0-9]{64})/)[1]+"\n");
+  });
+ }
+ done();
+}});
+input.write("core\ndefer\n");
+require("../tree/package/lib/setup").run(["--install-assets","hud"],{stdin:input,stdout:out,stderr:process.stderr}).then(code=>{process.exitCode=code;});
+`);
+ const r=call(f,[],"../../observers/interactive.cjs",{TEST_INTERACTIVE_STALE:stale?"1":"0"});
+ assert.equal(r.status,stale?1:0,r.stderr);
+ const target=path.join(f.home,".claude/hud/simple-status.sh");
+ if(stale){assert.match(r.stderr,/stale|digest/);assert.equal(fs.existsSync(path.join(f.home,".config")),false);assert.equal(fs.existsSync(target),false);}
+ else assert.deepEqual(fs.readFileSync(target),fs.readFileSync(path.join(f.pkg,"hud/simple-status.sh")));
+}));
+for(const point of ["before-publication","after-publication"])test("D2 lost receipt "+point+" retains running history",()=>withFixture(f=>{
+ const p=assetPreview(f,"skills"),r=call(f,["setup",...p.args,"--accept-plan",p.hash],"bin/aigentry-devkit.js",{TEST_ASSET_EXIT:point});
+ assert.equal(r.status,point==="before-publication"?72:73);
+ const j=JSON.parse(fs.readFileSync(path.join(f.home,".config/aigentry-devkit/install-journal.json")));
+ assert.equal(j.attempts.at(-1).outcome,"running");assert.equal(j.attempts.at(-1).phases[0].status,"running");
+ assert.ok(j.attempts.at(-1).staging.length);
+ const before=snapshot(f.tree),retry=call(f,["setup",...p.args,"--dry-run"]);
+ assert.equal(retry.status,1);assert.deepEqual(snapshot(f.tree),before);
+}));
+for(const record of [{phase:99,status:"completed"},{phase:1,status:"completed",partial:"yes"}])test("D2 unknown asset history refuses: "+JSON.stringify(record),()=>withFixture(f=>{
+ const dir=path.join(f.home,".config/aigentry-devkit");fs.mkdirSync(dir,{recursive:true,mode:0o700});
+ fs.writeFileSync(path.join(dir,"install-journal.json"),JSON.stringify({schema:"aigentry-devkit/install-journal@1",attempts:[{phases:[record]}]}),{mode:0o600});
+ const before=snapshot(f.tree),r=call(f,["setup",...assetChoices,"--dry-run"]);
+ assert.equal(r.status,1);assert.deepEqual(snapshot(f.tree),before);
+}));
 for(const args of [[],["--dry-run"]])test("D2 implicit CLI route refuses before imports: "+JSON.stringify(args),()=>withFixture(f=>{
  const before=snapshot(f.tree),r=call(f,args);
  assert.equal(r.status,1,r.stdout+r.stderr);
@@ -64,10 +153,162 @@ for(const args of [[],["--dry-run"]])test("D2 implicit CLI route refuses before 
  assert.doesNotMatch(r.stderr,/EARLY_EFFECT|EARLY_IMPORT|MODULE_NOT_FOUND/);
  assert.deepEqual(snapshot(f.tree),before);
 }));
+
+function assetPreview(f,selection="skills,hud"){
+ const args=[...assetChoices];args[args.length-1]=selection;
+ const r=call(f,["setup",...args,"--dry-run"]);
+ assert.equal(r.status,0,r.stdout+r.stderr);
+ const hash=r.stdout.match(/--accept-plan ([a-f0-9]{64})/)[1];
+ return {args,hash,plan:JSON.parse(r.stdout.slice(r.stdout.indexOf("{"),r.stdout.indexOf("\n--accept-plan")))};
+}
+for(const selection of ["skills","hud","skills,hud"])test("D2 actual finite copy and repeat preservation: "+selection,()=>withFixture(f=>{
+ const before=assetPreview(f,selection),r=call(f,["setup",...before.args,"--accept-plan",before.hash]);
+ assert.equal(r.status,0,r.stdout+r.stderr);assert.equal(r.signal,null);
+ assert.match(r.stdout,/Partial assets completed/);
+ for(const a of before.plan.assets)for(const file of a.files){
+  assert.deepEqual(fs.readFileSync(file.destination),fs.readFileSync(path.join(f.pkg,file.source)));
+  assert.equal(fs.statSync(file.destination).mode&0o777,parseInt(file.mode,8));
+ }
+ assert.equal(fs.existsSync(path.join(f.home,".claude","settings.json")),false);
+ assert.equal(fs.existsSync(path.join(f.home,".local")),false);
+ const journal=JSON.parse(fs.readFileSync(path.join(f.home,".config/aigentry-devkit/install-journal.json")));
+ assert.equal(journal.attempts.length,1);assert.equal(journal.attempts[0].partial,true);
+ assert.deepEqual(journal.attempts[0].phases.map(p=>p.phase),[1]);
+ assert.equal(journal.attempts[0].phases[0].status,"completed");
+ const repeat=assetPreview(f,selection);assert.ok(repeat.plan.assets.every(a=>a.skip));
+ const snapshotBefore=snapshot(f.tree),again=call(f,["install",...repeat.args,"--accept-plan",repeat.hash]);
+ assert.equal(again.status,0,again.stdout+again.stderr);assert.match(again.stdout,/no changes/);
+ assert.deepEqual(snapshot(f.tree),snapshotBefore);
+}));
+for(const variant of ["source","destination","journal","lock","catalogue"])test("D2 stale authority refuses unchanged: "+variant,()=>withFixture(f=>{
+ const p=assetPreview(f,"hud");
+ const dir=path.join(f.home,".config/aigentry-devkit");
+ if(variant==="source")fs.appendFileSync(path.join(f.pkg,"hud/simple-status.sh"),"\n# changed\n");
+ if(variant==="destination"){fs.mkdirSync(path.join(f.home,".claude/hud"),{recursive:true});fs.writeFileSync(path.join(f.home,".claude/hud/simple-status.sh"),"local");}
+ if(variant==="journal"||variant==="lock"){
+  fs.mkdirSync(dir,{recursive:true,mode:0o700});
+  fs.writeFileSync(path.join(dir,variant==="lock"?"install-journal.lock":"install-journal.json"),variant==="lock"?"foreign":JSON.stringify({schema:"aigentry-devkit/install-journal@1",attempts:[]}));
+ }
+ if(variant==="catalogue")fs.appendFileSync(path.join(f.pkg,"config/setup-capabilities.json")," ");
+ const before=snapshot(f.tree),r=call(f,["setup",...p.args,"--accept-plan",p.hash]);
+ assert.equal(r.status,1,r.stdout+r.stderr);assert.deepEqual(snapshot(f.tree),before);
+}));
+for(const phase of [1,3,5,6])test("D2 unresolved legacy phase refuses assets: "+phase,()=>withFixture(f=>{
+ const dir=path.join(f.home,".config/aigentry-devkit");fs.mkdirSync(dir,{recursive:true,mode:0o700});
+ fs.writeFileSync(path.join(dir,"install-journal.json"),JSON.stringify({schema:"aigentry-devkit/install-journal@1",attempts:[{phases:[{phase,status:"running"}]}]}));
+ const before=snapshot(f.tree),r=call(f,["setup",...assetChoices,"--dry-run"]);
+ assert.equal(r.status,1);assert.match(r.stderr,/unresolved legacy/);assert.deepEqual(snapshot(f.tree),before);
+}));
+for(const args of [["--force"],["--yes"],["--manifest","arbitrary"],["--accept-plan","0".repeat(64)],["--configure-only"]])test("D2 invalid asset authority: "+args.join(" "),()=>withFixture(f=>{
+ const before=snapshot(f.tree),r=call(f,["setup",...assetChoices,...args],"bin/aigentry-devkit.js",{AIGENTRY_INSTALL_UNKNOWN_EFFECT:"replay",AIGENTRY_INSTALL_FORCE_UNLOCK:"1",AIGENTRY_ORCH_BUILD:"true"});
+ assert.equal(r.status,1);assert.deepEqual(snapshot(f.tree),before);
+}));
 test("D2 fixed executor refuses missing authority without effects",()=>withFixture(f=>{
  const before=snapshot(f.tree),r=call(f,[],"lib/setup-executor.js");
  assert.equal(r.status,1,r.stdout+r.stderr);
  assert.equal(r.signal,null);
  assert.doesNotMatch(r.stderr,/EARLY_EFFECT|EARLY_IMPORT|MODULE_NOT_FOUND/);
+ assert.deepEqual(snapshot(f.tree),before);
+}));
+
+test("D2 asset preview describes finite copies without effects",()=>withFixture(f=>{
+ const before=snapshot(f.tree),r=call(f,["setup",...assetChoices,"--dry-run"]);
+ assert.equal(r.status,0,r.stdout+r.stderr);
+ assert.equal(r.signal,null);
+ const plan=JSON.parse(r.stdout.slice(r.stdout.indexOf("{"),r.stdout.indexOf("\n--accept-plan")));
+ assert.equal(plan.mode,"assets");
+ assert.equal(plan.assets.reduce((n,a)=>n+a.files.length,0),39);
+ assert.match(r.stdout,/partial/i);
+ assert.deepEqual(snapshot(f.tree),before);
+}));
+
+test("D2 durable begin precedes asset failure and records partial failure",()=>withFixture(f=>{
+ const p=assetPreview(f),r=call(f,["setup",...p.args,"--accept-plan",p.hash],"bin/aigentry-devkit.js",{TEST_ASSET_FAILURE:"1"});
+ assert.equal(r.status,1);assert.match(r.stderr,/partial asset operation failed/);
+ const j=JSON.parse(fs.readFileSync(path.join(f.home,".config/aigentry-devkit/install-journal.json")));
+ assert.equal(j.attempts.at(-1).phases[0].status,"failed");
+ assert.equal(j.attempts.at(-1).partial,true);
+ assert.equal(fs.existsSync(path.join(f.home,".config/aigentry-devkit/install-journal.lock")),false);
+ assert.ok(fs.existsSync(path.join(f.root,"observers/durable.jsonl")));
+ assert.equal(fs.existsSync(path.join(f.home,".claude/hud/simple-status.sh")),false);
+}));
+for(const point of ["after-tmp-write","before-rename","after-rename"])test("D2 writer crash leaves assets untouched and no success receipt: "+point,()=>withFixture(f=>{
+ const p=assetPreview(f,"hud"),r=call(f,["setup",...p.args,"--accept-plan",p.hash],"bin/aigentry-devkit.js",{AIGENTRY_INSTALL_JOURNAL_CRASH:point});
+ assert.equal(r.status,70);assert.equal(r.signal,null);assert.doesNotMatch(r.stdout,/Partial assets completed/);
+ assert.equal(fs.existsSync(path.join(f.home,".claude")),false);
+ assert.equal(fs.existsSync(path.join(f.home,".config/aigentry-devkit/install-journal.lock")),true);
+}));
+for(const unsafe of ["symlink-source","hardlink-source","symlink-target","wide-parent"])test("D2 unsafe copy boundary refuses unchanged: "+unsafe,()=>withFixture(f=>{
+ const source=path.join(f.pkg,"hud/simple-status.sh"),target=path.join(f.home,".claude/hud/simple-status.sh");
+ if(unsafe==="symlink-source"){fs.renameSync(source,source+".original");fs.symlinkSync(source+".original",source);}
+ if(unsafe==="hardlink-source")fs.linkSync(source,source+".alias");
+ if(unsafe==="symlink-target"){fs.mkdirSync(path.dirname(target),{recursive:true});fs.symlinkSync(source,target);}
+ if(unsafe==="wide-parent"){fs.mkdirSync(path.join(f.home,".claude"));fs.chmodSync(path.join(f.home,".claude"),0o777);}
+ const before=snapshot(f.tree),r=call(f,["setup",...assetChoices,"--dry-run"]);
+ assert.equal(r.status,1);assert.deepEqual(snapshot(f.tree),before);
+}));
+
+test("D2 lost receipt after first asset file remains running and refuses replay",()=>withFixture(f=>{
+ const p=assetPreview(f,"hud"),r=call(f,["setup",...p.args,"--accept-plan",p.hash],"bin/aigentry-devkit.js",{TEST_ASSET_EXIT:"after-first-file"});
+ assert.equal(r.status,71);assert.doesNotMatch(r.stdout,/Partial assets completed/);
+ const dir=path.join(f.home,".config/aigentry-devkit"),j=JSON.parse(fs.readFileSync(path.join(dir,"install-journal.json")));
+ assert.equal(j.attempts.at(-1).outcome,"running");assert.equal(j.attempts.at(-1).phases[0].status,"running");
+ const before=snapshot(f.tree),next=call(f,["setup",...p.args,"--dry-run"]);
+ assert.equal(next.status,1);assert.deepEqual(snapshot(f.tree),before);
+}));
+test("D2 observed skill publication conflict preserves the existing object",()=>withFixture(f=>{
+ const p=assetPreview(f,"skills"),r=call(f,["setup",...p.args,"--accept-plan",p.hash],"bin/aigentry-devkit.js",{TEST_ASSET_CONFLICT:"skill"});
+ assert.equal(r.status,1);assert.match(r.stderr,/partial asset operation failed/);
+ const target=path.join(f.home,".claude/skills/ambiguity-gate");
+ assert.deepEqual(fs.readdirSync(target),["preserve.txt"]);
+ assert.equal(fs.readFileSync(path.join(target,"preserve.txt"),"utf8"),"concurrent owned fixture");
+ const j=JSON.parse(fs.readFileSync(path.join(f.home,".config/aigentry-devkit/install-journal.json")));
+ assert.equal(j.attempts.at(-1).phases[0].status,"failed");
+ assert.equal(j.attempts.at(-1).staging.length,1);
+ assert.ok(fs.existsSync(j.attempts.at(-1).staging[0]),"failed staging retained, not recursively deleted");
+}));
+
+for(const crash of [false,true])test("D2 actual Bash entry: "+(crash?"same PID recorded before crash":"HUD copy with sanitized loader environment"),()=>withFixture(f=>{
+ const bin=path.join(f.root,"observers/bin");fs.mkdirSync(bin,{mode:0o700});fs.symlinkSync(process.execPath,path.join(bin,"node"));
+ const args=[...assetChoices];args[args.length-1]="hud";
+ const preview=call(f,["setup",...args,"--dry-run"],"bin/aigentry-devkit.js",{PATH:bin});
+ assert.equal(preview.status,0,preview.stderr);
+ const hash=preview.stdout.match(/--accept-plan ([a-f0-9]{64})/)[1];
+ const loader=path.join(f.root,"observers/loader-tripwire.cjs");fs.writeFileSync(loader,'throw Error("UNSANITIZED_LOADER");\n');
+ const guard=path.join(f.root,"observers/bash-entry-guard.sh");
+ fs.writeFileSync(guard,String.raw`trap 'case "$BASH_COMMAND" in *\$\(*) printf "%s\n" EARLY_SUBSTITUTION >&2; exit 97;; esac' DEBUG
+`);
+ const env={HOME:f.home,USERPROFILE:f.home,XDG_CONFIG_HOME:path.join(f.home,".config"),PATH:bin,
+  TMPDIR:path.join(f.tree,"tmp"),TMP:path.join(f.tree,"tmp"),TEMP:path.join(f.tree,"tmp"),BASH_ENV:guard,
+  NODE_OPTIONS:"--require "+loader,NODE_PATH:path.join(f.root,"observers"),
+  ...(crash?{AIGENTRY_INSTALL_JOURNAL_CRASH:"after-rename"}:{})};
+ const r=spawnSync("/bin/bash",["--noprofile","--norc",path.join(f.pkg,"install.sh"),...args,"--accept-plan",hash],{env,encoding:"utf8",timeout:10000});
+ fs.writeFileSync(path.join(f.root,"observers/bash-result.json"),JSON.stringify({env,...r},null,2));
+ assert.equal(r.status,crash?70:0,r.stderr);assert.equal(r.signal,null);
+ assert.doesNotMatch(r.stderr,/UNSANITIZED_LOADER|EARLY_SUBSTITUTION/);
+ if(crash){
+  const lock=JSON.parse(fs.readFileSync(path.join(f.home,".config/aigentry-devkit/install-journal.lock")));
+  assert.equal(lock.pid,r.pid,"native shell child PID must equal Node writer PID after exec");
+  assert.equal(fs.existsSync(path.join(f.home,".claude")),false);
+ }else{
+  assert.match(r.stdout,/Partial assets completed/);
+  assert.deepEqual(fs.readFileSync(path.join(f.home,".claude/hud/simple-status.sh")),fs.readFileSync(path.join(f.pkg,"hud/simple-status.sh")));
+ }
+ // Same-PID evidence is not a system-wide zero-descendant observer receipt.
+}));
+
+test("D2 direct Bash refuses before command substitution",()=>withFixture(f=>{
+ // DEBUG stops the baseline's first command substitution before it can run.
+ // This is a negative entry discriminator, not native zero-descendant proof.
+ const observer=path.join(f.root,"observers","shell-guard.sh");
+ fs.writeFileSync(observer,String.raw`trap 'case "$BASH_COMMAND" in *\$\(*) printf "%s\n" EARLY_SUBSTITUTION >&2; exit 97;; esac' DEBUG
+`);
+ const before=snapshot(f.tree),env={HOME:f.home,USERPROFILE:f.home,XDG_CONFIG_HOME:path.join(f.home,".config"),
+  TMPDIR:path.join(f.tree,"tmp"),TMP:path.join(f.tree,"tmp"),TEMP:path.join(f.tree,"tmp"),PATH:"",BASH_ENV:observer};
+ const r=spawnSync("/bin/bash",["--noprofile","--norc",path.join(f.pkg,"install.sh")],{env,encoding:"utf8",timeout:10000});
+ fs.writeFileSync(path.join(f.root,"observers","shell-result.json"),JSON.stringify({env,...r},null,2));
+ assert.equal(r.status,1,r.stdout+r.stderr);
+ assert.equal(r.signal,null);
+ assert.doesNotMatch(r.stderr,/EARLY_SUBSTITUTION/);
  assert.deepEqual(snapshot(f.tree),before);
 }));

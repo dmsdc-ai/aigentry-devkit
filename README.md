@@ -1,16 +1,16 @@
 # aigentry-devkit
 
-**One installer for your AI dev environment** — bundles skills, hooks, MCP servers, HUD/statusline, and config templates for Claude Code, Codex CLI, and other MCP-compatible CLIs. Install once, use everywhere.
+**Local assets and explicit setup choices for your AI dev environment** — bundles skills, HUD/statusline, runtime source and configuration templates. The current installer enables only consent-bound partial asset copies and preference saving.
 
 Part of the [aigentry platform](https://github.com/dmsdc-ai).
 
 ## Quickstart
 
 ```bash
-aigentry-devkit setup --configure-only --non-interactive --profile core --runtime defer --dry-run
+aigentry-devkit setup --non-interactive --profile core --runtime defer --install-assets skills,hud --dry-run
 ```
 
-This D1 preview changes nothing. Review its exact local-write plan, then remove --dry-run and add the printed --accept-plan digest to save a preference. Runtime installation and verification remain unavailable. List available profiles with `npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit profiles`; full walkthrough in [`docs/quickstart.md`](docs/quickstart.md).
+Review the plan and approve its exact digest to copy the requested assets. Later client sessions may discover copied skills; no MCP/settings activation or full profile installation is performed.
 
 ## Features
 
@@ -77,175 +77,69 @@ Pre-configured settings with template substitution:
 
 ## Installation
 
-### Prerequisites
+D2 supports **partial local assets** on POSIX and the existing configure-only preference flow. Full profile installation, package installs, runtime verification, settings/hooks activation, services, update, replacement, and public replay remain gated. Windows writes are unavailable pending native private-storage validation; direct PowerShell refuses before launching children.
 
-- Node.js 18+ (Node.js 20+ when the `telepty` component is selected, which every built-in profile does)
-- npm (included with Node.js)
-- Optional: Claude Code CLI (`npm install -g @anthropic-ai/claude-code`)
-- Optional: tmux (for deliberation monitoring)
-- Optional: direnv (for environment management)
+### Preview and consent
 
-### Quick Start
-
-For an already available D1 devkit, preview a local preference:
+With the package already available locally:
 
 ```bash
-aigentry-devkit setup --configure-only --non-interactive --profile core --runtime defer --dry-run
+aigentry-devkit setup --non-interactive --profile core --runtime defer --install-assets skills,hud --dry-run
+# Review the complete plan, then use its exact current digest:
+aigentry-devkit setup --non-interactive --profile core --runtime defer --install-assets skills,hud --accept-plan <SHA256>
 ```
 
-List profiles first:
+Choose `skills`, `hud`, or `skills,hud`. Node.js 18+ runs the devkit; the gated telepty policy independently requires Node.js 20+. Every built-in profile still has required components that these copies do not install.
+
+The preview binds the installed package, source files, host/interpreter, selected files, fixed destinations, existing targets, storage and journal history. Changed observations invalidate consent. `--yes`, `--force`, custom manifests, commands and inherited installer flags do not authorize writes. Interactive setup requests the displayed digest; back regenerates the plan, skip leaves without saving, and cancel/EOF refuses.
+
+For a local checkout, `bash install.sh` accepts the same explicit choices and replaces its process with the fixed Node entry. Missing choices refuse before the historical installer body. Interpreter selection is a trusted launch boundary. Native process observation must independently verify the same-PID/no-descendant claim on each supported runner.
+
+### Exact partial effects
+
+- Skills: 38 bundled files per selected client destination. Claude is always selected; other fixed client roots are selected by safe existing directories or executable metadata, with no client execution.
+- HUD: one `~/.claude/hud/simple-status.sh` file. Copying does not activate the statusline.
+- Existing whole skill directories and existing HUD files are skipped and preserved. Every skip is previewed. An all-skip approval writes no journal.
+- New directories are private (0700); skill files are data (0600), and the HUD file is 0700. Existing parents are never chmod-repaired.
+- Skills use private sibling staging and refuse observed destination conflicts. Portable check-then-rename is not atomic no-replace and does not protect against a malicious same-UID racer. Failed staging may remain for inspection; there is no automatic rollback.
+
+Clients may discover copied skill instructions in later sessions. No MCP registration, settings, env fan-out, WTM, package manager, version probe, daemon, network or credential action is included.
+
+### Configure-only preferences
 
 ```bash
-npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit profiles
+aigentry-devkit setup --non-interactive --profile core --runtime defer --configure-only --dry-run
+aigentry-devkit setup --non-interactive --profile core --runtime defer --configure-only --accept-plan <SHA256>
 ```
 
-Preview a specific profile preference:
+This preserves the CommonJS `{contractMajor:1, run(optionArgv, optionalStreams)->Promise<number>}` contract. Streams supply input/output only. A preference is not runtime verification or authentication. `--revisit` displays a saved suggestion and still requires fresh consent.
 
-```bash
-aigentry-devkit setup --configure-only --non-interactive --profile autoresearch-public --runtime defer --dry-run
+### Durable receipts and recovery
+
+The shared writer records a durable begin and phase1 begin before asset effects in:
+
+```
+${XDG_CONFIG_HOME:-$HOME/.config}/aigentry-devkit/install-journal.json
 ```
 
-Use `curator-public` for `dustcraw + brain + registry wiring`, or `ecosystem-full` for the whole stack.
-
-Force reinstall is unavailable through the D1 CLI; --force is refused.
-
-Legacy direct shell installers remain separate, unbounded D2 work. The following historical commands do not use the D1 consent gate:
-
-macOS / Linux:
-
-```bash
-git clone https://github.com/dmsdc-ai/aigentry-devkit.git
-cd aigentry-devkit
-bash install.sh
-```
-
-Windows (PowerShell):
-
-```powershell
-git clone https://github.com/dmsdc-ai/aigentry-devkit.git
-cd aigentry-devkit
-powershell -ExecutionPolicy Bypass -File .\install.ps1
-```
-
-The legacy shell installer performs these effects (D1 configure-only does none of them):
-
-1. Verify Node.js and optional dependencies (Claude Code CLI, tmux, direnv)
-2. Install devkit assets, skills, HUD, and templates
-3. Install and health-check local `telepty`
-4. Install canonical `deliberation` MCP runtime
-5. Optionally install `brain`
-6. Optionally install and bootstrap `dustcraw`
-7. Optionally wire registry credentials (`AIGENTRY_API_URL`, `AIGENTRY_API_KEY`)
-8. Write local install state and env fan-out
-
-Detailed walkthrough: [`docs/quickstart.md`](docs/quickstart.md)
+Asset records identify the bounded action set and `partial: true`; completion is not full devkit-core/profile/runtime readiness. Failures report partial/failed results; interruption without a terminal receipt stays running/unknown. Corrupt/unsupported records, unsafe storage and foreign locks refuse without repair or PID probes. Any unresolved legacy phase blocks asset execution, including phase1 effects beyond this asset subset. Configure-only saves preserve that history without resolving it. Public skip/replay/force-unlock is unavailable.
 
 ### telepty version compatibility
 
-`install.sh` and `install.ps1` share one decision (`lib/telepty-version-policy.js`), driven by
-`config/installer-manifest.json`: the tested pin `components.telepty.install.version` (`0.8.5`) and the
-supported range `compatibility.telepty.minimum` / `maximum_exclusive` (`>=0.8.5 <0.9.0`), plus
-`compatibility.telepty.node_minimum` (`20.0.0`). These are the tested bounds, not a claim about the latest
-telepty release. The installer reads the installed `telepty --version` (stable `X.Y.Z`, optional `v`)
-before any npm call, allowing it 5 seconds to answer and at most 1024 bytes of output. A probe that misses
-that deadline is stopped (on Windows, stopping the probe's own process tree may take up to 5 more seconds, so
-one probe takes at most 10 seconds):
+The unchanged `lib/telepty-version-policy.js` remains the single source of version decisions, using `config/installer-manifest.json`. Its tested pin is `0.8.5`, supported range `>=0.8.5 <0.9.0`, and Node minimum `20.0.0`. The real policy APIs preserve these decisions:
 
-| Installed telepty | Installer action |
+| Observed telepty | Policy decision (not executed by D2) |
 |---|---|
-| none | `npm install -g @dmsdc-ai/aigentry-telepty@<pin>` |
-| below `minimum` | upgrade to exactly `<pin>` |
-| within the range, including newer than the pin | kept as is, no npm call (works offline) |
-| at or above `maximum_exclusive` | left unchanged, never downgraded; the install stops with a non-zero exit and instructions |
-| unidentifiable (prerelease/build/free text, or `telepty --version` fails, does not answer within 5 seconds, or prints more than 1024 bytes) | left unchanged; the install stops with a non-zero exit |
+| absent | propose the exact pin |
+| below minimum | propose an exact-pin upgrade |
+| compatible, including newer than the pin | keep, no npm call |
+| at/above maximum or unknown | refuse without downgrade |
 
-The install also stops before any npm or daemon step when Node.js is below `node_minimum`, or when the
-manifest pin or bounds are missing, malformed, or inconsistent (pin outside the range). There is no
-fallback to `latest`, and a failed npm install is not retried with another version. After an install or
-upgrade, the new `telepty --version` must fall inside the range; only that observed version is recorded in
-`install-state.json`. The final install summary shows that recorded version without running telepty again,
-or `not checked` when the telepty phase did not run.
+The bounded policy probe retains its 5-second/1024-byte limits; verification uses the observed version, never the target as an observation. D2 asset installation does not invoke that probe, npm or daemon/health checks.
 
 ## Offline / Firewalled Install
 
-Component installs have no fallback chain, no alternative-source retry and no `latest` fallback. Each
-component is installed by exactly one attempt of the one method `config/installer-manifest.json`
-declares for it, and what happens when that attempt fails is the component's `failure_policy`:
-
-| `failure_policy` | Components | On failure |
-|---|---|---|
-| `hard` | `devkit-core`, `telepty`, `deliberation`, `wtm-experiment` | the install stops with a non-zero exit; no later phase runs |
-| `soft` | `brain`, `dustcraw`, `registry-wiring`, `amplify`, `bridge`, `orchestrator-role` | a warning is printed, the component is left uninstalled, and the remaining phases continue |
-
-What that means on a firewalled or offline host:
-
-- An already-installed, in-range `telepty` is **kept with no npm call**, so a fully offline rerun of
-  a previously completed install does not need the registry for that phase (see
-  [telepty version compatibility](#telepty-version-compatibility)).
-- A missing or too-old `telepty` needs the registry: its npm install is one exact-pin attempt, and a
-  failure stops the install (`hard`) rather than falling back to another version or source.
-- Optional components that cannot be fetched only cost you those components. `brain` unavailable
-  means brain features are unavailable — there is no local stub server standing in for it.
-- Nothing bypasses npm's own proxy configuration: if your network needs `HTTPS_PROXY` or
-  `NODE_EXTRA_CA_CERTS`, set them before running the installer, and prefer `npm` settings you
-  already trust. Credential and permission errors are passed through as npm reported them.
-
-### Narrowing what a run touches
-
-```bash
-# Install only the components you can actually reach (comma-separated; default: devkit-core,telepty,deliberation)
-AIGENTRY_INSTALL_COMPONENTS=devkit-core bash install.sh
-
-# Resume at a phase number or component name after fixing connectivity
-AIGENTRY_INSTALL_RESUME=telepty bash install.sh
-
-# Point at a different manifest (e.g. an internally pinned copy)
-AIGENTRY_INSTALL_MANIFEST=/path/to/installer-manifest.json bash install.sh
-```
-
-`bash install.sh` itself takes one flag, `--force` (`-f`), to overwrite existing devkit assets. The
-CLI entry point (`aigentry-devkit setup`) additionally accepts `--profile`, `--manifest`, `--resume`
-and `--dry-run`; `aigentry-devkit setup --dry-run` prints the resolved plan without installing
-anything.
-
-### What the installer records
-
-The durable record is a single file, written in the last phase of a run:
-
-```
-${XDG_CONFIG_HOME:-$HOME/.config}/aigentry-devkit/install-state.json
-```
-
-It holds the selected profile and components, the observed `telepty` version, and the settings each
-component phase resolved. There is no per-attempt log file. To see what a phase did, run the
-installer with its output visible, or re-run `aigentry-devkit doctor` / `aigentry-devkit status`
-afterwards — `status` reports the version each module's own healthcheck prints, and `unknown` when a
-module cannot be identified.
-
-### Post-Installation
-
-After installation, restart Claude/Codex/Gemini so MCP changes are picked up:
-
-```bash
-# Restart your CLI process to load new MCP settings
-```
-
-To verify installation:
-
-```bash
-npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit doctor
-telepty --version
-curl -sf http://localhost:3848/api/meta
-npx --yes --package @dmsdc-ai/aigentry-deliberation deliberation-doctor
-aigentry-brain health
-dustcraw demo --non-interactive
-```
-
-If Gemini local MCP registration drifts:
-
-```bash
-npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit repair-gemini-mcp
-```
+Local asset copies make no npm call and need no network once the package is available. External component installation has no fallback chain: it is unavailable. Historical hard/soft failure metadata describes the retained policy/writer APIs, not active install routes. No warning or soft result means an external component was installed.
 
 ## Usage
 
@@ -446,7 +340,7 @@ aigentry-devkit/
 
 ### Claude Code Integration
 
-After installation, skills and MCP servers are automatically available. Configuration is stored in:
+Copied skills may be discovered by later client sessions. MCP servers and settings are not activated by partial asset setup. Existing client configuration is stored in:
 
 - `~/.claude/skills/` - Skill definitions
 - `~/.claude/.mcp.json` - MCP server registration
@@ -454,7 +348,7 @@ After installation, skills and MCP servers are automatically available. Configur
 
 ### Codex CLI Integration
 
-If Codex CLI is installed, the installer attempts to register the MCP deliberation server. Manual registration:
+Partial asset setup does not register an MCP deliberation server. The following is a separate manual registration operation:
 
 ```bash
 codex mcp add deliberation -- node ~/.local/lib/mcp-deliberation/index.js
@@ -496,7 +390,7 @@ direnv allow
 
 1. Verify MCP registration: `cat ~/.claude/.mcp.json`
 2. Check installation: `ls ~/.local/lib/mcp-deliberation/`
-3. Reinstall runtime files: `npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit install --force`
+3. Runtime installation/replacement is gated; partial asset setup does not repair an MCP runtime.
 4. Restart your MCP client process (Claude/Codex/etc.)
 5. Review runtime log: `tail -n 120 ~/.local/lib/mcp-deliberation/runtime.log`
 
@@ -550,7 +444,7 @@ If auto-scan is still unavailable, use the clipboard fallback:
 
 1. Create directory: `skills/my-skill/`
 2. Add `SKILL.md` with metadata and implementation
-3. Reinstall: `bash install.sh --force`
+3. Review an explicit skills preview; existing skill directories are preserved and replacement is unavailable.
 
 ### Customizing MCP server
 
@@ -586,12 +480,12 @@ Language-specific requirements for the un-bundled skills (only if you install th
 ### Installation Flow
 
 ```
-aigentry-devkit setup --configure-only --non-interactive --profile core --runtime defer --dry-run
-  ├─ Route to the configure-only setup module
-  ├─ Validate package metadata, choices and existing journal storage
-  ├─ Observe runtime metadata (readiness remains unverified)
-  ├─ Print the proposed local preference-write plan and consent digest
-  └─ Return without writing or installing anything
+aigentry-devkit setup / install / implicit setup
+  ├─ Enter the shared inert setup module before legacy imports
+  ├─ Preview explicit configure-only or partial asset choices
+  ├─ Require the current plan digest; revalidate source/storage
+  ├─ Record durable partial phase1 before approved local copies
+  └─ Report partial completion, failure or unknown; no runtime activation
 ```
 
 ### Runtime Flow
@@ -681,42 +575,3 @@ aigentry-devkit is one component of the aigentry platform — an open-source eng
 ---
 
 **aigentry-devkit** - Streamline your AI development workflow.
-
-## Configure-only setup (D1)
-
-Explicit `aigentry-devkit setup` and `install` now enter one metadata-only
-selection flow. Runtime installation is unavailable. `update` refuses before
-npm until a bounded D2 update plan exists. Direct shell installers and the
-legacy bare/default CLI route remain separate D2 work.
-
-Preview an exact local preference write:
-
-`aigentry-devkit setup --configure-only --non-interactive --profile core --runtime defer --dry-run`
-
-Review the output, then repeat without `--dry-run`, adding the printed
-`--accept-plan <digest>`. A changed package, host, selection, observation or
-journal invalidates consent. In a terminal the flow offers profile/runtime
-selection, back, skip and cancellation; saving requires `--configure-only`
-and typing the exact digest. EOF cancels. `--revisit` redetects and shows a
-saved choice only as a suggestion.
-
-Only defer and a darwin/linux native-srt preference can be saved. External
-runtimes are gated, with compatibility, privilege, services, data, license and
-cost unknowns. File detection is never runtime verification.
-Saving appends a preference attempt to the existing private installer journal;
-it preserves unresolved phases and does not replay or unlock them. Windows
-persistence is gated pending native ACL proof. Status labels desired
-preferences separately from observed runtime health.
-
-Authentication is a separate owner-controlled procedure using the provider's
-official documentation for the chosen client/version. Setup does not inspect
-credentials, run clients, provision tokens, boot workers or verify confinement.
-
-Integration API: CommonJS `lib/setup.js` exports `contractMajor = 1` and
-`async run(argv, io = {})`, returning `Promise<number>`: 0 for a preview,
-saved preference or explicit unsaved skip; 1 for refusal/cancel/EOF.
-argv contains setup options without the command name. Optional io has only
-stdin, stdout, stderr streams. Import has no filesystem or runtime effects.
-A future unified CLI must validate the resolved package identity, version and
-fixed module location before calling this interface in process; no old-CLI
-fallback is supported.

@@ -262,14 +262,18 @@ test("F4 :: the brain stub the README promised does not exist, so it is not prom
 
 test("F4 :: the documented offline behaviour is the shipped one", () => {
   const doc = read("README.tmpl.md");
-  // Shipped: an in-range telepty is kept with no npm call, so a firewalled host works.
-  assert.ok(/no npm call/i.test(doc), "README must keep documenting the offline-safe keep path");
-  // Shipped: exactly one install attempt per soft component, then a warning.
-  assert.ok(/soft/i.test(doc) && /warn/i.test(doc),
-    "README must state that optional components warn and continue instead of falling back");
-  // install.sh really parses one flag only.
-  const flags = [...read("install.sh").matchAll(/^\s*(--[a-z-]+(\|-[a-z])?)\)/gm)].map((m) => m[1]);
-  assert.deepEqual(flags, ["--force|-f"], "install.sh flag surface changed: re-check the documented flags");
+  assert.ok(/no npm call/i.test(doc), "local asset operations and retained keep policy require no npm call");
+  assert.match(doc,/External component installation.*unavailable/);
+  assert.match(doc,/Historical hard\/soft failure metadata/);
+  assert.match(doc,/all-skip approval writes no journal/i);
+  const gate=read("install.sh").split("set -euo pipefail")[0];
+  for(const flag of ["--profile","--runtime","--install-assets","--configure-only","--accept-plan","--non-interactive","--dry-run","--revisit","--help"]){
+    assert.ok(gate.includes(flag),`missing front-gate option ${flag}`);
+    assert.ok(doc.includes(flag) || flag==="--help",`missing documented option ${flag}`);
+  }
+  assert.ok(!gate.includes("--force|-f"),"legacy force parser must remain behind the unconditional exit");
+  assert.deepEqual(manifest.setup.asset_actions,["install-bundled-skills","install-bundled-hud"]);
+  assert.equal(manifest.setup.installation,false,"partial copies must not advertise full installation");
 });
 
 // ── F12: the support floor is derived and expressed once ───────────────────

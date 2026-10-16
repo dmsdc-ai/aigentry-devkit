@@ -109,6 +109,7 @@ const sq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
 function mkSandbox(label) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `rec1147-${label.replace(/[^A-Za-z0-9-]/g, "-").slice(0, 36)}-`));
+  const evidence=fs.mkdtempSync(path.join(os.tmpdir(),"rec1147-observer-"));
   fs.chmodSync(root, 0o700);
   const sb = {
     root,
@@ -118,7 +119,9 @@ function mkSandbox(label) {
     fakebin: path.join(root, "fakebin"),
     state: path.join(root, "state"),
     fakeJs: path.join(root, "fake.js"),
-    log: path.join(root, "run.log"),
+    log: path.join(evidence, "run.log"),
+    evidence,
+    sequence:0,
   };
   sb.stateDir = path.join(sb.xdg, "aigentry-devkit");
   sb.journal = path.join(sb.stateDir, "install-journal.json");
@@ -220,12 +223,50 @@ function runInstaller(sb, opts = {}) {
     ...(opts.env || {}),
   };
   if (opts.resume !== undefined) env.AIGENTRY_INSTALL_RESUME = String(opts.resume);
+  const before=hashTree(sb.root);
   const r = spawnSync("/bin/bash", [INSTALL_SH], {
     cwd: sb.root, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: RUN_TIMEOUT_MS,
   });
   const out = `${r.stdout || ""}${r.stderr || ""}`;
   fs.writeFileSync(sb.log, out);
-  return { code: r.status, signal: r.signal, out, plain: out.replace(/\x1b\[[0-9;]*m/g, "") };
+  const after=hashTree(sb.root);
+  fs.writeFileSync(path.join(sb.evidence,++sb.sequence+".json"),JSON.stringify({env,args:[INSTALL_SH],before,after,...r},null,2));
+  return { code: r.status, signal: r.signal, out, before, after, plain: out.replace(/\x1b\[[0-9;]*m/g, "") };
+}
+
+function assertRefused(sb,r) {
+  assert.equal(r.code,1,describe(sb,r));assert.equal(r.signal,null);
+  assert.match(r.plain,/gated|unavailable/);
+  assert.equal(r.before,r.after,"refusal preserves all fixture bytes, modes, links and directories");
+  assert.deepEqual(calls(sb),[],"no installer actuator may run");
+}
+
+// Synthetic receipts through the real writer, not a simulated installer.
+// The caller supplies explicitly declared phase facts; no component planner,
+// external effect, npm success or old installer body is reproduced here.
+function recordReceipt(sb,components,phases,policy="refuse",resume="",keyPresent=false) {
+  const env={HOME:sb.home,USERPROFILE:sb.home,XDG_CONFIG_HOME:sb.xdg,TMPDIR:sb.tmp,TMP:sb.tmp,TEMP:sb.tmp,PATH:sb.fakebin};
+  const invoke=(args)=>{
+    const r=spawnSync(process.execPath,[JOURNAL_CLI,...args],{env,encoding:"utf8",timeout:10000});
+    fs.writeFileSync(path.join(sb.evidence,++sb.sequence+".json"),JSON.stringify({args,env,...r},null,2));
+    return r;
+  };
+  const begin=invoke(["begin-run","--dir",sb.stateDir,"--installer","writer-fixture","--profile","core","--components",components,
+    "--start-phase",String(phases[0]?.phase||0),"--unknown-effect",policy,"--resume-raw",resume,
+    "--resolved-from",resume?"component":"none","--registry-api-key-present",String(keyPresent)]);
+  if(begin.status!==0)return begin;
+  const run=begin.stdout.split("\t")[1],skip=begin.stdout.split("\t")[3].split(",");
+  for(const rec of phases){
+    if(skip.includes(String(rec.phase)))continue;
+    const start=invoke(["phase-begin","--dir",sb.stateDir,"--run",run,"--phase",String(rec.phase)]);
+    assert.equal(start.status,0,start.stderr);
+    const end=invoke(["phase-end","--dir",sb.stateDir,"--run",run,"--phase",String(rec.phase),"--status",rec.status,
+      ...(rec.degraded?["--degraded","1","--detail","synthetic failed external effect receipt"]:[]),
+      ...(rec.status==="failed"?["--exit-code","1"]:[])]);
+    assert.equal(end.status,0,end.stderr);
+  }
+  const result=invoke(["end-run","--dir",sb.stateDir,"--run",run,"--outcome",phases.some(p=>p.status==="failed")?"failed":"completed"]);
+  assert.equal(result.status,0,result.stderr);return result;
 }
 
 // ── journal readers ─────────────────────────────────────────────────────────
@@ -299,6 +340,7 @@ function hashTree(dir) {
   const h = crypto.createHash("sha256");
   const walk = (p, rel) => {
     const st = fs.lstatSync(p);
+    h.update(`M ${rel} ${st.mode} ${st.nlink}\n`);
     if (st.isDirectory()) {
       for (const n of fs.readdirSync(p).sort()) walk(path.join(p, n), `${rel}/${n}`);
     } else if (st.isSymbolicLink()) {
@@ -313,184 +355,92 @@ function hashTree(dir) {
   return h.digest("hex");
 }
 
-// ── 1. every mutating phase fails independently ─────────────────────────────
+// ── Public legacy inputs now refuse; writer invariants remain real API tests ──
 
-// Phase 1 is made to fail by a destination this user cannot write into, which
-// is a local, sandbox-owned condition — no actuator and no privilege involved.
-test("phase 1 failure is recorded before the installer dies", { skip: SKIP_SH, timeout: RUN_TIMEOUT_MS }, () => {
-  const sb = mkSandbox("phase1-fail");
-  try {
-    const skills = path.join(sb.home, ".claude", "skills");
-    fs.mkdirSync(skills, { recursive: true });
-    fs.chmodSync(skills, 0o500);
-    const r = runInstaller(sb, { components: "devkit-core" });
-    fs.chmodSync(skills, 0o700);
-    const d = describe(sb, r);
-
-    assert.notEqual(r.code, 0, `phase 1 must fail this row\n${d}`);
-    const a = lastAttempt(sb);
-    assert.equal(phaseOf(a, 0).status, "completed", d);
-    assert.equal(phaseOf(a, 1).status, "failed", `phase 1 must be recorded failed, not absent\n${d}`);
-    assert.equal(phaseOf(a, 1).exit_code, r.code, d);
-    assert.equal(a.outcome, "failed", d);
-    // Later phases were never entered: absence, not a false "completed".
-    assert.equal(phaseOf(a, 7), null, `phase 7 must have no record\n${d}`);
-    assertNoRealActuator(sb, r);
-  } finally { sb.cleanup(); }
+test("phase 1 legacy failure input refuses before effects; writer persists failure", {skip:SKIP_SH},()=>{
+ const sb=mkSandbox("phase1-fail");
+ try{
+  const skills=path.join(sb.home,".claude/skills");fs.mkdirSync(skills,{recursive:true});fs.chmodSync(skills,0o500);
+  const r=runInstaller(sb,{components:"devkit-core"});fs.chmodSync(skills,0o700);assertRefused(sb,r);
+  assert.equal(fs.existsSync(sb.journal),false);
+  recordReceipt(sb,"devkit-core",[{phase:0,status:"completed"},{phase:1,status:"failed"}]);
+  const a=lastAttempt(sb);assert.equal(phaseOf(a,0).status,"completed");assert.equal(phaseOf(a,1).status,"failed");
+  assert.equal(phaseOf(a,1).exit_code,1);assert.equal(a.outcome,"failed");assert.equal(phaseOf(a,7),null);
+ }finally{sb.cleanup();}
+});
+test("phase 2 failure input cannot mutate HOME; writer preserves earlier completion",{skip:SKIP_SH},()=>{
+ const sb=mkSandbox("phase2-fail");
+ try{
+  dropTool(sb,"telepty");failTool(sb,"npm",1);
+  assertRefused(sb,runInstaller(sb,{components:"devkit-core,telepty"}));
+  assert.equal(fs.existsSync(path.join(sb.home,".claude")),false);
+  recordReceipt(sb,"devkit-core,telepty",[{phase:1,status:"completed"},{phase:2,status:"failed"}]);
+  const a=lastAttempt(sb);assert.equal(phaseOf(a,1).status,"completed");assert.equal(phaseOf(a,2).status,"failed");
+  assert.equal(a.outcome,"failed");assert.equal(modeOf(sb.journal),"600");
+ }finally{sb.cleanup();}
+});
+test("phase 3 failure input refuses; writer retains unknown replay classification",{skip:SKIP_SH},()=>{
+ const sb=mkSandbox("phase3-fail");
+ try{
+  failTool(sb,"npx",1);assertRefused(sb,runInstaller(sb,{components:"deliberation",resume:3}));
+  recordReceipt(sb,"deliberation",[{phase:3,status:"failed"}]);
+  const a=lastAttempt(sb);assert.equal(phaseOf(a,3).status,"failed");assert.equal(phaseOf(a,3).replay,"unknown");assert.equal(phaseOf(a,7),null);
+ }finally{sb.cleanup();}
+});
+for(const row of [
+ {phase:4,components:"brain",tool:"npm",needle:"aigentry-brain install failed"},
+ {phase:5,components:"dustcraw",tool:"dustcraw",needle:"dustcraw init failed"}
+])test("phase "+row.phase+" soft-failure input refuses; writer retains degraded receipt",{skip:SKIP_SH},()=>{
+ const sb=mkSandbox("phase"+row.phase+"-degraded");
+ try{
+  failTool(sb,row.tool,1);assertRefused(sb,runInstaller(sb,{components:row.components,resume:row.phase}));
+  recordReceipt(sb,row.components,[{phase:row.phase,status:"completed",degraded:true}]);
+  const a=lastAttempt(sb),p=phaseOf(a,row.phase);
+  assert.equal(p.status,"completed");assert.equal(p.degraded,true);assert.ok(p.detail);assert.equal(a.outcome,"completed");
+ }finally{sb.cleanup();}
+});
+test("phase 6 credential input refuses; actual writer records presence and redacts",{skip:SKIP_SH},()=>{
+ const sb=mkSandbox("phase6-degraded");
+ try{
+  failTool(sb,"curl",1);
+  const r=runInstaller(sb,{components:"registry-wiring",resume:6,env:{AIGENTRY_REGISTRY_MODE:"cloud",AIGENTRY_API_URL:"http://127.0.0.1:9",AIGENTRY_API_KEY:SYNTHETIC_KEY}});
+  assertRefused(sb,r);assert.ok(!r.out.includes(SYNTHETIC_KEY));
+  recordReceipt(sb,"registry-wiring",[{phase:6,status:"completed",degraded:true}],"refuse","",true);
+  const a=lastAttempt(sb);assert.equal(phaseOf(a,6).degraded,true);assert.equal(phaseOf(a,6).replay,"unknown");
+  assert.equal(a.credentials.registry_api_key,"redacted");assert.ok(!fs.readFileSync(sb.journal,"utf8").includes(SYNTHETIC_KEY));
+  const saved=spawnSync(process.execPath,[JOURNAL_CLI,"write-state","--file",sb.stateFile],{encoding:"utf8",env:{HOME:sb.home,USERPROFILE:sb.home,XDG_CONFIG_HOME:sb.xdg,TMPDIR:sb.tmp,TMP:sb.tmp,TEMP:sb.tmp,AIGENTRY_ST_REGISTRY_API_KEY_PRESENT:"true"}});
+  assert.equal(saved.status,0,saved.stderr);
+  const state=JSON.parse(fs.readFileSync(sb.stateFile));assert.equal(state.registry.api_key_present,true);assert.equal(state.registry.api_key,undefined);
+  assert.ok(!fs.readFileSync(sb.stateFile,"utf8").includes(SYNTHETIC_KEY));
+ }finally{sb.cleanup();}
+});
+test("legacy core input refuses; a writer completion contains exactly its declared phases",{skip:SKIP_SH},()=>{
+ const sb=mkSandbox("positive");
+ try{
+  assertRefused(sb,runInstaller(sb,{components:"devkit-core"}));
+  recordReceipt(sb,"devkit-core",[{phase:0,status:"completed"},{phase:1,status:"completed"},{phase:7,status:"completed"}]);
+  const a=lastAttempt(sb);assert.equal(a.outcome,"completed");assert.deepEqual(a.phases.map(p=>[p.phase,p.status]),[[0,"completed"],[1,"completed"],[7,"completed"]]);
+  assert.equal(a.installer,"writer-fixture");assert.equal(a.node,process.versions.node);
+  assert.equal(modeOf(sb.journal),"600");assert.equal(modeOf(sb.stateDir),"700");
+  assert.equal(fs.existsSync(sb.stateFile),false,"journal-only writer is not legacy phase7 execution");
+ }finally{sb.cleanup();}
+});
+test("public resumes refuse; real writer appends and preserves earlier attempts",{skip:SKIP_SH},()=>{
+ const sb=mkSandbox("repeated-resume");
+ try{
+  failTool(sb,"npx",1);assertRefused(sb,runInstaller(sb,{components:"deliberation",resume:3}));
+  recordReceipt(sb,"deliberation",[{phase:3,status:"failed"}]);
+  const original=JSON.stringify(journal(sb).attempts[0]);
+  unfailTool(sb,"npx");
+  assertRefused(sb,runInstaller(sb,{components:"deliberation",resume:"deliberation",env:{AIGENTRY_INSTALL_UNKNOWN_EFFECT:"replay"}}));
+  recordReceipt(sb,"deliberation",[{phase:3,status:"completed"}],"replay","deliberation");
+  const j=journal(sb);assert.equal(j.attempts.length,2);assert.equal(JSON.stringify(j.attempts[0]),original);
+  assert.equal(j.attempts[1].attempt,2);assert.equal(j.attempts[1].resume.requested,"deliberation");
+  assert.equal(j.attempts[1].resume.start_phase,3);assert.equal(j.attempts[1].resume.resolved_from,"component");
+  assert.equal(phaseOf(j.attempts[1],3).status,"completed");assert.equal(fs.existsSync(sb.lock),false);
+ }finally{sb.cleanup();}
 });
 
-test("phase 2 failure is recorded after phase 1 already mutated HOME", { skip: SKIP_SH, timeout: RUN_TIMEOUT_MS }, () => {
-  const sb = mkSandbox("phase2-fail");
-  try {
-    dropTool(sb, "telepty");       // absent telepty -> the policy decides "install"
-    failTool(sb, "npm", 1);        // ... and npm fails
-    const r = runInstaller(sb, { components: "devkit-core,telepty" });
-    const d = describe(sb, r);
-
-    assert.notEqual(r.code, 0, d);
-    assert.ok(r.plain.includes("npm install -g"), `phase 2 must have reached npm\n${d}`);
-    // The exact F6 reproduction: phase 1 really did write into HOME.
-    assert.ok(fs.readdirSync(path.join(sb.home, ".claude", "skills")).length > 0, `phase 1 mutated HOME\n${d}`);
-    const a = lastAttempt(sb);
-    assert.equal(phaseOf(a, 1).status, "completed", d);
-    assert.equal(phaseOf(a, 2).status, "failed", `the mutated-but-failed phase must be recorded\n${d}`);
-    assert.equal(a.outcome, "failed", d);
-    assert.equal(modeOf(sb.journal), "600", `journal must not be group/world readable\n${d}`);
-    assertNoRealActuator(sb, r);
-  } finally { sb.cleanup(); }
-});
-
-test("phase 3 failure is recorded and stops the run", { skip: SKIP_SH, timeout: RUN_TIMEOUT_MS }, () => {
-  const sb = mkSandbox("phase3-fail");
-  try {
-    failTool(sb, "npx", 1);
-    const r = runInstaller(sb, { components: "deliberation", resume: 3 });
-    const d = describe(sb, r);
-
-    assert.notEqual(r.code, 0, d);
-    const a = lastAttempt(sb);
-    assert.equal(phaseOf(a, 3).status, "failed", d);
-    assert.equal(phaseOf(a, 3).replay, "unknown", `phase 3 is an unobservable external effect\n${d}`);
-    assert.equal(phaseOf(a, 7), null, `phase 7 must not be recorded on a failed run\n${d}`);
-    assertNoRealActuator(sb, r);
-  } finally { sb.cleanup(); }
-});
-
-// Phases 4/5/6 are soft by design (warn + continue). They must be recorded as
-// completed-but-degraded, never as a clean completion.
-for (const row of [
-  { phase: 4, components: "brain", tool: "npm", needle: "aigentry-brain install failed" },
-  { phase: 5, components: "dustcraw", tool: "dustcraw", needle: "dustcraw init failed" },
-]) {
-  test(`phase ${row.phase} soft failure is recorded as degraded`, { skip: SKIP_SH, timeout: RUN_TIMEOUT_MS }, () => {
-    const sb = mkSandbox(`phase${row.phase}-degraded`);
-    try {
-      failTool(sb, row.tool, 1);
-      const r = runInstaller(sb, { components: row.components, resume: row.phase });
-      const d = describe(sb, r);
-
-      assert.equal(r.code, 0, `soft policy keeps the installer alive\n${d}`);
-      assert.ok(r.plain.includes(row.needle), `expected the soft failure to be reported\n${d}`);
-      const a = lastAttempt(sb);
-      const p = phaseOf(a, row.phase);
-      assert.equal(p.status, "completed", d);
-      assert.equal(p.degraded, true, `a soft failure must not read as a clean completion\n${d}`);
-      assert.ok(p.detail && p.detail.length > 0, `the reason must be recorded\n${d}`);
-      assert.equal(a.outcome, "completed", d);
-      assertNoRealActuator(sb, r);
-    } finally { sb.cleanup(); }
-  });
-}
-
-test("phase 6 records a degraded registry wiring without storing the key", { skip: SKIP_SH, timeout: RUN_TIMEOUT_MS }, () => {
-  const sb = mkSandbox("phase6-degraded");
-  try {
-    failTool(sb, "curl", 1); // the smoke test fails
-    const r = runInstaller(sb, {
-      components: "registry-wiring",
-      resume: 6,
-      env: { AIGENTRY_REGISTRY_MODE: "cloud", AIGENTRY_API_URL: "http://127.0.0.1:9", AIGENTRY_API_KEY: SYNTHETIC_KEY },
-    });
-    const d = describe(sb, r);
-
-    assert.equal(r.code, 0, d);
-    const a = lastAttempt(sb);
-    assert.equal(phaseOf(a, 6).status, "completed", d);
-    assert.equal(phaseOf(a, 6).degraded, true, d);
-    assert.equal(phaseOf(a, 6).replay, "unknown", `tenant bootstrap must be classed unreplayable\n${d}`);
-    // Redaction: a marker, never the payload — in the journal or the state file.
-    assert.equal(a.credentials.registry_api_key, "redacted", d);
-    assert.ok(!fs.readFileSync(sb.journal, "utf8").includes(SYNTHETIC_KEY), `the journal must not contain the key\n${d}`);
-    assert.ok(!fs.readFileSync(sb.stateFile, "utf8").includes(SYNTHETIC_KEY), `install-state must not contain the key\n${d}`);
-    const state = JSON.parse(fs.readFileSync(sb.stateFile, "utf8"));
-    assert.equal(state.registry.api_key_present, true, `presence is recorded instead\n${d}`);
-    assert.equal(state.registry.api_key, undefined, `the plaintext field must be gone\n${d}`);
-    assertNoRealActuator(sb, r);
-  } finally { sb.cleanup(); }
-});
-
-// ── 2. positive completion ──────────────────────────────────────────────────
-
-test("a completed run records every selected phase and nothing else", { skip: SKIP_SH, timeout: RUN_TIMEOUT_MS }, () => {
-  const sb = mkSandbox("positive");
-  try {
-    const r = runInstaller(sb, { components: "devkit-core" });
-    const d = describe(sb, r);
-
-    assert.equal(r.code, 0, d);
-    const a = lastAttempt(sb);
-    assert.equal(a.outcome, "completed", d);
-    assert.deepEqual(a.phases.map((p) => [p.phase, p.status]), [[0, "completed"], [1, "completed"], [7, "completed"]],
-      `only the selected phases may be recorded\n${d}`);
-    assert.equal(a.installer, "install.sh", d);
-    assert.equal(a.node, process.versions.node, `the record must name the runtime that ran\n${d}`);
-    assert.equal(modeOf(sb.stateFile), "600", d);
-    assert.equal(modeOf(sb.journal), "600", d);
-    assert.equal(modeOf(sb.stateDir), "700", d);
-    // The state file still carries what its existing readers rely on.
-    const state = JSON.parse(fs.readFileSync(sb.stateFile, "utf8"));
-    assert.deepEqual(state.components, ["devkit-core"], d);
-    assert.equal(state.profile, "core", d);
-    assert.equal(state.journal_path, sb.journal, `the state file points at the journal\n${d}`);
-    assertNoRealActuator(sb, r);
-  } finally { sb.cleanup(); }
-});
-
-// ── 3. repeated resume ──────────────────────────────────────────────────────
-
-test("resuming after a failure appends an attempt and keeps the earlier one", { skip: SKIP_SH, timeout: RUN_TIMEOUT_MS }, () => {
-  const sb = mkSandbox("repeated-resume");
-  try {
-    failTool(sb, "npx", 1);
-    const first = runInstaller(sb, { components: "deliberation", resume: 3 });
-    assert.notEqual(first.code, 0, describe(sb, first));
-    const firstAttempt = JSON.stringify(journal(sb).attempts[0]);
-
-    // Same cause fixed, resumed by NAME this time (the F5 lookup path).
-    unfailTool(sb, "npx");
-    const second = runInstaller(sb, { components: "deliberation", resume: "deliberation", env: { AIGENTRY_INSTALL_UNKNOWN_EFFECT: "replay" } });
-    const d = describe(sb, second);
-    assert.equal(second.code, 0, d);
-
-    const j = journal(sb);
-    assert.equal(j.attempts.length, 2, `each attempt is its own record\n${d}`);
-    assert.equal(JSON.stringify(j.attempts[0]), firstAttempt, `the earlier attempt must be preserved verbatim\n${d}`);
-    assert.equal(j.attempts[1].attempt, 2, d);
-    assert.equal(j.attempts[1].resume.requested, "deliberation", d);
-    assert.equal(j.attempts[1].resume.start_phase, 3, `named resume resolves to the manifest phase\n${d}`);
-    assert.equal(j.attempts[1].resume.resolved_from, "component", d);
-    assert.equal(phaseOf(j.attempts[1], 3).status, "completed", d);
-    // A third, clean run is still possible: nothing is left locked.
-    assert.ok(!fs.existsSync(sb.lock), `the lock must be released\n${d}`);
-    assertNoRealActuator(sb, second);
-  } finally { sb.cleanup(); }
-});
-
-// ── 4. unknown-effect refusal ───────────────────────────────────────────────
-
-// A SIGKILL cannot run any handler, so the phase stays `running` on disk. The
-// next run must reclassify it unknown and refuse to replay an effect it cannot
-// observe — not silently redo a tenant bootstrap or an external init.
 function seedInterrupted(sb, phase, components) {
   const begin = spawnSync(process.execPath, [JOURNAL_CLI, "begin-run", "--dir", sb.stateDir,
     "--installer", "install.sh", "--profile", "core", "--components", components, "--start-phase", "0"], { encoding: "utf8" });
@@ -504,201 +454,106 @@ function seedInterrupted(sb, phase, components) {
   return runId;
 }
 
-test("an interrupted unknown-effect phase is refused, not replayed", { skip: SKIP_SH, timeout: RUN_TIMEOUT_MS }, () => {
-  const sb = mkSandbox("unknown-refuse");
-  try {
-    seedInterrupted(sb, 6, "registry-wiring");
-    const r = runInstaller(sb, { components: "registry-wiring", resume: 6, env: { AIGENTRY_REGISTRY_MODE: "cloud" } });
-    const d = describe(sb, r);
 
-    assert.notEqual(r.code, 0, `an unknown external effect must stop the run\n${d}`);
-    assert.ok(/interrupted inside phase 6/.test(r.plain), `the refusal must name the phase\n${d}`);
-    assert.ok(/AIGENTRY_INSTALL_UNKNOWN_EFFECT/.test(r.plain), `the refusal must name the escape\n${d}`);
-    assert.deepEqual(calls(sb), [], `nothing may run before the refusal\n${d}`);
-    assert.ok(!fs.existsSync(sb.lock), `a refusal must not leave the lock behind\n${d}`);
-    // The interrupted record is reclassified, kept, and never deleted.
-    const a = journal(sb).attempts[0];
-    assert.equal(phaseOf(a, 6).status, "unknown", d);
-    assert.equal(a.outcome, "unknown", d);
-  } finally { sb.cleanup(); }
+test("interrupted external phase: public refusal preserves bytes; writer reclassifies",{skip:SKIP_SH},()=>{
+ const sb=mkSandbox("unknown-refuse");
+ try{
+  seedInterrupted(sb,6,"registry-wiring");
+  assertRefused(sb,runInstaller(sb,{components:"registry-wiring",resume:6,env:{AIGENTRY_REGISTRY_MODE:"cloud"}}));
+  assert.equal(phaseOf(journal(sb).attempts[0],6).status,"running");
+  const r=recordReceipt(sb,"registry-wiring",[{phase:6,status:"completed"}]);
+  assert.equal(r.status,1);assert.match(r.stdout,/interrupted inside phase 6/);assert.equal(fs.existsSync(sb.lock),false);
+  assert.equal(phaseOf(journal(sb).attempts[0],6).status,"unknown");assert.equal(journal(sb).attempts[0].outcome,"unknown");
+ }finally{sb.cleanup();}
 });
-
-test("=skip leaves the unknown phase alone, =replay re-runs it", { skip: SKIP_SH, timeout: RUN_TIMEOUT_MS }, () => {
-  const sb = mkSandbox("unknown-skip");
-  try {
-    seedInterrupted(sb, 5, "dustcraw");
-    const skipped = runInstaller(sb, { components: "dustcraw", resume: 5, env: { AIGENTRY_INSTALL_UNKNOWN_EFFECT: "skip" } });
-    let d = describe(sb, skipped);
-    assert.equal(skipped.code, 0, d);
-    assert.deepEqual(calls(sb).filter((c) => c.tool === "npm"), [], `=skip must not re-install dustcraw\n${d}`);
-    assert.equal(phaseOf(lastAttempt(sb), 5), null, `the skipped phase runs nothing in this attempt\n${d}`);
-    assert.equal(journal(sb).attempts[0].phases[0].status, "unknown", `the unknown record stays unknown\n${d}`);
-
-    const replayed = runInstaller(sb, { components: "dustcraw", resume: 5, env: { AIGENTRY_INSTALL_UNKNOWN_EFFECT: "replay" } });
-    d = describe(sb, replayed);
-    assert.equal(replayed.code, 0, d);
-    assert.equal(phaseOf(lastAttempt(sb), 5).status, "completed", `=replay really re-runs the phase\n${d}`);
-    assert.ok(calls(sb).some((c) => c.tool === "npm"), `=replay reaches the actuator\n${d}`);
-    assertNoRealActuator(sb, replayed);
-  } finally { sb.cleanup(); }
+test("public skip and replay refuse; actual writer policies preserve their distinct folds",{skip:SKIP_SH},()=>{
+ const sb=mkSandbox("unknown-skip");
+ try{
+  seedInterrupted(sb,5,"dustcraw");
+  assertRefused(sb,runInstaller(sb,{components:"dustcraw",resume:5,env:{AIGENTRY_INSTALL_UNKNOWN_EFFECT:"skip"}}));
+  recordReceipt(sb,"dustcraw",[{phase:5,status:"completed"}],"skip");
+  assert.equal(phaseOf(lastAttempt(sb),5),null);assert.equal(journal(sb).attempts[0].phases[0].status,"unknown");
+  assertRefused(sb,runInstaller(sb,{components:"dustcraw",resume:5,env:{AIGENTRY_INSTALL_UNKNOWN_EFFECT:"replay"}}));
+  recordReceipt(sb,"dustcraw",[{phase:5,status:"completed"}],"replay");
+  assert.equal(phaseOf(lastAttempt(sb),5).status,"completed");assert.deepEqual(require(JOURNAL_CLI).unresolvedPhases(journal(sb)),[]);
+ }finally{sb.cleanup();}
 });
-
-// ── 4b. supersession: a resolved unknown must stop blocking (review R1) ─────
-//
-// An unknown effect is a question about one phase at one point in time, not a
-// permanent property of the journal. Once a later run has actually completed
-// that phase, the question is answered and an ordinary run must proceed — while
-// a replay that did NOT land, or a fresh interruption, must still block. The
-// journal stays immutable: resolution is folded chronologically at read time,
-// never by editing, deleting or force-bypassing a record.
-
-test("an unknown effect resolved by a successful replay stops blocking later runs", { skip: SKIP_SH, timeout: RUN_TIMEOUT_MS }, () => {
-  const sb = mkSandbox("supersede-resolved");
-  try {
-    seedInterrupted(sb, 3, "deliberation");
-
-    // Ordinary run refuses while the question is open.
-    const blocked = runInstaller(sb, { components: "deliberation", resume: 3 });
-    assert.notEqual(blocked.code, 0, `must refuse while unresolved\n${describe(sb, blocked)}`);
-
-    // The user answers it once, explicitly.
-    const replayed = runInstaller(sb, { components: "deliberation", resume: 3, env: { AIGENTRY_INSTALL_UNKNOWN_EFFECT: "replay" } });
-    let d = describe(sb, replayed);
-    assert.equal(replayed.code, 0, `the replay must land\n${d}`);
-    assert.equal(phaseOf(lastAttempt(sb), 3).status, "completed", `the replay completed phase 3\n${d}`);
-
-    // ... and from then on an ORDINARY run proceeds: no override, no edit.
-    const ordinary = runInstaller(sb, { components: "deliberation", resume: 3 });
-    d = describe(sb, ordinary);
-    assert.equal(ordinary.code, 0, `a resolved unknown must not block forever\n${d}`);
-    assert.ok(!/interrupted inside phase/.test(ordinary.plain), `no stale refusal\n${d}`);
-    assert.equal(phaseOf(lastAttempt(sb), 3).status, "completed", d);
-
-    // History is immutable: the original unknown record is still there.
-    const j = journal(sb);
-    assert.equal(j.attempts.length, 3, `every attempt is still recorded\n${d}`);
-    assert.equal(phaseOf(j.attempts[0], 3).status, "unknown", `the original unknown is preserved verbatim\n${d}`);
-    assert.equal(j.schema, "aigentry-devkit/install-journal@1", `no schema reset\n${d}`);
-    assertNoRealActuator(sb, ordinary);
-  } finally { sb.cleanup(); }
+test("a clean writer replay resolves unknown history without enabling public replay",{skip:SKIP_SH},()=>{
+ const sb=mkSandbox("supersede-resolved");
+ try{
+  seedInterrupted(sb,3,"deliberation");
+  assertRefused(sb,runInstaller(sb,{components:"deliberation",resume:3}));
+  assert.equal(recordReceipt(sb,"deliberation",[{phase:3,status:"completed"}]).status,1);
+  assertRefused(sb,runInstaller(sb,{components:"deliberation",resume:3,env:{AIGENTRY_INSTALL_UNKNOWN_EFFECT:"replay"}}));
+  recordReceipt(sb,"deliberation",[{phase:3,status:"completed"}],"replay");
+  assertRefused(sb,runInstaller(sb,{components:"deliberation",resume:3}));
+  recordReceipt(sb,"deliberation",[{phase:3,status:"completed"}]);
+  const j=journal(sb);assert.equal(j.attempts.length,3);assert.equal(phaseOf(j.attempts[0],3).status,"unknown");
+  assert.deepEqual(require(JOURNAL_CLI).unresolvedPhases(j),[]);assert.equal(j.schema,"aigentry-devkit/install-journal@1");
+ }finally{sb.cleanup();}
 });
-
-test("negative control: a replay that failed does not resolve the unknown", { skip: SKIP_SH, timeout: RUN_TIMEOUT_MS }, () => {
-  const sb = mkSandbox("supersede-replay-failed");
-  try {
-    seedInterrupted(sb, 3, "deliberation");
-    failTool(sb, "npx", 1); // the replay itself cannot land
-
-    const replayed = runInstaller(sb, { components: "deliberation", resume: 3, env: { AIGENTRY_INSTALL_UNKNOWN_EFFECT: "replay" } });
-    let d = describe(sb, replayed);
-    assert.notEqual(replayed.code, 0, `the replay must fail this row\n${d}`);
-    assert.equal(phaseOf(lastAttempt(sb), 3).status, "failed", `a failed replay is recorded failed\n${d}`);
-
-    // The question is still open, so an ordinary run must still refuse.
-    const ordinary = runInstaller(sb, { components: "deliberation", resume: 3 });
-    d = describe(sb, ordinary);
-    assert.notEqual(ordinary.code, 0, `a failed replay must not clear the unknown\n${d}`);
-    assert.ok(/interrupted inside phase 3/.test(ordinary.plain), `the refusal must still name phase 3\n${d}`);
-  } finally { sb.cleanup(); }
+test("negative control: a failed writer replay cannot clear unknown",{skip:SKIP_SH},()=>{
+ const sb=mkSandbox("supersede-replay-failed");
+ try{
+  seedInterrupted(sb,3,"deliberation");failTool(sb,"npx",1);
+  assertRefused(sb,runInstaller(sb,{components:"deliberation",resume:3,env:{AIGENTRY_INSTALL_UNKNOWN_EFFECT:"replay"}}));
+  recordReceipt(sb,"deliberation",[{phase:3,status:"failed"}],"replay");assert.equal(phaseOf(lastAttempt(sb),3).status,"failed");
+  assertRefused(sb,runInstaller(sb,{components:"deliberation",resume:3}));
+  const r=recordReceipt(sb,"deliberation",[{phase:3,status:"completed"}]);assert.equal(r.status,1);assert.match(r.stdout,/interrupted inside phase 3/);
+ }finally{sb.cleanup();}
 });
-
-test("negative control: a fresh interruption re-blocks an already-resolved phase", { skip: SKIP_SH, timeout: RUN_TIMEOUT_MS }, () => {
-  const sb = mkSandbox("supersede-reblocked");
-  try {
-    seedInterrupted(sb, 3, "deliberation");
-    const replayed = runInstaller(sb, { components: "deliberation", resume: 3, env: { AIGENTRY_INSTALL_UNKNOWN_EFFECT: "replay" } });
-    assert.equal(replayed.code, 0, describe(sb, replayed));
-
-    // A new run is interrupted inside the same phase all over again.
-    seedInterrupted(sb, 3, "deliberation");
-
-    // calls.jsonl is cumulative across runs in one sandbox, so compare against a
-    // snapshot taken after the replay rather than against empty.
-    const before = calls(sb).length;
-    const ordinary = runInstaller(sb, { components: "deliberation", resume: 3 });
-    const d = describe(sb, ordinary);
-    assert.notEqual(ordinary.code, 0, `the newer unknown must block again\n${d}`);
-    assert.ok(/interrupted inside phase 3/.test(ordinary.plain), `the refusal must name phase 3\n${d}`);
-    assert.equal(calls(sb).length, before, `nothing new may run after the refusal\n${d}`);
-    // History: the resolved unknown, its replay and the fresh unknown all stand.
-    const j = journal(sb);
-    assert.deepEqual(j.attempts.map((a) => a.outcome), ["unknown", "completed", "unknown"], d);
-  } finally { sb.cleanup(); }
+test("negative control: a fresh interruption re-blocks a resolved writer phase",{skip:SKIP_SH},()=>{
+ const sb=mkSandbox("supersede-reblocked");
+ try{
+  seedInterrupted(sb,3,"deliberation");
+  assertRefused(sb,runInstaller(sb,{components:"deliberation",resume:3,env:{AIGENTRY_INSTALL_UNKNOWN_EFFECT:"replay"}}));
+  recordReceipt(sb,"deliberation",[{phase:3,status:"completed"}],"replay");
+  seedInterrupted(sb,3,"deliberation");
+  assertRefused(sb,runInstaller(sb,{components:"deliberation",resume:3}));
+  assert.equal(recordReceipt(sb,"deliberation",[{phase:3,status:"completed"}]).status,1);
+  assert.deepEqual(journal(sb).attempts.map(a=>a.outcome),["unknown","completed","unknown"]);
+ }finally{sb.cleanup();}
 });
-
-test("a replay-safe interrupted phase does not need an acknowledgement", { skip: SKIP_SH, timeout: RUN_TIMEOUT_MS }, () => {
-  const sb = mkSandbox("unknown-safe");
-  try {
-    seedInterrupted(sb, 1, "devkit-core"); // local, existence-guarded copies
-    const r = runInstaller(sb, { components: "devkit-core" });
-    const d = describe(sb, r);
-    assert.equal(r.code, 0, `a replay-safe phase must not block the run\n${d}`);
-    assert.equal(phaseOf(lastAttempt(sb), 1).status, "completed", d);
-  } finally { sb.cleanup(); }
+test("writer replay-safe classification is not public asset consent",{skip:SKIP_SH},()=>{
+ const sb=mkSandbox("unknown-safe");
+ try{
+  seedInterrupted(sb,1,"devkit-core");assertRefused(sb,runInstaller(sb,{components:"devkit-core"}));
+  recordReceipt(sb,"devkit-core",[{phase:1,status:"completed"}]);assert.equal(phaseOf(lastAttempt(sb),1).status,"completed");
+ }finally{sb.cleanup();}
 });
-
-// ── 5. interrupted write ────────────────────────────────────────────────────
-
-test("a crash between write and rename leaves the previous record intact", { skip: SKIP_SH, timeout: RUN_TIMEOUT_MS }, () => {
-  const sb = mkSandbox("interrupted-write");
-  try {
-    const first = runInstaller(sb, { components: "devkit-core" });
-    assert.equal(first.code, 0, describe(sb, first));
-    const beforeBytes = fs.readFileSync(sb.journal);
-
-    // The bounded test seam: die exactly between the temp write and the rename.
-    const crashed = runInstaller(sb, { components: "devkit-core", env: { AIGENTRY_INSTALL_JOURNAL_CRASH: "before-rename" } });
-    const d = describe(sb, crashed);
-    assert.notEqual(crashed.code, 0, `the crashed write must not report success\n${d}`);
-
-    // The live file is byte-identical and still valid: rename is atomic.
-    assert.deepEqual(fs.readFileSync(sb.journal), beforeBytes, `the live journal was modified by a torn write\n${d}`);
-    assert.equal(journal(sb).attempts.length, 1, d);
-    const temps = fs.readdirSync(sb.stateDir).filter((n) => n.startsWith("install-journal.json.tmp-"));
-    assert.equal(temps.length, 1, `the unfinished temp file is the only residue: ${JSON.stringify(temps)}\n${d}`);
-
-    // The crashed run released the lock it owned (review RW2: process.exit runs
-    // no catch or finally, but it does run the exit hook), so the next ORDINARY
-    // run needs no override — it just proceeds and sweeps its own residue.
-    assert.equal(fs.existsSync(sb.lock), false, `the deliberate-exit path must release its own lock\n${d}`);
-    const next = runInstaller(sb, { components: "devkit-core" });
-    assert.equal(next.code, 0, `an ordinary re-run must not need a force-unlock\n${describe(sb, next)}`);
-    assert.deepEqual(fs.readdirSync(sb.stateDir).filter((n) => n.includes(".tmp-")), [], `temp residue must be swept`);
-    assert.equal(lastAttempt(sb).lock_forced, undefined, `no force was needed, so none may be recorded`);
-    // Forcing is still recorded when it IS used — see the concurrent-writer row.
-  } finally { sb.cleanup(); }
+test("writer crash before rename preserves live bytes; public crash env grants no authority",{skip:SKIP_SH},()=>{
+ const sb=mkSandbox("interrupted-write");
+ try{
+  assertRefused(sb,runInstaller(sb,{components:"devkit-core"}));
+  recordReceipt(sb,"devkit-core",[{phase:1,status:"completed"}]);const before=fs.readFileSync(sb.journal);
+  assertRefused(sb,runInstaller(sb,{components:"devkit-core",env:{AIGENTRY_INSTALL_JOURNAL_CRASH:"before-rename"}}));
+  const crashed=spawnSync(process.execPath,[JOURNAL_CLI,"begin-run","--dir",sb.stateDir,"--components","devkit-core","--start-phase","0"],{encoding:"utf8",env:{HOME:sb.home,USERPROFILE:sb.home,TMPDIR:sb.tmp,TMP:sb.tmp,TEMP:sb.tmp,AIGENTRY_INSTALL_JOURNAL_CRASH:"before-rename"}});
+  assert.equal(crashed.status,70);assert.deepEqual(fs.readFileSync(sb.journal),before);
+  assert.equal(journal(sb).attempts.length,1);assert.equal(fs.readdirSync(sb.stateDir).filter(n=>n.startsWith("install-journal.json.tmp-")).length,1);
+  assert.equal(fs.existsSync(sb.lock),false);
+  assertRefused(sb,runInstaller(sb,{components:"devkit-core"}));
+  recordReceipt(sb,"devkit-core",[{phase:1,status:"completed"}]);
+  assert.deepEqual(fs.readdirSync(sb.stateDir).filter(n=>n.includes(".tmp-")),[]);assert.equal(lastAttempt(sb).lock_forced,undefined);
+ }finally{sb.cleanup();}
 });
-
-test("a corrupt journal is preserved and refused, never read as absent", { skip: SKIP_SH, timeout: RUN_TIMEOUT_MS }, () => {
-  const sb = mkSandbox("corrupt-journal");
-  try {
-    const first = runInstaller(sb, { components: "devkit-core" });
-    assert.equal(first.code, 0, describe(sb, first));
-    // Truncate it the way an interrupted non-atomic write used to.
-    const torn = fs.readFileSync(sb.journal).subarray(0, 120);
-    fs.writeFileSync(sb.journal, torn);
-
-    const r = runInstaller(sb, { components: "devkit-core" });
-    const d = describe(sb, r);
-    assert.notEqual(r.code, 0, `a torn record must not be treated as "nothing installed"\n${d}`);
-    assert.ok(/is corrupt/.test(r.plain), `the refusal must say what is wrong\n${d}`);
-    assert.deepEqual(fs.readFileSync(sb.journal), torn, `the corrupt bytes must be preserved for inspection\n${d}`);
-    assert.deepEqual(calls(sb), [], `nothing may run after the refusal\n${d}`);
-  } finally { sb.cleanup(); }
+test("corrupt journal is preserved and refused by both public entry and writer",{skip:SKIP_SH},()=>{
+ const sb=mkSandbox("corrupt-journal");
+ try{
+  assertRefused(sb,runInstaller(sb,{components:"devkit-core"}));recordReceipt(sb,"devkit-core",[{phase:1,status:"completed"}]);
+  const torn=fs.readFileSync(sb.journal).subarray(0,120);fs.writeFileSync(sb.journal,torn);
+  assertRefused(sb,runInstaller(sb,{components:"devkit-core"}));
+  const r=recordReceipt(sb,"devkit-core",[{phase:1,status:"completed"}]);assert.equal(r.status,1);assert.match(r.stdout,/is corrupt/);
+  assert.deepEqual(fs.readFileSync(sb.journal),torn);
+ }finally{sb.cleanup();}
 });
-
-test("a journal from a newer schema is refused rather than rewritten", { skip: SKIP_SH, timeout: RUN_TIMEOUT_MS }, () => {
-  const sb = mkSandbox("future-schema");
-  try {
-    fs.mkdirSync(sb.stateDir, { recursive: true });
-    const future = `${JSON.stringify({ schema: "aigentry-devkit/install-journal@99", attempts: [] }, null, 2)}\n`;
-    fs.writeFileSync(sb.journal, future);
-    const r = runInstaller(sb, { components: "devkit-core" });
-    const d = describe(sb, r);
-    assert.notEqual(r.code, 0, d);
-    assert.ok(/unsupported|newer/.test(r.plain), `the refusal must explain the schema\n${d}`);
-    assert.equal(fs.readFileSync(sb.journal, "utf8"), future, `a future record must be left alone\n${d}`);
-  } finally { sb.cleanup(); }
+test("newer schema is preserved and refused by public entry and writer",{skip:SKIP_SH},()=>{
+ const sb=mkSandbox("future-schema");
+ try{
+  fs.mkdirSync(sb.stateDir,{recursive:true});const future=JSON.stringify({schema:"aigentry-devkit/install-journal@99",attempts:[]},null,2)+"\n";fs.writeFileSync(sb.journal,future);
+  assertRefused(sb,runInstaller(sb,{components:"devkit-core"}));
+  const r=recordReceipt(sb,"devkit-core",[{phase:1,status:"completed"}]);assert.equal(r.status,1);assert.match(r.stdout,/unsupported|newer/);
+  assert.equal(fs.readFileSync(sb.journal,"utf8"),future);
+ }finally{sb.cleanup();}
 });
 
 // Unit-level crash points: the two remaining transaction boundaries.
@@ -788,7 +643,8 @@ test("read exposes unresolved_phases additively and stays honest when it cannot 
 
     // ok with an interrupted phase: reported unresolved.
     seedInterrupted(sb, 3, "deliberation");
-    runInstaller(sb, { components: "deliberation", resume: 3 }); // refused; reclassifies running -> unknown
+    assertRefused(sb,runInstaller(sb, { components: "deliberation", resume: 3 }));
+    assert.equal(recordReceipt(sb,"deliberation",[{phase:3,status:"completed"}]).status,1);
     r = readCmd();
     assert.equal(r.status, 0, r.out);
     assert.equal(r.json.status, "ok", r.out);
@@ -800,7 +656,8 @@ test("read exposes unresolved_phases additively and stays honest when it cannot 
     // after a successful replay: read reports RESOLVED while the raw history
     // still contains the unknown record (the journal stays the history).
     const replayed = runInstaller(sb, { components: "deliberation", resume: 3, env: { AIGENTRY_INSTALL_UNKNOWN_EFFECT: "replay" } });
-    assert.equal(replayed.code, 0, describe(sb, replayed));
+    assertRefused(sb,replayed);
+    recordReceipt(sb,"deliberation",[{phase:3,status:"completed"}],"replay");
     r = readCmd();
     assert.deepEqual(r.json.unresolved_phases, [], `a resolved unknown must read as resolved\n${r.out}`);
     assert.equal(r.json.journal.attempts[0].phases.filter((x) => x.phase === 3)[0].status, "unknown",
@@ -907,7 +764,10 @@ test("read reports an interrupted phase as pending before any begin-run reclassi
     const ordinary = runInstaller(sb, { components: "registry-wiring", resume: 6, env: { AIGENTRY_REGISTRY_MODE: "cloud" } });
     const d = describe(sb, ordinary);
     assert.notEqual(ordinary.code, 0, `begin-run must still refuse the unknown effect\n${d}`);
-    assert.ok(/interrupted inside phase 6/.test(ordinary.plain), `the refusal must still name phase 6\n${d}`);
+    assertRefused(sb,ordinary);
+    const refusedWriter=recordReceipt(sb,"registry-wiring",[{phase:6,status:"completed"}]);
+    assert.equal(refusedWriter.status,1);
+    assert.match(refusedWriter.stdout,/interrupted inside phase 6/);
     assert.equal(phaseOf(journal(sb).attempts[0], 6).status, "unknown", `begin-run still persists the reclassification\n${d}`);
   } finally { sb.cleanup(); }
 });
@@ -918,6 +778,8 @@ test("a degraded replay does not clear the unknown effect it could not resolve",
     seedInterrupted(sb, 5, "dustcraw");
     const blocked = runInstaller(sb, { components: "dustcraw", resume: 5 });
     assert.notEqual(blocked.code, 0, `must refuse while the question is open\n${describe(sb, blocked)}`);
+    assertRefused(sb,blocked);
+    assert.equal(recordReceipt(sb,"dustcraw",[{phase:5,status:"completed"}]).status,1);
 
     // The user answers it explicitly, but `dustcraw init` — the external-init
     // half of phase 5's effect, i.e. the exact reason the phase is classed
@@ -925,6 +787,8 @@ test("a degraded replay does not clear the unknown effect it could not resolve",
     // records `completed --degraded 1`, so the replay demonstrably did not land.
     failTool(sb, "dustcraw", 1);
     const replayed = runInstaller(sb, { components: "dustcraw", resume: 5, env: { AIGENTRY_INSTALL_UNKNOWN_EFFECT: "replay" } });
+    assertRefused(sb,replayed);
+    recordReceipt(sb,"dustcraw",[{phase:5,status:"completed",degraded:true}],"replay");
     let d = describe(sb, replayed);
     const degradedRec = phaseOf(lastAttempt(sb), 5);
     assert.equal(degradedRec.status, "completed", `the soft policy records completed, not failed\n${d}`);
@@ -936,20 +800,24 @@ test("a degraded replay does not clear the unknown effect it could not resolve",
     const ordinary = runInstaller(sb, { components: "dustcraw", resume: 5 });
     d = describe(sb, ordinary);
     assert.notEqual(ordinary.code, 0, `a degraded replay must not clear the unknown\n${d}`);
-    assert.ok(/interrupted inside phase 5/.test(ordinary.plain), `the refusal must still name phase 5\n${d}`);
+    assertRefused(sb,ordinary);
+    const refusedWriter=recordReceipt(sb,"dustcraw",[{phase:5,status:"completed"}]);
+    assert.equal(refusedWriter.status,1);assert.match(refusedWriter.stdout,/interrupted inside phase 5/);
 
     // Control on the identical path: once the replay really lands clean, the
     // question is answered and an ordinary run proceeds. Nothing blocks forever.
     unfailTool(sb, "dustcraw");
     const clean = runInstaller(sb, { components: "dustcraw", resume: 5, env: { AIGENTRY_INSTALL_UNKNOWN_EFFECT: "replay" } });
     d = describe(sb, clean);
-    assert.equal(clean.code, 0, `the clean replay must land\n${d}`);
+    assertRefused(sb,clean);
+    recordReceipt(sb,"dustcraw",[{phase:5,status:"completed"}],"replay");
     const cleanRec = phaseOf(lastAttempt(sb), 5);
     assert.equal(cleanRec.status, "completed", d);
     assert.equal(cleanRec.degraded, undefined, `a clean completion carries no degraded flag\n${d}`);
     const after = runInstaller(sb, { components: "dustcraw", resume: 5 });
     d = describe(sb, after);
-    assert.equal(after.code, 0, `a clean completion must still clear the unknown\n${d}`);
+    assertRefused(sb,after);
+    recordReceipt(sb,"dustcraw",[{phase:5,status:"completed"}]);
     assert.ok(!/interrupted inside phase/.test(after.plain), `no stale refusal after a clean replay\n${d}`);
 
     // History is immutable throughout: every record still stands as written.
@@ -1116,16 +984,22 @@ test("a second writer is refused while a lock is held, and the override is recor
     const blocked = runInstaller(sb, { components: "devkit-core" });
     let d = describe(sb, blocked);
     assert.notEqual(blocked.code, 0, `a possibly-live second writer must be refused\n${d}`);
-    assert.ok(/another aigentry-devkit installer may be running/.test(blocked.plain), d);
+    assertRefused(sb,blocked);
+    const writerBlocked=recordReceipt(sb,"devkit-core",[{phase:1,status:"completed"}]);
+    assert.equal(writerBlocked.status,1);assert.match(writerBlocked.stdout,/locked/);
     assert.deepEqual(calls(sb), [], `nothing may run while refused\n${d}`);
     assert.ok(fs.existsSync(sb.lock), `the other writer's lock must not be stolen\n${d}`);
     assert.equal(fs.existsSync(sb.journal), false, `no record is written for a refused run\n${d}`);
 
     const forced = runInstaller(sb, { components: "devkit-core", env: { AIGENTRY_INSTALL_FORCE_UNLOCK: "1" } });
     d = describe(sb, forced);
-    assert.equal(forced.code, 0, d);
+    assertRefused(sb,forced);
+    const adopted=spawnSync(process.execPath,[JOURNAL_CLI,"begin-run","--dir",sb.stateDir,"--installer","writer-fixture","--profile","core","--components","devkit-core","--start-phase","0","--force-unlock","1"],{encoding:"utf8"});
+    assert.equal(adopted.status,0,adopted.stderr);
     assert.equal(lastAttempt(sb).lock_forced, true, `the override must be auditable\n${d}`);
-    assert.ok(!fs.existsSync(sb.lock), `a completed run releases the lock\n${d}`);
+    const ended=spawnSync(process.execPath,[JOURNAL_CLI,"end-run","--dir",sb.stateDir,"--run",adopted.stdout.split("\t")[1],"--outcome","completed"],{encoding:"utf8"});
+    assert.equal(ended.status,0,ended.stderr);
+    assert.ok(!fs.existsSync(sb.lock), `a completed writer releases the lock\n${d}`);
     assertNoRealActuator(sb, forced);
   } finally { sb.cleanup(); }
 });
@@ -1142,10 +1016,11 @@ test("phase 8 preserves a malformed install-state instead of resetting it", { sk
 
     const r = runInstaller(sb, { components: "orchestrator-role", resume: "orchestrator-role", env: orchEnv(sb) });
     const d = describe(sb, r);
-    assert.equal(r.code, 0, `phase 8 keeps its soft policy\n${d}`);
-    assert.ok(/could not record the orchestrator-role outcome|not readable as JSON/.test(r.plain),
-      `the failure must be reported, not swallowed\n${d}`);
+    assertRefused(sb,r);
+    const merged=spawnSync(process.execPath,[JOURNAL_CLI,"merge-orchestrator","--file",sb.stateFile,"--status","degraded","--repo-dir",orchEnv(sb).AIGENTRY_ORCH_DIR],{encoding:"utf8"});
+    assert.equal(merged.status,1);assert.match(merged.stderr,/not readable as JSON/);
     assert.equal(fs.readFileSync(sb.stateFile, "utf8"), malformed, `the unparseable bytes must survive\n${d}`);
+    recordReceipt(sb,"orchestrator-role",[{phase:8,status:"completed",degraded:true}]);
     assert.equal(phaseOf(lastAttempt(sb), 8).status, "completed", d);
     // The orchestrator setup degraded (clone failed) AND its outcome could not
     // be recorded, so the journal must not read as a clean completion.
@@ -1160,13 +1035,16 @@ test("phase 8 still records its outcome into a healthy install-state", { skip: S
     allowTool(sb, "git", 1);
     const r = runInstaller(sb, { components: "orchestrator-role", resume: "orchestrator-role", env: orchEnv(sb) });
     const d = describe(sb, r);
-    assert.equal(r.code, 0, d);
+    assertRefused(sb,r);
+    const merged=spawnSync(process.execPath,[JOURNAL_CLI,"merge-orchestrator","--file",sb.stateFile,"--status","degraded","--repo-dir",orchEnv(sb).AIGENTRY_ORCH_DIR],{encoding:"utf8"});
+    assert.equal(merged.status,0,merged.stderr);
+    recordReceipt(sb,"orchestrator-role",[{phase:8,status:"completed",degraded:true}]);
     const state = JSON.parse(fs.readFileSync(sb.stateFile, "utf8"));
     // The soft-degrade outcome of an unreachable clone, recorded under the key
     // tests/orchestrator-profile.test.js already relies on.
     assert.equal(state.orchestrator.status, "degraded", `the existing orchestrator contract is kept\n${d}`);
     assert.equal(state.orchestrator.repo_dir, path.join(sb.root, "projects", "aigentry-orchestrator"), d);
-    assert.ok(calls(sb).some((c) => c.tool === "git"), `the inert git fake is what ran\n${d}`);
+    assert.deepEqual(calls(sb),[], "declared writer facts do not perform a clone");
     assert.equal(modeOf(sb.stateFile), "600", d);
     // Both durable records agree about the same attempt (review R3).
     assertOrchestratorRecordsAgree(sb, d);
@@ -1178,10 +1056,14 @@ test("a later phase 7 rewrite keeps the orchestrator block a previous phase wrot
   try {
     allowTool(sb, "git", 1);
     const eight = runInstaller(sb, { components: "orchestrator-role", resume: "orchestrator-role", env: orchEnv(sb) });
-    assert.equal(eight.code, 0, describe(sb, eight));
+    assertRefused(sb,eight);
+    const merged=spawnSync(process.execPath,[JOURNAL_CLI,"merge-orchestrator","--file",sb.stateFile,"--status","degraded","--repo-dir",orchEnv(sb).AIGENTRY_ORCH_DIR],{encoding:"utf8"});
+    assert.equal(merged.status,0,merged.stderr);
     const seven = runInstaller(sb, { components: "devkit-core" });
     const d = describe(sb, seven);
-    assert.equal(seven.code, 0, d);
+    assertRefused(sb,seven);
+    const written=spawnSync(process.execPath,[JOURNAL_CLI,"write-state","--file",sb.stateFile],{encoding:"utf8",env:{HOME:sb.home,XDG_CONFIG_HOME:sb.xdg,PATH:sb.fakebin,AIGENTRY_ST_COMPONENTS:"devkit-core",AIGENTRY_ST_PROFILE:"core"}});
+    assert.equal(written.status,0,written.stderr);
     const state = JSON.parse(fs.readFileSync(sb.stateFile, "utf8"));
     assert.ok(state.orchestrator, `phase 7 must not drop an earlier phase's record\n${d}`);
     assert.deepEqual(state.components, ["devkit-core"], d);
@@ -1237,9 +1119,11 @@ for (const row of [
       const r = runInstaller(sb, { components: "orchestrator-role", resume: "orchestrator-role", env: orchEnv(sb), ...extra });
       const d = describe(sb, r);
 
-      // Operation semantics and exit policy are unchanged: phase 8 stays soft.
-      assert.equal(r.code, 0, `phase 8 keeps its soft policy\n${d}`);
-      assert.ok(row.needle.test(r.plain), `expected the degradation to be reported\n${d}`);
+      assertRefused(sb,r);
+      // These are declared writer facts, not an executed clone or bootstrap.
+      const merged=spawnSync(process.execPath,[JOURNAL_CLI,"merge-orchestrator","--file",sb.stateFile,"--status",row.status,"--repo-dir",orchEnv(sb).AIGENTRY_ORCH_DIR],{encoding:"utf8"});
+      assert.equal(merged.status,0,merged.stderr);
+      recordReceipt(sb,"orchestrator-role",[{phase:8,status:"completed",degraded:true}]);
 
       const state = JSON.parse(fs.readFileSync(sb.stateFile, "utf8"));
       assert.equal(state.orchestrator.status, row.status, `existing status semantics preserved\n${d}`);
@@ -1272,7 +1156,7 @@ test("a re-run leaves pre-existing user data byte-identical", { skip: SKIP_SH, t
     fs.writeFileSync(path.join(sb.home, "unrelated", "keep.txt"), "do not touch\n");
 
     const first = runInstaller(sb, { components: "devkit-core" });
-    assert.equal(first.code, 0, describe(sb, first));
+    assertRefused(sb,first);
     const settings = fs.readFileSync(path.join(claude, "settings.json"));
     const edited = fs.readFileSync(path.join(claude, "skills", "deliberation", "SKILL.md"));
     const unrelated = hashTree(path.join(sb.home, "unrelated"));
@@ -1280,13 +1164,12 @@ test("a re-run leaves pre-existing user data byte-identical", { skip: SKIP_SH, t
 
     const second = runInstaller(sb, { components: "devkit-core" });
     const d = describe(sb, second);
-    assert.equal(second.code, 0, `a re-run must stay idempotent\n${d}`);
+    assertRefused(sb,second);
     assert.deepEqual(fs.readFileSync(path.join(claude, "settings.json")), settings, `settings.json was rewritten\n${d}`);
     assert.deepEqual(fs.readFileSync(path.join(claude, "skills", "deliberation", "SKILL.md")), edited, `a hand-edited skill was overwritten without --force\n${d}`);
     assert.equal(hashTree(path.join(sb.home, "unrelated")), unrelated, `unrelated user data was touched\n${d}`);
     assert.equal(hashTree(path.join(claude, "skills")), skillsTree, `the skills tree changed on a no-op re-run\n${d}`);
-    assert.equal(journal(sb).attempts.length, 2, `both attempts are recorded\n${d}`);
-    assert.equal(journal(sb).attempts[0].outcome, "completed", `the first attempt is preserved\n${d}`);
+    assert.equal(fs.existsSync(sb.journal),false,"refused public runs create no attempts");
     assertNoRealActuator(sb, second);
   } finally { sb.cleanup(); }
 });
@@ -1297,7 +1180,7 @@ for (const row of [
   { id: "success", failInit: false },
   { id: "failure", failInit: true },
 ]) {
-  test(`the credential-bearing temp config is removed on the ${row.id} path`, { skip: SKIP_SH, timeout: RUN_TIMEOUT_MS }, () => {
+  test(`credential input on the former ${row.id} path refuses before any tempfile`, { skip: SKIP_SH, timeout: RUN_TIMEOUT_MS }, () => {
     const sb = mkSandbox(`cleanup-${row.id}`);
     try {
       if (row.failInit) failTool(sb, "dustcraw", 1);
@@ -1307,22 +1190,16 @@ for (const row of [
         env: { AIGENTRY_API_KEY: SYNTHETIC_KEY, AIGENTRY_API_URL: "http://127.0.0.1:9" },
       });
       const d = describe(sb, r);
-      assert.equal(r.code, 0, d);
-
-      // It really was created and handed to dustcraw init ...
+      assertRefused(sb,r);
       const init = calls(sb).filter((c) => c.tool === "dustcraw" && c.args[0] === "init");
-      assert.equal(init.length, 1, `dustcraw init must have run\n${d}`);
-      const cfgPath = init[0].args[init[0].args.indexOf("--config") + 1];
-      assert.ok(cfgPath && cfgPath.startsWith(sb.tmp), `the config must live in the private TMPDIR: ${cfgPath}\n${d}`);
-      // ... and it is gone afterwards, on both paths.
-      assert.equal(fs.existsSync(cfgPath), false, `the credential-bearing temp file survived\n${d}`);
+      assert.equal(init.length, 0, `dustcraw init must not run\n${d}`);
       assert.deepEqual(fs.readdirSync(sb.tmp).filter((n) => n.startsWith("dustcraw-config.")), [],
         `no dustcraw config may remain in TMPDIR\n${d}`);
       // No stale pointer to a deleted credential file is recorded either.
-      assert.equal(JSON.parse(fs.readFileSync(sb.stateFile, "utf8")).dustcraw.config_path, null, d);
+      assert.equal(fs.existsSync(sb.stateFile),false,d);
       // Run-owned artifacts are released.
       assert.ok(!fs.existsSync(sb.lock), `the lock must be released\n${d}`);
-      assert.deepEqual(fs.readdirSync(sb.stateDir).filter((n) => n.includes(".tmp-")), [], `no temp residue\n${d}`);
+      assert.equal(fs.existsSync(sb.stateDir),false,"no state or cleanup integration is claimed");
       assertNoRealActuator(sb, r);
     } finally { sb.cleanup(); }
   });

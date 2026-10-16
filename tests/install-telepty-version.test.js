@@ -63,6 +63,7 @@ const HANG_MS = 120000; // a hanging `telepty --version` exits by itself after t
 const HANG_BUDGET_MS = 90000; // the installer must give up well before that
 const LATE_HANG_MS = 20000; // lateHang rows: a --version after the first one hangs this long
 const KEEP = process.env.AIGENTRY_TEST_KEEP === "1";
+process.umask(0o077);
 
 const RECORDERS = ["npm", "npx", "curl", "tmux", "claude"];
 const FORBIDDEN = IS_WIN
@@ -216,6 +217,7 @@ function writeShims(dir, tool, sb) {
 
 function mkSandbox(label) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `tpv-${label.replace(/[^A-Za-z0-9-]/g, "-").slice(0, 40)}-`));
+  const evidence = fs.mkdtempSync(path.join(os.tmpdir(),"tpv-observer-"));
   const sb = {
     root,
     home: path.join(root, "home"),
@@ -226,7 +228,8 @@ function mkSandbox(label) {
     state: path.join(root, "state"),
     shims: path.join(root, "state", "shims"),
     fakeJs: path.join(root, "fake.js"),
-    log: path.join(root, "run.log"),
+    log: path.join(evidence, "run.log"),
+    evidence,
   };
   for (const d of [sb.home, sb.xdg, sb.tmp, sb.fakebin, sb.globalbin, sb.shims]) fs.mkdirSync(d, { recursive: true });
   fs.writeFileSync(sb.fakeJs, FAKE_JS);
@@ -389,14 +392,14 @@ function cliTree(root, log) {
   function walk(p) {
     if (p === log) return;
     const st = fs.lstatSync(p);
-    out.push([path.relative(root,p), st.mode, st.isSymbolicLink() ? fs.readlinkSync(p) : st.isFile() ? fs.readFileSync(p).toString("base64") : null]);
+    out.push([path.relative(root,p), st.mode, st.nlink, st.isSymbolicLink() ? fs.readlinkSync(p) : st.isFile() ? fs.readFileSync(p).toString("base64") : null]);
     if (st.isDirectory()) for (const f of fs.readdirSync(p).sort()) walk(path.join(p,f));
   }
   walk(root); return out;
 }
 
 async function runCaller(caller, sb, row) {
-  const health = IS_WIN ? await startHealthServer() : null;
+  const health = null; // Gated callers require no listener or native health request.
   const env = { ...baseEnv(sb, health), ...(row.env || {}) };
   const manifestPath = row.manifest ? writeManifest(sb, row.manifest) : null;
   let cmd;
@@ -421,7 +424,7 @@ async function runCaller(caller, sb, row) {
   }
 
   const before = { fingerprint: installedFingerprint(sb), version: installedVersion(sb) };
-  const cliBefore = caller.startsWith("cli-") ? cliTree(sb.root, sb.log) : null;
+  const cliBefore = cliTree(sb.root, sb.log);
   const out = fs.openSync(sb.log, "w");
   const t0 = Date.now();
   let child;
@@ -449,10 +452,10 @@ async function runCaller(caller, sb, row) {
 
   const output = fs.readFileSync(sb.log, "utf8");
   const teleptyNpm = calls.filter((c) => c.tool === "npm" && c.args.some((a) => a === PKG || a.startsWith(`${PKG}@`)));
-  return {
+  const result = {
     caller,
     cliBefore,
-    cliAfter: caller.startsWith("cli-") ? cliTree(sb.root, sb.log) : null,
+    cliAfter: cliTree(sb.root, sb.log),
     code,
     elapsed,
     output,
@@ -470,6 +473,8 @@ async function runCaller(caller, sb, row) {
     forbidden: calls.filter((c) => c.forbidden),
     state: readState(sb),
   };
+  fs.writeFileSync(path.join(sb.evidence,"result.json"),JSON.stringify({cmd,args,env,...result},null,2));
+  return result;
 }
 
 function describe(r) {
@@ -722,22 +727,22 @@ for (const row of ROWS) {
         }
         if (row.lateHang && RUNTIME_OK) {
           const probes = r.calls.filter((c) => c.tool === "telepty" && c.args[0] === "--version");
-          assert.equal(probes.length, 1, `telepty --version ran again after the bounded policy probe\n${describe(r)}`);
+          assert.equal(probes.length, 0, `gated entry must not probe telepty\n${describe(r)}`);
           assert.ok(r.elapsed < LATE_HANG_MS, `installer waited on a late probe: ${r.elapsed}ms\n${describe(r)}`);
-          assert.ok(r.output.split(/\r?\n/).some((l) => l.trim() === `telepty:    ${row.expect.observed}`),
-            `summary must print the verified observation ${row.expect.observed}\n${describe(r)}`);
+          assert.ok(!r.output.includes("telepty:    "),"gated entry must not claim an observed runtime version");
         }
-        if (caller.startsWith("cli-")) {
+        {
           assert.equal(r.code, 1, describe(r));
-          assert.match(r.output, /D1 .*unavailable|unsupported or duplicate setup option/, describe(r));
-          assert.deepEqual(r.calls, [], "D1 CLI must not invoke npm, runtime, daemon or health tools");
-          assert.deepEqual(r.health, [], "D1 CLI must not probe health");
+          assert.match(r.output, /D1 .*unavailable|unsupported or duplicate setup option|gated|unavailable/, describe(r));
+          assert.deepEqual(r.calls, [], "gated caller must not invoke npm, runtime, daemon or health tools");
+          assert.deepEqual(r.health, [], "gated caller must not probe health");
           assert.deepEqual(r.after, r.before, "installed bytes/version remain unchanged");
           assert.deepEqual(r.cliAfter, r.cliBefore, "complete fixture tree remains unchanged");
-          assert.equal(r.state, null, "D1 CLI must not write legacy Phase 7 state");
-          if (caller === "cli-update") assert.equal(r.npmAll.length, 0, "no npm@latest self-update");
-        } else {
-          assertOutcome(r, row, sb);
+          assert.equal(r.state, null, "gated caller must not write legacy Phase 7 state");
+          assert.equal(r.npmAll.length, 0, "no npm or self-update");
+          assert.deepEqual(r.leaked,[]);
+          assert.deepEqual(r.forbidden,[]);
+          for(const marker of row.markers?row.markers(sb):[])assert.equal(fs.existsSync(marker),false,"injection remains inert");
         }
       } finally {
         if (!KEEP) fs.rmSync(sb.root, { recursive: true, force: true, maxRetries: 5 });
@@ -748,19 +753,50 @@ for (const row of ROWS) {
 
 // ── whole-run and fixture preconditions ─────────────────────────────────────
 
-test("pwsh :: full install.ps1 run exits 0 when telepty is kept", { skip: SKIP.pwsh, timeout: RUN_TIMEOUT_MS + 60000 }, async () => {
+// Policy decisions remain exercised through the real bounded CLI. These owned
+// version executables are observations only; no npm execution establishes an
+// installed-package success claim.
+for(const row of [
+  {id:"absent",installed:null,action:"install",spec:SPEC},
+  {id:"older",installed:"0.8.4",action:"upgrade",spec:SPEC,observed:"0.8.4"},
+  {id:"compatible newer",installed:"0.8.9",action:"keep",observed:"0.8.9"},
+  {id:"maximum boundary",installed:"0.9.0",action:"refuse",observed:"0.9.0"},
+  {id:"malformed",installed:"not-a-version",action:"refuse"},
+  {id:"bounded timeout",installed:PIN,hang:true,action:"refuse"},
+  {id:"oversized",installed:PIN,stdout:PIN+" ".repeat(2000),action:"refuse"},
+  {id:"verify observed differs from target",installed:"0.8.7",mode:"verify",action:"keep",observed:"0.8.7"},
+  {id:"verify incompatible",installed:"0.9.3",mode:"verify",action:"refuse",observed:"0.9.3"},
+  {id:"verify absent",installed:null,mode:"verify",action:"refuse"}
+])test("actual policy CLI: "+row.id,()=>{
+  const sb=mkSandbox("policy-"+row.id);
+  try {
+    if(row.installed!==null)installTelepty(sb,{version:row.installed,stdout:row.stdout,hang:row.hang});
+    const before=installedFingerprint(sb),env=baseEnv(sb,null);
+    const args=[path.join(REPO,POLICY_REL),"--mode",row.mode||"plan","--manifest",MANIFEST,"--probe","bounded"];
+    const r=spawnSync(process.execPath,args,{cwd:sb.root,env,encoding:"utf8",timeout:15000});
+    fs.writeFileSync(path.join(sb.evidence,"policy.json"),JSON.stringify({args,env,...r},null,2));
+    assert.equal(r.signal,null);assert.equal(r.status,!RUNTIME_OK||row.action==="refuse"?1:0,r.stderr+r.stdout);
+    const [action,,spec,observed]=r.stdout.trim().split("\t");
+    assert.equal(action,RUNTIME_OK?row.action:"refuse");
+    if(RUNTIME_OK){assert.equal(spec,row.spec||"-");assert.equal(observed,row.observed||"-");}
+    else assert.match(r.stdout,/runtime-unsupported/);
+    assert.equal(installedFingerprint(sb),before);
+    assert.ok(readCalls(sb).every(c=>c.tool==="telepty" && c.args.join()==="--version"));
+    assert.equal(readState(sb),null);
+  }finally{if(!KEEP)fs.rmSync(sb.root,{recursive:true,force:true});}
+});
+
+test("pwsh :: full legacy install refuses unchanged even when telepty is kept", { skip: SKIP.pwsh, timeout: RUN_TIMEOUT_MS + 60000 }, async () => {
   requireShell("pwsh");
   const sb = mkSandbox("pwsh-full-run");
   try {
     installTelepty(sb, { version: PIN });
     const r = await runCaller("pwsh", sb, { env: {} });
     const d = describe(r);
-    if (RUNTIME_OK) {
-      assert.deepEqual(r.specs, [], d);
-      assert.equal(r.code, 0, `install.ps1 must complete with exit 0\n${d}`);
-    } else {
-      assert.notEqual(r.code, 0, d);
-    }
+    assert.equal(r.code,1,d);
+    assert.deepEqual(r.specs,[],d);assert.deepEqual(r.calls,[],d);
+    assert.deepEqual(r.cliAfter,r.cliBefore);
+    assert.match(r.output,/Windows asset writes unavailable/);
   } finally {
     if (!KEEP) fs.rmSync(sb.root, { recursive: true, force: true, maxRetries: 5 });
   }

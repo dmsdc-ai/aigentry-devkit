@@ -239,11 +239,34 @@ function run(caller, sb, opts = {}) {
   if (opts.resume !== undefined) env.AIGENTRY_INSTALL_RESUME = String(opts.resume);
   const cmd = caller === "sh" ? "/bin/bash" : caller === "pwsh" ? PWSH : WINPS;
   const args = caller === "sh" ? [INSTALL_SH] : ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", INSTALL_PS1];
+  const before = selectionTree(sb.root);
   const r = spawnSync(cmd, args, {
     cwd: sb.root, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: RUN_TIMEOUT_MS, windowsHide: true,
   });
   const out = `${r.stdout || ""}${r.stderr || ""}`;
-  return { code: r.status, signal: r.signal, out, plain: out.replace(/\x1b\[[0-9;]*m/g, "") };
+  const after = selectionTree(sb.root);
+  const evidence=fs.mkdtempSync(path.join(os.tmpdir(),"selection-observer-"));
+  fs.writeFileSync(path.join(evidence,"result.json"),JSON.stringify({cmd,args,env,before,after,...r},null,2));
+  return { code: r.status, signal: r.signal, out, before, after, plain: out.replace(/\x1b\[[0-9;]*m/g, "") };
+}
+
+function selectionTree(root) {
+  const entries=[];
+  function walk(file) {
+    const s=fs.lstatSync(file);
+    entries.push([path.relative(root,file),s.mode,s.nlink,s.isSymbolicLink()?fs.readlinkSync(file):s.isFile()?fs.readFileSync(file).toString("base64"):null]);
+    if(s.isDirectory())for(const name of fs.readdirSync(file).sort())walk(path.join(file,name));
+  }
+  walk(root);return entries;
+}
+function assertGated(sb,r) {
+  assert.equal(r.code,1,describe(sb,r));
+  assert.equal(r.signal,null);
+  assert.match(r.plain,/gated|unavailable/);
+  assert.deepEqual(calls(sb),[]);
+  assert.deepEqual(r.after,r.before,"complete fixture tree preserved");
+  assert.equal(recordedPhases(sb),null);
+  assert.equal(phase1Wrote(sb),false);
 }
 
 function describe(sb, r) {
@@ -318,20 +341,20 @@ for (const row of ROWS) {
       try {
         const r = run(caller, sb, { components: row.components, resume: 1 });
         const d = describe(sb, r);
-        assert.equal(r.code, 0, `the run must complete\n${d}`);
+        assertGated(sb,r);
 
         // An unselected component must execute nothing at all.
-        assert.equal(npmInstalls(sb, BRAIN_PKG).length, row.expect.brain, `brain npm -g calls\n${d}`);
-        assert.equal(npmInstalls(sb, DUSTCRAW_PKG).length, row.expect.dustcraw, `dustcraw npm -g calls\n${d}`);
+        assert.equal(npmInstalls(sb, BRAIN_PKG).length, 0, `brain npm -g calls\n${d}`);
+        assert.equal(npmInstalls(sb, DUSTCRAW_PKG).length, 0, `dustcraw npm -g calls\n${d}`);
         assert.equal(calls(sb).filter((c) => c.tool === "telepty" && c.args[0] === "daemon").length,
-          row.expect.daemon, `telepty daemon starts\n${d}`);
+          0, `telepty daemon starts\n${d}`);
         // The shipped #1213 decision is untouched: a telepty already at the pin
         // is kept, so no row may re-install it.
         assert.equal(npmInstalls(sb, TELEPTY_PKG).length, 0, `a kept telepty must never be re-installed\n${d}`);
-        assert.equal(calls(sb).filter((c) => c.tool === "npx").length, row.expect.npx, `deliberation npx calls\n${d}`);
-        assert.equal(phase1Wrote(sb), row.expect.phase1, `phase 1 writes into HOME\n${d}`);
+        assert.equal(calls(sb).filter((c) => c.tool === "npx").length, 0, `deliberation npx calls\n${d}`);
+        assert.equal(phase1Wrote(sb), false, `phase 1 writes into HOME\n${d}`);
         // The durable record agrees with what actually ran.
-        assert.deepEqual(recordedPhases(sb), row.expect.phases, `recorded phases\n${d}`);
+        assert.equal(recordedPhases(sb), null, `recorded phases\n${d}`);
         assertNoRealActuator(sb, r);
       } finally { sb.cleanup(); }
     });
@@ -360,7 +383,7 @@ for (const inj of INJECTIONS) {
       const d = describe(sb, r);
 
       assert.notEqual(r.code, 0, `an unknown resume target must refuse\n${d}`);
-      assert.ok(/Unknown resume target/.test(r.plain), `the refusal message is preserved\n${d}`);
+      assertGated(sb,r);
       // The whole point of F5: the refusal must be the ONLY thing that happened.
       assert.equal(fs.existsSync(marker), false, `the payload executed: ${marker}\n${d}`);
       assert.deepEqual(calls(sb), [], `nothing may run before the refusal\n${d}`);
@@ -370,7 +393,7 @@ for (const inj of INJECTIONS) {
   });
 }
 
-test("sh :: valid named and numeric resume targets still resolve to the manifest phase", { skip: SKIP.sh, timeout: RUN_TIMEOUT_MS }, () => {
+test("sh :: named and numeric public resumes refuse; real writer resolves names as data", { skip: SKIP.sh, timeout: RUN_TIMEOUT_MS }, () => {
   const manifest = JSON.parse(fs.readFileSync(MANIFEST, "utf8"));
   // Every named component in the shipped manifest, plus its numeric twin.
   for (const [name, def] of Object.entries(manifest.components)) {
@@ -379,10 +402,11 @@ test("sh :: valid named and numeric resume targets still resolve to the manifest
       for (const target of [name, String(def.phase)]) {
         const r = run("sh", sb, { components: "", resume: target });
         const d = describe(sb, r);
-        assert.equal(r.code, 0, `resume=${target} must be accepted\n${d}`);
-        assert.ok(r.plain.includes(`Resume target: ${target} (starting at phase ${def.phase})`),
-          `resume=${target} must resolve to phase ${def.phase}\n${d}`);
+        assertGated(sb,r);
       }
+      const parsed=spawnSync(process.execPath,[path.join(REPO,"lib/install-state.js"),"resume-phase","--manifest",MANIFEST,"--component",name],{env:baseEnv(sb),encoding:"utf8",timeout:10000});
+      assert.equal(parsed.status,0,parsed.stderr);
+      assert.equal(parsed.stdout,String(def.phase));
     } finally { sb.cleanup(); }
   }
 });
@@ -393,7 +417,7 @@ test("sh :: an unknown-but-harmless resume target is still refused the same way"
     const r = run("sh", sb, { components: "devkit-core", resume: "no-such-component" });
     const d = describe(sb, r);
     assert.notEqual(r.code, 0, d);
-    assert.ok(/Unknown resume target: no-such-component/.test(r.plain), d);
+    assertGated(sb,r);
   } finally { sb.cleanup(); }
 });
 

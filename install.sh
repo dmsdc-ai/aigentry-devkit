@@ -1,4 +1,48 @@
 #!/bin/bash
+# D2 front gate: builtins only, before every historical installer operation.
+# Shell startup controlled by the caller is outside this entry boundary.
+setup_profile=0 setup_runtime=0 setup_mode=0 setup_value=''
+for setup_arg in "$@"; do
+  if [[ -n "$setup_value" ]]; then
+    [[ -n "$setup_arg" && "$setup_arg" != -* ]] || { printf '%s\n' 'setup: invalid option value' >&2; exit 1; }
+    setup_value=''
+    continue
+  fi
+  case "$setup_arg" in
+    --help) printf '%s\n' 'setup: explicit --profile ID --runtime defer and --install-assets skills|hud|skills,hud or --configure-only required; use --dry-run to preview'; exit 0 ;;
+    --profile) setup_profile=1; setup_value=1 ;;
+    --runtime) setup_runtime=1; setup_value=1 ;;
+    --install-assets) setup_mode=1; setup_value=1 ;;
+    --configure-only) setup_mode=1 ;;
+    --accept-plan) setup_value=1 ;;
+    --non-interactive|--dry-run|--revisit) ;;
+    *) printf '%s\n' 'setup: unsupported option; legacy installation is gated' >&2; exit 1 ;;
+  esac
+done
+if [[ -n "$setup_value" || "$setup_profile$setup_runtime$setup_mode" != 111 ]]; then
+  printf '%s\n' 'setup: installation gated; explicit choices and current plan consent required' >&2
+  exit 1
+fi
+unset NODE_OPTIONS NODE_PATH BASH_ENV ENV CDPATH LD_PRELOAD LD_LIBRARY_PATH DYLD_INSERT_LIBRARIES DYLD_LIBRARY_PATH
+setup_node=''
+setup_search=${PATH-}
+while [[ -n "$setup_search" ]]; do
+  setup_dir=${setup_search%%:*}
+  case "$setup_dir" in
+    /*) if [[ -f "$setup_dir/node" && -x "$setup_dir/node" ]]; then setup_node="$setup_dir/node"; break; fi ;;
+  esac
+  [[ "$setup_search" == *:* ]] || break
+  setup_search=${setup_search#*:}
+done
+[[ -n "$setup_node" ]] || { printf '%s\n' 'setup: trusted Node interpreter unavailable' >&2; exit 1; }
+case "${BASH_SOURCE[0]}" in
+  */*) builtin cd -P -- "${BASH_SOURCE[0]%/*}" || exit 1 ;;
+esac
+# Interpreter replacement preserves the shell PID. Native descendant coverage
+# is a separate acceptance row; no subprocess is described as read-only.
+exec "$setup_node" "$PWD/lib/setup-executor.js" "$@"
+exit 1
+
 set -euo pipefail
 
 #
