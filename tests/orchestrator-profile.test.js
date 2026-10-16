@@ -11,7 +11,8 @@ const assert = require("node:assert/strict");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { execFileSync } = require("child_process");
+const { execFileSync, spawnSync } = require("child_process");
+process.umask(0o077);
 
 const REPO = path.resolve(__dirname, "..");
 const FIXTURE = path.join(REPO, "tests", "fixtures", "fake-orchestrator");
@@ -30,15 +31,17 @@ function mkSandbox() {
     projects,
     aigentryHome: path.join(home, ".aigentry"),
     xdgConfig: path.join(home, ".config"),
-    cleanup: () => fs.rmSync(tmp, { recursive: true, force: true }),
+    cleanup: () => { if(process.env.AIGENTRY_TEST_KEEP!=="1")fs.rmSync(tmp, { recursive: true, force: true }); },
   };
 }
 
 // Spawn a child `node -e` so module-level HOME in bootstrap.js binds to the
 // sandbox (mirrors how install.sh invokes the writers).
 function runBootstrapCall(code, env) {
+  const evidence=fs.mkdtempSync(path.join(os.tmpdir(),"orch-observer-"));
+  fs.writeFileSync(path.join(evidence,"bootstrap.cjs"),code);
   return execFileSync(process.execPath, ["-e", code], {
-    env: { ...process.env, ...env },
+    env: { ...process.env, ...env, AIGENTRY_LOGGER_DISABLED:"1", PATH:"" },
     encoding: "utf-8",
   });
 }
@@ -52,7 +55,8 @@ function seedFixtureClone(destDir) {
     fs.chmodSync(path.join(destDir, "bin", f), 0o755);
   }
   fs.chmodSync(path.join(destDir, ".claude", "hooks", "post-dispatch-verify-reminder.sh"), 0o755);
-  execFileSync("git", ["init", "-q"], { cwd: destDir });
+  // Synthetic existing-clone metadata: no Git executable is invoked.
+  fs.mkdirSync(path.join(destDir,".git"));
 }
 
 // ── §12.3 config.json generation + portability ──────────────────────────────
@@ -208,9 +212,15 @@ test("daemon templates substitute fully — no placeholder remains, KeepAlive ke
 // ── §12.1/§12.5/§12.7 full phase-8 hermetic run + idempotency ────────────────
 
 function runPhase8(sb, orchDir, extraEnv = {}) {
-  return execFileSync("bash", [INSTALL_SH], {
-    env: {
-      ...process.env,
+  const inventory=(dir)=>fs.readdirSync(dir).sort().flatMap(name=>{
+    const file=path.join(dir,name),s=fs.lstatSync(file);
+    return [{file,mode:s.mode,nlink:s.nlink,bytes:s.isFile()?fs.readFileSync(file).toString("base64"):s.isSymbolicLink()?fs.readlinkSync(file):null},...(s.isDirectory()?inventory(file):[])];
+  });
+  const before=inventory(sb.tmp);
+  const env={
+      PATH:"",
+      TMPDIR:sb.tmp,TMP:sb.tmp,TEMP:sb.tmp,
+      AIGENTRY_LOGGER_DISABLED:"1",
       HOME: sb.home,
       AIGENTRY_HOME: sb.aigentryHome,
       XDG_CONFIG_HOME: sb.xdgConfig,
@@ -222,79 +232,25 @@ function runPhase8(sb, orchDir, extraEnv = {}) {
       AIGENTRY_INSTALL_COMPONENTS: "orchestrator-role",
       AIGENTRY_INSTALL_RESUME: "orchestrator-role",
       ...extraEnv,
-    },
-    encoding: "utf-8",
-    stdio: "pipe",
-  });
+    };
+  const r=spawnSync("/bin/bash",[INSTALL_SH],{env,encoding:"utf8",timeout:10000});
+  const after=inventory(sb.tmp),evidence=fs.mkdtempSync(path.join(os.tmpdir(),"orch-observer-"));
+  fs.writeFileSync(path.join(evidence,"shell.json"),JSON.stringify({env,before,after,...r},null,2));
+  assert.equal(r.status,1,r.stderr);assert.equal(r.signal,null);
+  assert.match(r.stderr,/gated|unavailable/);assert.deepEqual(after,before);
+  return r;
 }
 
-test("phase-8 hermetic install generates all artifacts and is idempotent", () => {
-  const sb = mkSandbox();
+test("legacy phase-8 input refuses and preserves the complete fixture clone", () => {
+  const sb=mkSandbox();
   try {
-    const orchDir = path.join(sb.projects, "aigentry-orchestrator");
+    const orchDir=path.join(sb.projects,"aigentry-orchestrator");
     seedFixtureClone(orchDir);
-
-    // First run — must complete (exit 0) without touching the real home.
-    runPhase8(sb, orchDir);
-
-    // Instruction tree (load-bearing file).
-    assert.ok(
-      fs.existsSync(path.join(sb.aigentryHome, "instructions", "roles", "orchestrator.md")),
-      "instruction tree written"
-    );
-
-    // dispatch.sh PATH-linked into the sandbox bin dir.
-    const dispatchLink = path.join(sb.home, ".local", "bin", "dispatch.sh");
-    assert.ok(fs.existsSync(dispatchLink), "dispatch.sh linked onto PATH");
-
-    // §8.5 re-point: orchestrator self-symlink → THIS devkit bin/, target exists.
-    const repointed = path.join(orchDir, "bin", "open-session.sh");
-    assert.ok(fs.lstatSync(repointed).isSymbolicLink(), "open-session.sh is a symlink");
-    const repTarget = fs.readlinkSync(repointed);
-    assert.equal(repTarget, path.join(REPO, "bin", "open-session.sh"));
-    assert.ok(fs.existsSync(repTarget), "re-point target exists (not dangling)");
-
-    // config.json generated, parameterized at sandbox.
-    const cfg = JSON.parse(fs.readFileSync(path.join(sb.aigentryHome, "config.json"), "utf-8"));
-    assert.ok(cfg.roles.orchestrator.path.startsWith(sb.projects));
-    assert.ok(cfg.deviceId.startsWith("device-"));
-
-    // hooks merged; PostToolUse absolute AND the target file exists post-clone.
-    const settings = JSON.parse(fs.readFileSync(path.join(sb.home, ".claude", "settings.json"), "utf-8"));
-    const postCmd = settings.hooks.PostToolUse[0].hooks[0].command;
-    assert.ok(!postCmd.includes("$CLAUDE_PROJECT_DIR"));
-    const hookFile = path.join(orchDir, ".claude", "hooks", "post-dispatch-verify-reminder.sh");
-    assert.ok(postCmd.includes(hookFile), "PostToolUse points at clone hook");
-    assert.ok(fs.existsSync(hookFile), "rewritten hook target exists post-clone");
-
-    // Daemon unit GENERATED (not loaded) — platform-specific.
-    if (process.platform === "darwin") {
-      const plist = fs.readFileSync(path.join(sb.home, "Library", "LaunchAgents", "com.aigentry.reconciler.plist"), "utf-8");
-      assert.ok(!/@[A-Z_]+@/.test(plist), "no placeholder left in generated plist");
-      assert.ok(plist.includes(orchDir), "plist points at sandbox ORCH_DIR");
-      assert.ok(plist.includes("<key>KeepAlive</key>"));
-    } else if (process.platform === "linux") {
-      const svcPath = path.join(sb.xdgConfig, "systemd", "user", "aigentry-reconciler.service");
-      if (fs.existsSync(svcPath)) {
-        const svc = fs.readFileSync(svcPath, "utf-8");
-        assert.ok(!/@[A-Z_]+@/.test(svc));
-        assert.ok(svc.includes(orchDir));
-      }
-    }
-
-    // installer-state records the outcome.
-    const state = JSON.parse(fs.readFileSync(path.join(sb.xdgConfig, "aigentry-devkit", "install-state.json"), "utf-8"));
-    assert.equal(state.orchestrator.status, "installed");
-    assert.equal(state.orchestrator.repo_dir, orchDir);
-
-    // Second run — idempotent: still exit 0, no duplicate hooks.
-    runPhase8(sb, orchDir);
-    const settings2 = JSON.parse(fs.readFileSync(path.join(sb.home, ".claude", "settings.json"), "utf-8"));
-    assert.equal(settings2.hooks.PostToolUse.length, 1);
-    assert.equal(settings2.hooks.PreToolUse.filter((e) => e.matcher === "Agent").length, 1);
-  } finally {
-    sb.cleanup();
-  }
+    runPhase8(sb,orchDir);
+    runPhase8(sb,orchDir);
+    assert.equal(fs.existsSync(sb.aigentryHome),false);
+    assert.equal(fs.existsSync(path.join(sb.home,".claude")),false);
+  } finally {sb.cleanup();}
 });
 
 // ── §12.7 doctor auto-detect gating ─────────────────────────────────────────
@@ -304,6 +260,8 @@ function runDoctor(sb, env = {}) {
     return execFileSync(process.execPath, [path.join(REPO, "bin", "aigentry-devkit.js"), "doctor"], {
       env: {
         ...process.env,
+        PATH:"",
+        AIGENTRY_LOGGER_DISABLED:"1",
         HOME: sb.home,
         AIGENTRY_HOME: sb.aigentryHome,
         XDG_CONFIG_HOME: sb.xdgConfig,
@@ -344,7 +302,7 @@ test("doctor shows the orchestrator section only when the profile is detected", 
 
 // ── §12.6 soft-degrade — clone failure must not fail the installer ───────────
 
-test("phase-8 soft-degrades when the clone target is absent and repo unreachable", () => {
+test("legacy missing-clone input refuses before clone or state changes", () => {
   const sb = mkSandbox();
   try {
     const orchDir = path.join(sb.projects, "aigentry-orchestrator-missing");
@@ -355,10 +313,8 @@ test("phase-8 soft-degrades when the clone target is absent and repo unreachable
     } catch (e) {
       exitOk = false;
     }
-    assert.ok(exitOk, "installer still exits 0 on clone failure (soft policy)");
-
-    const state = JSON.parse(fs.readFileSync(path.join(sb.xdgConfig, "aigentry-devkit", "install-state.json"), "utf-8"));
-    assert.ok(["degraded", "skipped"].includes(state.orchestrator.status), `degraded/skipped, got ${state.orchestrator.status}`);
+    assert.ok(exitOk, "refusal assertions pass without a clone");
+    assert.equal(fs.existsSync(path.join(sb.xdgConfig,"aigentry-devkit")),false);
   } finally {
     sb.cleanup();
   }

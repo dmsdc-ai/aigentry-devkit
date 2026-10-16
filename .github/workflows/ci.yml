@@ -29,3 +29,10 @@ jobs:
 
       - name: Validate CLI
         run: node bin/aigentry-devkit.js --help
+
+      # Telepty install-version policy (#1213): pure decide() rows, then the real
+      # callers (install.sh on POSIX, install.ps1 via pwsh + powershell.exe on
+      # Windows, aigentry-devkit setup/update) with inert fake npm/telepty/curl.
+      # On Node 18 the caller rows assert the telepty engine refusal.
+      - name: Telepty version policy tests
+        run: node --test tests/telepty-version-policy.test.js tests/install-telepty-version.test.js tests/init-containment-1147.test.js
