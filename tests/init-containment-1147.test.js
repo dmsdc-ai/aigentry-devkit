@@ -135,3 +135,107 @@ runCase("init preserves existing regular file",f=>{parents(f);fs.writeFileSync(f
  assert.equal(result.status,0);assert.deepEqual(after,before);
  assert.match(fs.readFileSync(path.join(f.observer,"stdout"),"utf8"),/Config already exists, skipping:/);
 });
+
+
+// Native diagnostic only: retain both observations before asserting either.
+// The existing nine cases above remain the acceptance assertions.
+if(process.platform==="darwin")test("native diagnostic: ordinary versus owned ancestor alias",()=>{
+ const evidence=fs.mkdtempSync(path.join(os.tmpdir(),"init1147-native-"));
+ const observations=[];
+ const write=(name,value)=>fs.writeFileSync(path.join(evidence,name),JSON.stringify(value,null,2),{flag:"wx",mode:0o600});
+ try{
+  for(const kind of ["ordinary","alias"]){
+   const record={kind,availability:"unavailable"};
+   observations.push(record);
+   let f;
+   try{
+    f=fixture();
+    record.fixtureRoot=f.root;
+    const physical=path.join(fs.realpathSync(f.root),"physical");
+    fs.mkdirSync(physical,{mode:0o700});
+    fs.renameSync(f.tree,path.join(physical,"tree"));
+    fs.renameSync(f.observer,path.join(physical,"observers"));
+    const alias=path.join(path.dirname(physical),"alias");
+    if(kind==="alias")fs.symlinkSync(physical,alias,"dir");
+    const base=kind==="alias"?alias:physical;
+    f.tree=path.join(base,"tree");f.observer=path.join(base,"observers");
+    f.home=path.join(f.tree,"home");f.dest=path.join(f.home,".config/aigentry/aigentry.yml");
+    parents(f);
+    const target=path.join(f.tree,"outside/sentinel");
+    record.root=f.root;record.tree=f.tree;record.observer=f.observer;
+    record.target=target;
+    record.paths={
+     guard:path.join(f.observer,"guard.cjs"),
+     canonicalGuard:fs.realpathSync(path.join(f.observer,"guard.cjs")),
+     destination:f.dest,
+     canonicalDestinationParent:fs.realpathSync(path.dirname(f.dest)),
+     canonicalTarget:fs.realpathSync(target)
+    };
+    // Instrument only the diagnostic copy of the preloader, without changing
+    // its destination comparison, symlink operand, module guard or copy flags.
+    const diagnosticGuard=GUARD.replace(
+     'if(fs.existsSync(path.join(__dirname,"race"))){',
+     'fs.writeFileSync(path.join(__dirname,"loaded.json"),JSON.stringify({dirname:__dirname,dest,canonicalParent:fs.realpathSync(path.dirname(dest))}),{flag:"wx"});\nif(fs.existsSync(path.join(__dirname,"race"))){'
+    ).replace(
+     'fs.copyFileSync=function(src,dst,flags){',
+     'fs.copyFileSync=function(src,dst,flags){\n  fs.writeFileSync(path.join(__dirname,"copy-entry.json"),JSON.stringify({src,dst,flags,dest,matched:dst===dest}),{flag:"wx"});'
+    );
+    fs.writeFileSync(path.join(f.observer,"guard.cjs"),diagnosticGuard);
+    fs.writeFileSync(path.join(f.observer,"race"),"enabled",{flag:"wx"});
+    record.before=snapshot(f.tree);
+    record.expected=structuredClone(record.before);
+    addExpected(f,record.expected,"home/.config/aigentry/aigentry.yml",{...f.metadata.symlink,value:target},false,true);
+    record.env={HOME:f.home,USERPROFILE:f.home,XDG_CONFIG_HOME:path.join(f.home,".config"),TMPDIR:path.join(f.tree,"tmp"),TMP:path.join(f.tree,"tmp"),TEMP:path.join(f.tree,"tmp"),PATH:"",AIGENTRY_LOGGER_DISABLED:"1"};
+    record.argv=[process.execPath,"--require",record.paths.guard,path.join(f.tree,"package/bin/aigentry-devkit.js"),"init"];
+    record.cwd=f.tree;
+    const out=fs.openSync(path.join(evidence,kind+".stdout"),"wx",0o600);
+    let err;
+    try{
+     err=fs.openSync(path.join(evidence,kind+".stderr"),"wx",0o600);
+     const result=spawnSync(record.argv[0],record.argv.slice(1),{cwd:record.cwd,env:record.env,stdio:["ignore",out,err],timeout:10000});
+     record.result={status:result.status,signal:result.signal,error:result.error?{code:result.error.code,message:result.error.message}:null};
+     record.availability=result.error?"unavailable":"observed";
+    }finally{fs.closeSync(out);if(err!==undefined)fs.closeSync(err);}
+   }catch(error){record.error={code:error.code||null,message:error.message};}
+   finally{
+    try{
+     if(f){
+      record.after=snapshot(f.tree);
+      record.guard={};
+      for(const name of ["loaded.json","copy-entry.json","race.json","effects.jsonl"]){
+       const p=path.join(f.observer,name);
+       record.guard[name]=fs.existsSync(p)?fs.readFileSync(p,"utf8"):null;
+      }
+     }
+     for(const stream of ["stdout","stderr"]){
+      const p=path.join(evidence,kind+"."+stream);
+      record[stream]=fs.existsSync(p)?fs.readFileSync(p,"utf8"):null;
+     }
+    }catch(error){record.observationError={code:error.code||null,message:error.message};}
+    finally{write(kind+".json",record);}
+   }
+  }
+  const failures=[];
+  for(const r of observations){
+   try{
+    assert.equal(r.availability,"observed","native fixture/copy capability unavailable");
+    assert.equal(r.error,undefined);assert.equal(r.observationError,undefined);
+    assert.equal(r.result.error,null);assert.equal(r.result.signal,null);
+    assert.equal(r.guard["effects.jsonl"],null);
+    assert.ok(r.guard["loaded.json"],"preloader must load");
+    assert.ok(r.guard["copy-entry.json"],"real copy wrapper must be reached");
+    assert.deepEqual(r.after["outside/sentinel"],r.before["outside/sentinel"]);
+    assert.ok(r.guard["race.json"],"real copy call must reach deterministic replacement");
+    assert.equal(JSON.parse(r.guard["race.json"]).target,r.target,"exact independently defined link target");
+    assert.deepEqual(r.after,r.expected,"only deliberate racing entry may change");
+    assert.equal(r.result.status,1);assert.match(r.stderr,/EEXIST/);
+   }catch(error){failures.push({kind:r.kind,message:error.message});}
+  }
+  write("assertions.json",failures);
+  assert.deepEqual(failures,[]);
+ }finally{
+  const summary={diagnostic:"init1147-native",evidence,cases:observations.map(r=>({kind:r.kind,availability:r.availability,root:r.root||null,copyReached:!!(r.guard&&r.guard["copy-entry.json"]),marker:!!(r.guard&&r.guard["race.json"]),status:r.result?r.result.status:null}))};
+  write("summary.json",summary);
+  console.log("AIGENTRY_NATIVE_DIAGNOSTIC "+JSON.stringify(summary));
+ }
+});

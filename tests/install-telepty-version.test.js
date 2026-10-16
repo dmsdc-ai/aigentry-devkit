@@ -917,3 +917,97 @@ test("fixture security :: symlink and hardlink sinks refuse before writes", () =
     } finally { if (!KEEP) fs.rmSync(sb.root, { recursive: true, force: true }); }
   }
 });
+
+
+// Native Windows-only diagnostics; missing shells fail these rows, without
+// changing the existing policy matrix's platform skips or preservation checks.
+if(IS_WIN)for(const caller of ["pwsh","ps51"])test("native diagnostic: "+caller+" host versus gated installer",()=>{
+ const evidence=fs.mkdtempSync(path.join(os.tmpdir(),"tpv-native-"+caller+"-"));
+ const observations=[];
+ const write=(name,value)=>fs.writeFileSync(path.join(evidence,name),JSON.stringify(value,null,2),{flag:"wx",mode:0o600});
+ try{
+  for(const stage of ["host","installer"]){
+   const record={caller,stage,availability:"unavailable"};
+   observations.push(record);
+   let sb;
+   try{
+    requireShell(caller);
+    sb=mkSandbox("native-"+caller+"-"+stage);
+    record.root=sb.root;record.fixtureEvidence=sb.evidence;
+    fs.mkdirSync(path.join(sb.root,"outside"));
+    fs.writeFileSync(path.join(sb.root,"outside","sentinel"),"native diagnostic sentinel",{flag:"wx"});
+    const inert=path.join(sb.evidence,"host-only.ps1");
+    fs.writeFileSync(inert,"param([switch]$Force)\nexit 1\n",{flag:"wx"});
+    const script=stage==="host"?inert:INSTALL_PS1;
+    record.script={path:script,sha256:crypto.createHash("sha256").update(fs.readFileSync(script)).digest("hex")};
+    record.env={...baseEnv(sb,null),AIGENTRY_INSTALL_COMPONENTS:"telepty",AIGENTRY_INSTALL_RESUME:"2"};
+    record.argv=[caller==="pwsh"?PWSH:WINPS,"-NoProfile","-ExecutionPolicy","Bypass","-File",script];
+    record.cwd=sb.root;
+    record.before=cliTree(sb.root,sb.log);
+    record.installedBefore={fingerprint:installedFingerprint(sb),version:installedVersion(sb)};
+    // Independent negative and positive snapshot controls, all before the caller.
+    assert.deepEqual(cliTree(sb.root,sb.log),record.before);
+    const probe=path.join(sb.root,"snapshot-probe");
+    fs.writeFileSync(probe,"fabricated mutation",{flag:"wx"});
+    try{assert.notDeepEqual(cliTree(sb.root,sb.log),record.before);}
+    finally{fs.unlinkSync(probe);}
+    assert.deepEqual(cliTree(sb.root,sb.log),record.before);
+    const out=fs.openSync(path.join(evidence,stage+".stdout"),"wx",0o600);
+    let err;
+    try{
+     err=fs.openSync(path.join(evidence,stage+".stderr"),"wx",0o600);
+     const result=spawnSync(record.argv[0],record.argv.slice(1),{cwd:record.cwd,env:record.env,stdio:["ignore",out,err],windowsHide:true,timeout:RUN_TIMEOUT_MS});
+     record.result={status:result.status,signal:result.signal,error:result.error?{code:result.error.code,message:result.error.message}:null};
+     record.availability=result.error?"unavailable":"observed";
+    }finally{fs.closeSync(out);if(err!==undefined)fs.closeSync(err);}
+   }catch(error){record.error={code:error.code||null,message:error.message};}
+   finally{
+    try{
+     if(sb){
+      record.after=cliTree(sb.root,sb.log);
+      record.installedAfter={fingerprint:installedFingerprint(sb),version:installedVersion(sb)};
+      record.calls=readCalls(sb);record.state=readState(sb);
+      const before=new Map((record.before||[]).map(row=>[row[0],row]));
+      const after=new Map(record.after.map(row=>[row[0],row]));
+      record.delta=[...new Set([...before.keys(),...after.keys()])].sort().filter(p=>JSON.stringify(before.get(p))!==JSON.stringify(after.get(p))).map(p=>({path:p,before:before.get(p)||null,after:after.get(p)||null}));
+     }
+     for(const stream of ["stdout","stderr"]){
+      const p=path.join(evidence,stage+"."+stream);
+      record[stream]=fs.existsSync(p)?fs.readFileSync(p,"utf8"):null;
+     }
+    }catch(error){record.observationError={code:error.code||null,message:error.message};}
+    finally{write(stage+".json",record);}
+   }
+  }
+  // Compare exact changed fields only: no AppData filtering or learned baseline.
+  const [host,installer]=observations;
+  const hostDelta=new Map((host.delta||[]).map(row=>[row.path,row]));
+  write("comparison.json",{
+   scope:"Only this native shell and fabricated environment; matches support attribution, unmatched fields remain unresolved.",
+   exactMatches:(installer.delta||[]).filter(row=>JSON.stringify(row)===JSON.stringify(hostDelta.get(row.path))),
+   unmatchedInstaller:(installer.delta||[]).filter(row=>JSON.stringify(row)!==JSON.stringify(hostDelta.get(row.path))),
+   unmatchedHost:(host.delta||[]).filter(row=>!(installer.delta||[]).some(other=>JSON.stringify(row)===JSON.stringify(other)))
+  });
+  const failures=[];
+  for(const r of observations){
+   try{
+    assert.equal(r.availability,"observed","native shell capability unavailable");
+    assert.equal(r.error,undefined);assert.equal(r.observationError,undefined);
+    assert.equal(r.result.error,null);assert.equal(r.result.signal,null);assert.equal(r.result.status,1);
+    assert.deepEqual(r.calls,[],"host/gated caller must not invoke fake tools");
+    assert.equal(r.state,null);
+    assert.deepEqual(r.installedAfter,r.installedBefore);
+    const sentinel=path.join("outside","sentinel");
+    assert.deepEqual(r.after.find(row=>row[0]===sentinel),r.before.find(row=>row[0]===sentinel));
+    if(r.stage==="installer")assert.match(r.stderr,/Windows asset writes unavailable/);
+    assert.deepEqual(r.after,r.before,"complete fixture tree remains unchanged");
+   }catch(error){failures.push({stage:r.stage,message:error.message});}
+  }
+  write("assertions.json",failures);
+  assert.deepEqual(failures,[]);
+ }finally{
+  const summary={diagnostic:"tpv-native",caller,evidence,cases:observations.map(r=>({stage:r.stage,availability:r.availability,root:r.root||null,status:r.result?r.result.status:null,changedPathCount:(r.delta||[]).length,changedPaths:(r.delta||[]).slice(0,32).map(row=>row.path)}))};
+  write("summary.json",summary);
+  console.log("AIGENTRY_NATIVE_DIAGNOSTIC "+JSON.stringify(summary));
+ }
+});
