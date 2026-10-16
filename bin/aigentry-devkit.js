@@ -823,17 +823,37 @@ function runInit() {
   const templateSrc = path.join(rootDir, "config", "aigentry.yml.template");
   const configDest = path.join(configDir, "aigentry.yml");
 
-  if (!fs.existsSync(configDir)) {
-    fs.mkdirSync(configDir, { recursive: true });
-    process.stdout.write(`Created directory: ${configDir}\n`);
-  } else {
-    process.stdout.write(`Directory already exists: ${configDir}\n`);
+  // Inspect only HOME and the fixed destination chain. These checks do not
+  // prevent a malicious same-UID process from replacing ancestors afterward.
+  for (const dir of [HOME || ".", path.join(HOME, ".config"), configDir]) {
+    let stat;
+    try { stat = fs.lstatSync(dir); }
+    catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    if (stat && (!stat.isDirectory() || stat.isSymbolicLink())) {
+      throw new Error(`init refuses unsafe directory: ${dir}`);
+    }
+    if (!stat) {
+      fs.mkdirSync(dir);
+      if (dir === configDir) process.stdout.write(`Created directory: ${configDir}\n`);
+    } else if (dir === configDir) {
+      process.stdout.write(`Directory already exists: ${configDir}\n`);
+    }
   }
 
-  if (fs.existsSync(configDest)) {
+  let destination;
+  try { destination = fs.lstatSync(configDest); }
+  catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  if (destination && (!destination.isFile() || destination.isSymbolicLink())) {
+    throw new Error(`init refuses unsafe destination: ${configDest}`);
+  }
+  if (destination) {
     process.stdout.write(`Config already exists, skipping: ${configDest}\n`);
   } else if (fs.existsSync(templateSrc)) {
-    fs.copyFileSync(templateSrc, configDest);
+    fs.copyFileSync(templateSrc, configDest, fs.constants.COPYFILE_EXCL);
     process.stdout.write(`Created config: ${configDest}\n`);
   } else {
     process.stderr.write(`Template not found: ${templateSrc}\n`);
