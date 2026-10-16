@@ -68,7 +68,9 @@ const FAKE_JS = String.raw`"use strict";
 // is concatenated from a caller-supplied value. The tool name is still
 // caller-supplied, so it is checked against the closed vocabulary the fixture
 // itself wrote into the private state, and anything else is refused inert with
-// exit 98 before a single byte is read or written.
+// exit 98 before anything caller-named is read and before any write. (The two
+// fixed, fixture-written files tools.json and forbidden.json are read first —
+// that is where the vocabulary and the tripwire list come from.)
 //
 // Never performs a real action: it records the call and returns a modelled exit
 // code. A tool listed in forbidden.json records the breach and exits 97.
@@ -655,12 +657,15 @@ test("a crash between write and rename leaves the previous record intact", { ski
     const temps = fs.readdirSync(sb.stateDir).filter((n) => n.startsWith("install-journal.json.tmp-"));
     assert.equal(temps.length, 1, `the unfinished temp file is the only residue: ${JSON.stringify(temps)}\n${d}`);
 
-    // The next run sweeps its own residue and proceeds (the lock the crashed run
-    // could not release is the documented explicit-unlock path).
-    const next = runInstaller(sb, { components: "devkit-core", env: { AIGENTRY_INSTALL_FORCE_UNLOCK: "1" } });
-    assert.equal(next.code, 0, describe(sb, next));
+    // The crashed run released the lock it owned (review RW2: process.exit runs
+    // no catch or finally, but it does run the exit hook), so the next ORDINARY
+    // run needs no override — it just proceeds and sweeps its own residue.
+    assert.equal(fs.existsSync(sb.lock), false, `the deliberate-exit path must release its own lock\n${d}`);
+    const next = runInstaller(sb, { components: "devkit-core" });
+    assert.equal(next.code, 0, `an ordinary re-run must not need a force-unlock\n${describe(sb, next)}`);
     assert.deepEqual(fs.readdirSync(sb.stateDir).filter((n) => n.includes(".tmp-")), [], `temp residue must be swept`);
-    assert.equal(lastAttempt(sb).lock_forced, true, `forcing the lock must be recorded`);
+    assert.equal(lastAttempt(sb).lock_forced, undefined, `no force was needed, so none may be recorded`);
+    // Forcing is still recorded when it IS used — see the concurrent-writer row.
   } finally { sb.cleanup(); }
 });
 
@@ -718,6 +723,194 @@ test("the writer's transaction boundaries behave as declared", () => {
     assert.equal(j.schema, "aigentry-devkit/install-journal@1");
     assert.equal(j.attempts.length, 1);
     assert.equal(modeOf(sb.journal), "600");
+  } finally { sb.cleanup(); }
+});
+
+// ── 5b. the shared fold is exported and exposed (review RW1) ───────────────
+//
+// #1145's CLI reader has to answer "what is still unresolved?". If the fold lives
+// only inside begin-run, that reader must re-derive it and will reproduce the
+// exact phase-3 defect one layer up. So the fold is ONE exported pure function
+// and `read` exposes its result as an additive field.
+
+test("unresolvedPhases is exported, pure, and folds chronologically", () => {
+  const lib = require(JOURNAL_CLI);
+  assert.equal(typeof lib.unresolvedPhases, "function", "the fold must be exported for the reader");
+
+  const j = (phases) => ({ schema: "aigentry-devkit/install-journal@1", attempts: phases.map((ps, i) => ({ attempt: i + 1, phases: ps })) });
+  const rec = (phase, status) => ({ phase, status });
+
+  // chronological folding, exactly as begin-run does it
+  assert.deepEqual(lib.unresolvedPhases(j([[rec(3, "unknown")]])), [3], "an unknown is unresolved");
+  assert.deepEqual(lib.unresolvedPhases(j([[rec(3, "unknown")], [rec(3, "completed")]])), [],
+    "a later completed supersedes an earlier unknown");
+  assert.deepEqual(lib.unresolvedPhases(j([[rec(3, "unknown")], [rec(3, "failed")]])), [3],
+    "a failed replay does not clear the unknown");
+  assert.deepEqual(lib.unresolvedPhases(j([[rec(3, "unknown")], [rec(3, "completed")], [rec(3, "unknown")]])), [3],
+    "a fresh unknown re-blocks");
+  assert.deepEqual(lib.unresolvedPhases(j([[rec(3, "unknown")], [rec(3, "completed")], [rec(3, "unknown")], [rec(3, "completed")]])), [],
+    "and can be resolved again");
+
+  // deterministic: ascending, de-duplicated
+  assert.deepEqual(lib.unresolvedPhases(j([[rec(6, "unknown"), rec(3, "unknown")], [rec(6, "unknown")]])), [3, 6],
+    "ascending and de-duplicated");
+
+  // NO selection filter leaks in: phase 1 is replay-safe and phase 7 is not an
+  // optional component, but both are still reported as unresolved facts.
+  assert.deepEqual(lib.unresolvedPhases(j([[rec(1, "unknown"), rec(7, "unknown")]])), [1, 7],
+    "the generic fold must not apply begin-run's replay/cursor/component policy");
+
+  // total: never throws on a shape a reader did not expect
+  for (const bad of [null, undefined, {}, { attempts: null }, { attempts: {} }, { attempts: [null] }, { attempts: [{}] }, { attempts: [{ phases: [null, { phase: "x", status: "unknown" }] }] }]) {
+    assert.deepEqual(lib.unresolvedPhases(bad), [], `must tolerate ${JSON.stringify(bad)}`);
+  }
+
+  // pure: the same input twice, and no mutation of the caller's object
+  const input = j([[rec(3, "unknown")], [rec(5, "unknown")]]);
+  const snapshot = JSON.stringify(input);
+  assert.deepEqual(lib.unresolvedPhases(input), [3, 5]);
+  assert.deepEqual(lib.unresolvedPhases(input), [3, 5]);
+  assert.equal(JSON.stringify(input), snapshot, "the fold must not mutate its input");
+});
+
+test("read exposes unresolved_phases additively and stays honest when it cannot know", { skip: SKIP_SH, timeout: RUN_TIMEOUT_MS }, () => {
+  const sb = mkSandbox("read-unresolved");
+  const readCmd = () => {
+    const r = spawnSync(process.execPath, [JOURNAL_CLI, "read", "--dir", sb.stateDir], { encoding: "utf8" });
+    return { status: r.status, out: r.stdout, json: (() => { try { return JSON.parse(r.stdout); } catch (e) { return null; } })() };
+  };
+  try {
+    // absent: there is genuinely no journal, so [] is honest and the exit stays 0.
+    let r = readCmd();
+    assert.equal(r.status, 0, r.out);
+    assert.equal(r.json.status, "absent", r.out);
+    assert.deepEqual(r.json.unresolved_phases, [], "absent means nothing unresolved");
+
+    // ok with an interrupted phase: reported unresolved.
+    seedInterrupted(sb, 3, "deliberation");
+    runInstaller(sb, { components: "deliberation", resume: 3 }); // refused; reclassifies running -> unknown
+    r = readCmd();
+    assert.equal(r.status, 0, r.out);
+    assert.equal(r.json.status, "ok", r.out);
+    assert.deepEqual(r.json.unresolved_phases, [3], `read must report phase 3 unresolved\n${r.out}`);
+    // the additive field does not displace the existing ones
+    assert.ok(r.json.journal && Array.isArray(r.json.journal.attempts), "journal is still returned");
+    assert.equal(r.json.reason, null, "reason is still returned");
+
+    // after a successful replay: read reports RESOLVED while the raw history
+    // still contains the unknown record (the journal stays the history).
+    const replayed = runInstaller(sb, { components: "deliberation", resume: 3, env: { AIGENTRY_INSTALL_UNKNOWN_EFFECT: "replay" } });
+    assert.equal(replayed.code, 0, describe(sb, replayed));
+    r = readCmd();
+    assert.deepEqual(r.json.unresolved_phases, [], `a resolved unknown must read as resolved\n${r.out}`);
+    assert.equal(r.json.journal.attempts[0].phases.filter((x) => x.phase === 3)[0].status, "unknown",
+      "the raw history must still carry the original unknown");
+
+    // corrupt: the answer is UNKNOWN, never "nothing unresolved".
+    fs.writeFileSync(sb.journal, fs.readFileSync(sb.journal).subarray(0, 100));
+    r = readCmd();
+    assert.equal(r.status, 1, `a corrupt journal keeps its non-zero exit\n${r.out}`);
+    assert.equal(r.json.status, "corrupt", r.out);
+    assert.equal(r.json.unresolved_phases, null, "a corrupt read must not claim nothing is unresolved");
+
+    // unsupported: same honesty.
+    fs.writeFileSync(sb.journal, `${JSON.stringify({ schema: "aigentry-devkit/install-journal@99", attempts: [] })}\n`);
+    r = readCmd();
+    assert.equal(r.status, 1, r.out);
+    assert.equal(r.json.status, "unsupported", r.out);
+    assert.equal(r.json.unresolved_phases, null, "an unsupported read must not claim nothing is unresolved");
+
+    // read never rewrites the journal
+    const before = fs.readFileSync(sb.journal);
+    readCmd();
+    assert.deepEqual(fs.readFileSync(sb.journal), before, "read must stay read-only");
+  } finally { sb.cleanup(); }
+});
+
+// ── 5c. a failed begin-run must not orphan its own lock (review RW2) ────────
+//
+// Real filesystem failure, not a simulation: the state directory is sized so
+// that install-journal.lock (20-char name) fits inside the path limit while
+// install-journal.json.tmp-<pid>-<rand> (~43-char name) does not. The limit is
+// MEASURED by probing, so this holds on a 1024- and a 4096-byte PATH_MAX alike.
+function mkWriteFailingStateDir(sb) {
+  const LOCK = "install-journal.lock";
+  const tmpish = `install-journal.json.tmp-${process.pid}-abcdef123456`;
+  let base = path.join(sb.root, "deep");
+  fs.mkdirSync(base, { recursive: true });
+  for (;;) {
+    const next = path.join(base, "d".repeat(100));
+    try { fs.mkdirSync(next); base = next; } catch (err) { break; }
+  }
+  for (let pad = 250; pad >= 1; pad -= 1) {
+    const cand = path.join(base, "d".repeat(pad));
+    try { fs.mkdirSync(cand); } catch (err) { continue; }
+    let lockOk = false;
+    try { fs.writeFileSync(path.join(cand, LOCK), "x"); fs.unlinkSync(path.join(cand, LOCK)); lockOk = true; } catch (err) { /* too long */ }
+    let tmpFails = false;
+    try { fs.writeFileSync(path.join(cand, tmpish), "x"); } catch (err) { tmpFails = err.code === "ENAMETOOLONG"; }
+    if (lockOk && tmpFails) return cand;
+  }
+  assert.fail("could not construct a directory where the lock fits but the journal temp file does not");
+}
+
+test("a begin-run whose journal write really fails releases its own lock", { skip: SKIP_SH, timeout: RUN_TIMEOUT_MS }, () => {
+  const sb = mkSandbox("owned-lock-write-failure");
+  try {
+    const dir = mkWriteFailingStateDir(sb);
+    const lock = path.join(dir, "install-journal.lock");
+    const begin = (...extra) => spawnSync(process.execPath, [JOURNAL_CLI, "begin-run", "--dir", dir,
+      "--installer", "install.sh", "--profile", "core", "--components", "deliberation", "--start-phase", "0", ...extra],
+      { encoding: "utf8" });
+
+    // The write genuinely fails ...
+    const first = begin();
+    assert.notEqual(first.status, 0, "the failing write must be reported");
+    assert.match(`${first.stderr}`, /ENAMETOOLONG/, `expected a real write failure\n${first.stderr}`);
+    assert.equal(fs.existsSync(path.join(dir, "install-journal.json")), false, "no journal was written");
+
+    // ... and the lock this invocation created is gone, so the next ordinary run
+    // is NOT falsely refused as locked.
+    assert.equal(fs.existsSync(lock), false, "a failed begin-run must release its own lock");
+    const second = begin();
+    assert.notEqual(second.status, 0, "the second run still hits the same real write failure");
+    assert.ok(!second.stdout.startsWith("locked"), `the second run must not be falsely refused as locked\n${second.stdout}`);
+    assert.match(`${second.stderr}`, /ENAMETOOLONG/, "the second failure is the write, not the lock");
+  } finally { sb.cleanup(); }
+});
+
+test("the deliberate crash seam also releases the lock it owns, and a foreign lock is never touched", { skip: SKIP_SH, timeout: RUN_TIMEOUT_MS }, () => {
+  const sb = mkSandbox("owned-lock-crash-seam");
+  try {
+    const begin = (env, ...extra) => spawnSync(process.execPath, [JOURNAL_CLI, "begin-run", "--dir", sb.stateDir,
+      "--installer", "install.sh", "--profile", "core", "--components", "deliberation", "--start-phase", "0", ...extra],
+      { encoding: "utf8", env: { ...process.env, ...env } });
+
+    // process.exit(70) runs no catch/finally, but the exit hook still fires.
+    const crashed = begin({ AIGENTRY_INSTALL_JOURNAL_CRASH: "before-rename" });
+    assert.equal(crashed.status, 70, `${crashed.stdout}${crashed.stderr}`);
+    assert.equal(fs.existsSync(sb.journal), false, "nothing was renamed into place");
+    assert.equal(fs.existsSync(sb.lock), false, "the deliberate-exit path must release its own lock");
+
+    // An ordinary run now succeeds and KEEPS its lock: ownership was handed over.
+    const ok = begin({});
+    assert.equal(ok.status, 0, `${ok.stdout}${ok.stderr}`);
+    assert.equal(fs.existsSync(sb.lock), true, "a successful begin-run keeps the lock for the installer");
+    const handed = fs.readFileSync(sb.lock, "utf8");
+
+    // A FOREIGN lock must never be released by a failing run: the crash seam
+    // cannot acquire it, refuses as locked, and leaves the bytes untouched.
+    const foreign = begin({ AIGENTRY_INSTALL_JOURNAL_CRASH: "before-rename" });
+    assert.notEqual(foreign.status, 0, "a held lock must still refuse");
+    assert.ok(foreign.stdout.startsWith("locked"), `expected a locked refusal\n${foreign.stdout}`);
+    assert.equal(fs.readFileSync(sb.lock, "utf8"), handed, "a foreign lock must be left byte-identical");
+
+    // A forced takeover that then dies deliberately is NOT auto-released: it was
+    // adopted, not exclusively created. Documented as safe-over-convenient.
+    const forcedCrash = begin({ AIGENTRY_INSTALL_JOURNAL_CRASH: "before-rename" }, "--force-unlock", "1");
+    assert.equal(forcedCrash.status, 70, `${forcedCrash.stdout}${forcedCrash.stderr}`);
+    assert.equal(fs.existsSync(sb.lock), true, "an adopted (forced) lock is not auto-released");
+    assert.notEqual(fs.readFileSync(sb.lock, "utf8"), handed, "the forced run did adopt it");
   } finally { sb.cleanup(); }
 });
 
