@@ -35,4 +35,4 @@ jobs:
       # Windows, aigentry-devkit setup/update) with inert fake npm/telepty/curl.
       # On Node 18 the caller rows assert the telepty engine refusal.
       - name: Telepty version policy tests
-        run: node --test tests/telepty-version-policy.test.js tests/install-telepty-version.test.js
+        run: node --test tests/telepty-version-policy.test.js tests/install-telepty-version.test.js tests/init-containment-1147.test.js
