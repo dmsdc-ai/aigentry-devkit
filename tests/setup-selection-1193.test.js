@@ -282,3 +282,41 @@ test("revalidation rejects a destination changed during interactive consent", as
   if(!KEEP)fs.rmSync(f.root,{recursive:true,force:true});
  }
 });
+
+for(const location of ["root","earlier-attempt"]) {
+ for(const [label,plan_digest] of [["singleton",["a".repeat(64)]],["nested",[["a".repeat(64)]]],["string","a".repeat(64)]]) {
+  test("review R1 digest type "+location+" "+label,()=>withFixture(f=>{
+   const run=moduleCaller(f);
+   fs.mkdirSync(f.dir,{mode:0o700});
+   const choice={profile:"core",runtime:"defer",outcome:"deferred",verification:"not-verified",plan_digest,catalogue_revision:1};
+   const prior={schema:"aigentry-devkit/install-journal@1",attempts:[
+    {run_id:"earlier",phases:[],...(location==="earlier-attempt"?{setup:choice}:{})},
+    {run_id:"latest",phases:[{phase:5,status:"running"}]}
+   ],...(location==="root"?{setup:choice}:{})};
+   const file=path.join(f.dir,"install-journal.json");
+   fs.writeFileSync(file,JSON.stringify(prior),{mode:0o600});
+   const before=snapshot(f.root),r=run([...choices,"--dry-run"]);
+   const afterPreview=snapshot(f.root);
+   const match=r.stdout.match(/accept-plan ([a-f0-9]{64})/);
+   const save=match?run([...choices,"--accept-plan",match[1]]):null;
+   const after=snapshot(f.root);
+   fs.writeFileSync(path.join(f.root,"module-result.json"),JSON.stringify({preview:r,save},null,2));
+   assert.equal(r.status,0,r.stderr);assert.equal(r.signal,null);
+   assert.deepEqual(afterPreview,before,"preview must preserve complete fixture tree and bytes");
+   if(label==="string") {
+    assert.match(r.stdout,/CALLER_SETTLED=0/);
+    assert.ok(save);assert.equal(save.status,0,save.stderr);assert.equal(save.signal,null);
+    assert.match(save.stdout,/CALLER_SETTLED=0\nCALLER_ALIVE/);
+    const journal=JSON.parse(fs.readFileSync(file));
+    assert.deepEqual(journal.attempts.slice(0,2),prior.attempts);
+    assert.equal(journal.attempts.length,3);
+    assert.equal(typeof journal.setup.plan_digest,"string");
+   } else {
+    assert.deepEqual(after,before,"malformed digest must preserve complete fixture tree and bytes");
+    assert.match(r.stdout,/CALLER_SETTLED=1/);
+    assert.match(r.stderr,/invalid setup choice/);
+    assert.equal(save,null,"malformed digest must not receive a consent plan");
+   }
+  }));
+ }
+}
