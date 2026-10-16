@@ -827,6 +827,141 @@ test("read exposes unresolved_phases additively and stays honest when it cannot 
   } finally { sb.cleanup(); }
 });
 
+// ── 5b-ii. the fold is honest about pending and about degraded replays ──────
+//
+// RW-A. `running` is a normal, durable on-disk state: it is written before the
+// first mutation of every phase and it is exactly what survives a SIGKILL.
+// begin-run reclassifies it to `unknown` and persists that BEFORE it folds,
+// while `read` is read-only and folds the raw journal — so a fold that ignores
+// `running` tells a reader "nothing is unresolved" about the very bytes the next
+// begin-run refuses. `unresolved_phases` means "effects not proven resolved",
+// never "the writing process is alive", so a `running` record contributes a
+// PENDING unresolved effect, including while an installer really is running. The
+// live-versus-interrupted ambiguity is not decidable from the journal and is not
+// guessed here: a conservative false "pending" is acceptable, a false "nothing
+// unresolved" is not. No clock, no PID probe, no liveness inference.
+//
+// RW-B. The journal has no trustworthy per-effect completion bit, so a
+// `completed` record carrying `degraded: true` cannot prove the unknown external
+// effect landed, and must not clear a pre-existing unknown/running effect — the
+// same reason a `failed` replay does not clear it. A CLEAN completion still
+// clears, so nothing blocks forever, and a degraded completion on its own must
+// never fabricate an unresolved effect that no record claims.
+test("the fold reports running as pending and refuses to clear on a degraded completion", () => {
+  const lib = require(JOURNAL_CLI);
+  const j = (phases) => ({ schema: "aigentry-devkit/install-journal@1", attempts: phases.map((ps, i) => ({ attempt: i + 1, phases: ps })) });
+  const rec = (phase, status, extra) => Object.assign({ phase, status }, extra || {});
+
+  // RW-A: pending, and the same answer begin-run would give after reclassifying.
+  assert.deepEqual(lib.unresolvedPhases(j([[rec(6, "running")]])), [6],
+    "a running record is an effect not proven resolved, so it is pending");
+  assert.deepEqual(lib.unresolvedPhases(j([[rec(6, "running")], [rec(6, "completed")]])), [],
+    "a later clean completion clears a pending running");
+  assert.deepEqual(lib.unresolvedPhases(j([[rec(3, "unknown")], [rec(3, "completed")], [rec(3, "running")]])), [3],
+    "a fresh running reopens an already-resolved phase");
+
+  // RW-B: a degraded completion neither clears nor fabricates.
+  assert.deepEqual(lib.unresolvedPhases(j([[rec(3, "unknown")], [rec(3, "completed", { degraded: true })]])), [3],
+    "a degraded completion must not clear an unresolved unknown");
+  assert.deepEqual(lib.unresolvedPhases(j([[rec(3, "running")], [rec(3, "completed", { degraded: true })]])), [3],
+    "a degraded completion must not clear a pending running either");
+  assert.deepEqual(lib.unresolvedPhases(j([[rec(5, "completed", { degraded: true })]])), [],
+    "a degraded completion with no preceding unresolved record must not fabricate one");
+  assert.deepEqual(lib.unresolvedPhases(j([[rec(3, "unknown")], [rec(3, "completed", { degraded: true })], [rec(3, "completed")]])), [],
+    "a later clean completion still answers the question");
+  assert.deepEqual(lib.unresolvedPhases(j([[rec(3, "unknown")], [rec(3, "completed", { degraded: false })]])), [],
+    "only degraded === true withholds the supersession");
+
+  // the rules this correction must not disturb
+  assert.deepEqual(lib.unresolvedPhases(j([[rec(3, "unknown")], [rec(3, "failed")]])), [3],
+    "a failed replay still retains the unknown");
+  assert.deepEqual(lib.unresolvedPhases(j([[rec(6, "running"), rec(3, "unknown")], [rec(6, "running")]])), [3, 6],
+    "still ascending and de-duplicated across statuses");
+  const input = j([[rec(6, "running")], [rec(5, "completed", { degraded: true })]]);
+  const snapshot = JSON.stringify(input);
+  assert.deepEqual(lib.unresolvedPhases(input), [6]);
+  assert.equal(JSON.stringify(input), snapshot, "the fold must still not mutate its input");
+});
+
+test("read reports an interrupted phase as pending before any begin-run reclassifies it", { skip: SKIP_SH, timeout: RUN_TIMEOUT_MS }, () => {
+  const sb = mkSandbox("read-pending-running");
+  try {
+    // Exactly the SIGKILL state: a running record and no handler ever ran. No
+    // begin-run has seen it yet, so nothing has reclassified it to unknown.
+    seedInterrupted(sb, 6, "registry-wiring");
+    const raw = fs.readFileSync(sb.journal);
+    assert.equal(phaseOf(JSON.parse(raw.toString("utf8")).attempts[0], 6).status, "running",
+      "precondition: the interrupted record is still `running` on disk");
+
+    const r = spawnSync(process.execPath, [JOURNAL_CLI, "read", "--dir", sb.stateDir], { encoding: "utf8" });
+    assert.equal(r.status, 0, `${r.stdout}${r.stderr}`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.status, "ok", r.stdout);
+    assert.deepEqual(out.unresolved_phases, [6],
+      `read must not answer "nothing is unresolved" about a journal begin-run will refuse\n${r.stdout}`);
+
+    // read stays read-only: not one byte changed, the record is still `running`.
+    assert.deepEqual(fs.readFileSync(sb.journal), raw, "read must not reclassify or rewrite the journal");
+
+    // ... and the two consumers of the one fold now agree about the same bytes.
+    const ordinary = runInstaller(sb, { components: "registry-wiring", resume: 6, env: { AIGENTRY_REGISTRY_MODE: "cloud" } });
+    const d = describe(sb, ordinary);
+    assert.notEqual(ordinary.code, 0, `begin-run must still refuse the unknown effect\n${d}`);
+    assert.ok(/interrupted inside phase 6/.test(ordinary.plain), `the refusal must still name phase 6\n${d}`);
+    assert.equal(phaseOf(journal(sb).attempts[0], 6).status, "unknown", `begin-run still persists the reclassification\n${d}`);
+  } finally { sb.cleanup(); }
+});
+
+test("a degraded replay does not clear the unknown effect it could not resolve", { skip: SKIP_SH, timeout: RUN_TIMEOUT_MS }, () => {
+  const sb = mkSandbox("degraded-replay-retains");
+  try {
+    seedInterrupted(sb, 5, "dustcraw");
+    const blocked = runInstaller(sb, { components: "dustcraw", resume: 5 });
+    assert.notEqual(blocked.code, 0, `must refuse while the question is open\n${describe(sb, blocked)}`);
+
+    // The user answers it explicitly, but `dustcraw init` — the external-init
+    // half of phase 5's effect, i.e. the exact reason the phase is classed
+    // unreplayable — fails. install.sh's soft policy (phase_degraded) still
+    // records `completed --degraded 1`, so the replay demonstrably did not land.
+    failTool(sb, "dustcraw", 1);
+    const replayed = runInstaller(sb, { components: "dustcraw", resume: 5, env: { AIGENTRY_INSTALL_UNKNOWN_EFFECT: "replay" } });
+    let d = describe(sb, replayed);
+    const degradedRec = phaseOf(lastAttempt(sb), 5);
+    assert.equal(degradedRec.status, "completed", `the soft policy records completed, not failed\n${d}`);
+    assert.equal(degradedRec.degraded, true, `and marks the record degraded\n${d}`);
+    assert.equal(degradedRec.replay, "unknown", `phase 5 is the unreplayable class\n${d}`);
+
+    // So an ORDINARY run must still refuse: the duplicate-external-effect
+    // protection may not switch itself off on a soft failure.
+    const ordinary = runInstaller(sb, { components: "dustcraw", resume: 5 });
+    d = describe(sb, ordinary);
+    assert.notEqual(ordinary.code, 0, `a degraded replay must not clear the unknown\n${d}`);
+    assert.ok(/interrupted inside phase 5/.test(ordinary.plain), `the refusal must still name phase 5\n${d}`);
+
+    // Control on the identical path: once the replay really lands clean, the
+    // question is answered and an ordinary run proceeds. Nothing blocks forever.
+    unfailTool(sb, "dustcraw");
+    const clean = runInstaller(sb, { components: "dustcraw", resume: 5, env: { AIGENTRY_INSTALL_UNKNOWN_EFFECT: "replay" } });
+    d = describe(sb, clean);
+    assert.equal(clean.code, 0, `the clean replay must land\n${d}`);
+    const cleanRec = phaseOf(lastAttempt(sb), 5);
+    assert.equal(cleanRec.status, "completed", d);
+    assert.equal(cleanRec.degraded, undefined, `a clean completion carries no degraded flag\n${d}`);
+    const after = runInstaller(sb, { components: "dustcraw", resume: 5 });
+    d = describe(sb, after);
+    assert.equal(after.code, 0, `a clean completion must still clear the unknown\n${d}`);
+    assert.ok(!/interrupted inside phase/.test(after.plain), `no stale refusal after a clean replay\n${d}`);
+
+    // History is immutable throughout: every record still stands as written.
+    const statuses = journal(sb).attempts.map((a) => (phaseOf(a, 5) || {}).status);
+    assert.deepEqual(statuses, ["unknown", "completed", "completed", "completed"],
+      `every phase-5 record is preserved verbatim\n${d}`);
+    assert.equal(journal(sb).attempts[1].phases.filter((p) => p.phase === 5)[0].degraded, true,
+      `the degraded fact is preserved, not rewritten\n${d}`);
+    assertNoRealActuator(sb, after);
+  } finally { sb.cleanup(); }
+});
+
 // ── 5c. a failed begin-run must not orphan its own lock (review RW2) ────────
 //
 // Real filesystem failure, not a simulation: the state directory is sized so
