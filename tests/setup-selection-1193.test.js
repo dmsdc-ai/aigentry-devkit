@@ -68,6 +68,100 @@ function preview(f,extra=[]) {
  assert.ok(match,r.stdout); return match[1];
 }
 function withFixture(fn) {const f=fixture();try{fn(f);}finally{if(!KEEP)fs.rmSync(f.root,{recursive:true,force:true});}}
+// Retained real-module caller: options are data; module and failure target are fixed.
+function moduleCaller(f) {
+ const file=path.join(f.root,"module-caller.cjs");
+ fs.writeFileSync(file,String.raw`"use strict";
+const fs=require("fs"),path=require("path");
+const setup=require("./package/lib/setup");
+if(process.env.TEST_RENAME_FAILURE==="1") {
+ const rename=fs.renameSync;
+ fs.renameSync=function(from,to) {
+  if(to===path.join(__dirname,"home","aigentry-devkit","install-journal.json")) {
+   const error=Error("owned fixture rename failure");error.code="EIO";throw error;
+  }
+  return rename.apply(this,arguments);
+ };
+}
+setup.run(JSON.parse(process.argv[2])).then(code=>{
+ process.stdout.write("CALLER_SETTLED="+code+"\n");
+}).finally(()=>process.stdout.write("CALLER_ALIVE\n"));
+`);
+ return (args, crash="", fail=false)=>spawnSync(process.execPath,["--require",path.join(f.root,"guard.cjs"),file,JSON.stringify(args)],{
+  encoding:"utf8",timeout:10000,env:{HOME:f.home,USERPROFILE:f.home,XDG_CONFIG_HOME:f.home,
+   TMPDIR:path.join(f.root,"tmp"),TMP:path.join(f.root,"tmp"),TEMP:path.join(f.root,"tmp"),PATH:"",
+   AIGENTRY_INSTALL_JOURNAL_CRASH:crash,TEST_RENAME_FAILURE:fail?"1":"0"}
+ });
+}
+for(const [label,attempt,extra] of [
+ ["string phase",{phases:[{phase:"5",status:"running"}]}],
+ ["fraction phase",{phases:[{phase:5.5,status:"running"}]}],
+ ["unknown status",{phases:[{phase:5,status:"runing"}]}],
+ ["null record",{phases:[null]}],
+ ["array record",{phases:[[]]}],
+ ["degraded type",{phases:[{phase:5,status:"completed",degraded:"true"}]}],
+ ["exit type",{phases:[{phase:5,status:"failed",exit_code:"1"}]}],
+ ["label type",{phases:[{phase:5,status:"running",label:1}]}],
+ ...[false,0,"",null].flatMap(value=>[
+  ["root setup "+JSON.stringify(value),{phases:[]},{setup:value}],
+  ["attempt setup "+JSON.stringify(value),{phases:[],setup:value}]
+ ])
+]) test("review R1 malformed history refuses unchanged: "+label,()=>withFixture(f=>{
+ const run=moduleCaller(f);
+ fs.mkdirSync(f.dir,{mode:0o700});
+ const prior={schema:"aigentry-devkit/install-journal@1",attempts:[{run_id:"prior",outcome:"running",...attempt}],...extra};
+ const file=path.join(f.dir,"install-journal.json");
+ fs.writeFileSync(file,JSON.stringify(prior),{mode:0o600});
+ const before=snapshot(f.root),r=run([...choices,"--dry-run"]);
+ const match=r.stdout.match(/accept-plan ([a-f0-9]{64})/);
+ const save=match?run([...choices,"--accept-plan",match[1]]):null;
+ const after=snapshot(f.root);
+ fs.writeFileSync(path.join(f.root,"module-result.json"),JSON.stringify({preview:r,save},null,2));
+ assert.equal(r.status,0,r.stderr);assert.equal(r.signal,null);
+ assert.match(r.stdout,/CALLER_SETTLED=1/,r.stdout);
+ assert.match(r.stderr,/corrupt setup journal|invalid setup choice/);
+ assert.deepEqual(after,before,"malformed history must never be rewritten");
+}));
+for(const phases of [[],[{phase:5,status:"running"}],
+ [{phase:1,status:"completed",degraded:false},{phase:3,status:"failed",exit_code:1},{phase:6,status:"unknown"}]]) {
+ test("review R1 valid legacy history survives: "+JSON.stringify(phases),()=>withFixture(f=>{
+  fs.mkdirSync(f.dir,{mode:0o700});
+  const file=path.join(f.dir,"install-journal.json"),prior={schema:"aigentry-devkit/install-journal@1",attempts:[{run_id:"legacy",phases}]};
+  fs.writeFileSync(file,JSON.stringify(prior),{mode:0o600});
+  const digest=preview(f),r=cli(f,["setup",...choices,"--accept-plan",digest],true);
+  assert.equal(r.status,0,r.stderr);
+  const after=JSON.parse(fs.readFileSync(file));
+  assert.deepEqual(after.attempts[0],prior.attempts[0]);assert.equal(after.attempts.length,2);
+ }));
+}
+for(const crash of ["after-tmp-write","before-rename","after-rename"]) {
+ test("review R2 module caller survives inherited crash seam: "+crash,()=>withFixture(f=>{
+  const run=moduleCaller(f),digest=preview(f),r=run([...choices,"--accept-plan",digest],crash);
+  fs.writeFileSync(path.join(f.root,"module-result.json"),JSON.stringify(r,null,2));
+  assert.equal(r.signal,null);assert.equal(r.status,0,r.stderr+r.stdout);
+  assert.match(r.stdout,/CALLER_SETTLED=0\nCALLER_ALIVE/);
+  assert.match(r.stdout,/Preference saved/);
+  assert.deepEqual(fs.readdirSync(f.dir),["install-journal.json"]);
+  const journal=JSON.parse(fs.readFileSync(path.join(f.dir,"install-journal.json")));
+  assert.equal(journal.setup.runtime,"defer");assert.equal(journal.attempts.length,1);
+ }));
+}
+test("review R2 filesystem failure settles and preserves live bytes",()=>withFixture(f=>{
+ const run=moduleCaller(f);
+ fs.mkdirSync(f.dir,{mode:0o700});
+ const file=path.join(f.dir,"install-journal.json"),bytes='{"schema":"aigentry-devkit/install-journal@1","attempts":[]}';
+ fs.writeFileSync(file,bytes,{mode:0o600});
+ const digest=preview(f),r=run([...choices,"--accept-plan",digest],"after-rename",true);
+ fs.writeFileSync(path.join(f.root,"module-result.json"),JSON.stringify(r,null,2));
+ assert.equal(r.status,0,r.stderr);assert.equal(r.signal,null);
+ assert.match(r.stdout,/CALLER_SETTLED=1\nCALLER_ALIVE/);
+ assert.match(r.stderr,/metadata\/storage unavailable/);
+ assert.doesNotMatch(r.stdout,/Preference saved/);
+ assert.equal(fs.readFileSync(file,"utf8"),bytes);
+ assert.equal(fs.existsSync(path.join(f.dir,"install-journal.lock")),false);
+ assert.equal(fs.readdirSync(f.dir).filter(n=>n.startsWith("install-journal.json.tmp-")).length,1,
+  "existing atomic-writer policy retains the own failed temp for inspection");
+}));
 test("actual setup preview is stable, secret-free and has zero early effects",()=>withFixture(f=>{
  const before=snapshot(f.root), a=preview(f), b=preview(f);
  assert.equal(a,b); assert.deepEqual(snapshot(f.root),before);

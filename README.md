@@ -587,14 +587,11 @@ Language-specific requirements for the un-bundled skills (only if you install th
 
 ```
 aigentry-devkit setup --configure-only --non-interactive --profile core --runtime defer --dry-run
-  ├─ dispatches to install.sh (macOS/Linux) or install.ps1 (Windows)
-  ├─ Check prerequisites (Node.js, npm, optional tools)
-  ├─ Install skills to ~/.claude/skills/
-  ├─ Install HUD to ~/.claude/hud/
-  ├─ Deploy MCP server to ~/.local/lib/mcp-deliberation/
-  ├─ Register MCP in ~/.claude/.mcp.json
-  ├─ Create config from templates (settings.json, .envrc)
-  └─ Integrate with Codex CLI (if available)
+  ├─ Route to the configure-only setup module
+  ├─ Validate package metadata, choices and existing journal storage
+  ├─ Observe runtime metadata (readiness remains unverified)
+  ├─ Print the proposed local preference-write plan and consent digest
+  └─ Return without writing or installing anything
 ```
 
 ### Runtime Flow
