@@ -323,13 +323,17 @@ test("F12 :: the support floor is feature-derived, expressed once, and agrees ac
 // ── F12: the floor is really enforced before any actuator runs ─────────────
 
 const FAKE_JS = String.raw`"use strict";
-// Inert tripwire for task-1145 contract tests. argv: <stateDir> <tool> ...args
+// Inert tripwire for task-1145 contract tests. argv: <tool> ...args
+// Where it writes is not an input: the state directory is this script's own
+// location plus the fixed leaf "state", and the file name is a literal, so no
+// argument or environment value can redirect the write. argv carries the tool
+// name and its arguments as data only and is never joined into a path.
 const fs = require("fs");
 const path = require("path");
-const stateDir = process.argv[2];
-const tool = process.argv[3];
+const stateDir = path.join(__dirname, "state");
+const tool = process.argv[2];
 fs.appendFileSync(path.join(stateDir, "calls.jsonl"),
-  JSON.stringify({ tool, args: process.argv.slice(4), pid: process.pid }) + "\n");
+  JSON.stringify({ tool, args: process.argv.slice(3), pid: process.pid }) + "\n");
 process.exitCode = 97;
 `;
 
@@ -351,12 +355,13 @@ function mkSandbox(label, { withTelepty = false } = {}) {
     fs.writeFileSync(sb.fakeJs, FAKE_JS);
     fs.writeFileSync(path.join(sb.state, "calls.jsonl"), "");
     for (const tool of [...TRIPWIRES, ...(withTelepty ? ["telepty"] : [])]) {
+      // The shim passes the tool name only; the fake derives its own state dir.
       if (IS_WIN) {
         fs.writeFileSync(path.join(sb.fakebin, `${tool}.cmd`),
-          `@echo off\r\n"${process.execPath}" "${sb.fakeJs}" "${sb.state}" ${tool} %*\r\nexit /b %ERRORLEVEL%\r\n`);
+          `@echo off\r\n"${process.execPath}" "${sb.fakeJs}" ${tool} %*\r\nexit /b %ERRORLEVEL%\r\n`);
       } else {
         const f = path.join(sb.fakebin, tool);
-        fs.writeFileSync(f, `#!/bin/sh\nexec '${process.execPath}' '${sb.fakeJs}' '${sb.state}' ${tool} "$@"\n`);
+        fs.writeFileSync(f, `#!/bin/sh\nexec '${process.execPath}' '${sb.fakeJs}' ${tool} "$@"\n`);
         fs.chmodSync(f, 0o755);
       }
     }
@@ -407,6 +412,36 @@ function writeFixtureManifest(sb, mutate) {
 }
 
 const RUNTIME_OK = cmp(parse(process.versions.node), parse(NODE_MIN)) >= 0;
+
+// The tripwire writes only inside its own directory: its state location is
+// derived from the script's own path, never received, so no argument can
+// redirect a fixture write (#1145 phase 2 — the reported argv-to-filesystem
+// flow is corrected at its origin, not suppressed). argv stays data.
+test("fixture integrity :: the tripwire's state location is not an input", { timeout: RUN_TIMEOUT_MS }, () => {
+  const sb = mkSandbox("path-independence");
+  try {
+    const decoy = path.join(sb.root, "decoy");
+    fs.mkdirSync(decoy, { recursive: true, mode: 0o700 });
+    const shaped = [decoy, path.join(decoy, "calls.jsonl"), `..${path.sep}..${path.sep}escape`];
+    const r = spawnSync(process.execPath, [sb.fakeJs, ...shaped], {
+      cwd: sb.root,
+      env: { PATH: sb.fakebin, HOME: sb.home, TMPDIR: sb.tmp, LANG: "C" },
+      encoding: "utf8",
+      timeout: RUN_TIMEOUT_MS,
+      windowsHide: true,
+    });
+    const d = `exit=${r.status} signal=${r.signal}\n${r.stdout}${r.stderr}`;
+    assert.deepEqual(fs.readdirSync(decoy), [], `an argv value redirected a fixture write into ${decoy}\n${d}`);
+    assert.ok(!fs.existsSync(path.join(sb.root, "escape")) && !fs.existsSync(path.join(os.tmpdir(), "escape")),
+      `an argv value escaped the sandbox\n${d}`);
+    const calls = fs.readFileSync(path.join(sb.state, "calls.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    assert.equal(calls.length, 1, `the call must be logged in the derived state dir\n${d}`);
+    assert.equal(calls[0].tool, shaped[0], "argv must be recorded as data");
+    assert.deepEqual(calls[0].args, shaped.slice(1), "argv must be recorded as data");
+  } finally {
+    if (!KEEP) fs.rmSync(sb.root, { recursive: true, force: true, maxRetries: 5 });
+  }
+});
 
 test("F12 :: a runtime below the floor is refused before any actuator, naming the floor", { timeout: RUN_TIMEOUT_MS + 30000 }, () => {
   const sb = mkSandbox("below-floor", { withTelepty: true });

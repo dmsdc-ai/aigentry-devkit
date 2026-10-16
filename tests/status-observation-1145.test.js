@@ -56,12 +56,17 @@ function declaredVersions() {
 }
 
 const FAKE_JS = String.raw`"use strict";
-// Inert fake for task-1145 status tests. argv: <stateDir> <tool> ...args
+// Inert fake for task-1145 status tests. argv: <tool> ...args
+// Where it reads and writes is not an input: the state directory is this
+// script's own location plus the fixed leaf "state", and every file name below
+// is a literal, so no argument or environment value can redirect a read or a
+// write. argv carries the tool name and its arguments as data only and is
+// never joined into a path.
 const fs = require("fs");
 const path = require("path");
-const stateDir = process.argv[2];
-const tool = process.argv[3];
-const args = process.argv.slice(4);
+const stateDir = path.join(__dirname, "state");
+const tool = process.argv[2];
+const args = process.argv.slice(3);
 const st = (n) => path.join(stateDir, n);
 const read = (n) => { try { return fs.readFileSync(st(n)); } catch (_) { return null; } };
 const text = (n) => { const b = read(n); return b === null ? null : b.toString("utf8"); };
@@ -81,15 +86,16 @@ if (forbidden.includes(tool)) {
 const sq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 const psq = (s) => `'${String(s).replace(/'/g, "''")}'`;
 
+// The shim passes the tool name only; the fake derives its own state dir.
 function writeShims(dir, tool, sb) {
   if (IS_WIN) {
     fs.writeFileSync(path.join(dir, `${tool}.cmd`),
-      `@echo off\r\n"${process.execPath}" "${sb.fakeJs}" "${sb.state}" ${tool} %*\r\nexit /b %ERRORLEVEL%\r\n`);
+      `@echo off\r\n"${process.execPath}" "${sb.fakeJs}" ${tool} %*\r\nexit /b %ERRORLEVEL%\r\n`);
     fs.writeFileSync(path.join(dir, `${tool}.ps1`),
-      `& ${psq(process.execPath)} ${psq(sb.fakeJs)} ${psq(sb.state)} ${psq(tool)} @args\r\nexit $LASTEXITCODE\r\n`);
+      `& ${psq(process.execPath)} ${psq(sb.fakeJs)} ${psq(tool)} @args\r\nexit $LASTEXITCODE\r\n`);
   } else {
     const p = path.join(dir, tool);
-    fs.writeFileSync(p, `#!/bin/sh\nexec ${sq(process.execPath)} ${sq(sb.fakeJs)} ${sq(sb.state)} ${tool} "$@"\n`);
+    fs.writeFileSync(p, `#!/bin/sh\nexec ${sq(process.execPath)} ${sq(sb.fakeJs)} ${tool} "$@"\n`);
     fs.chmodSync(p, 0o755);
   }
 }
@@ -291,6 +297,43 @@ test("status :: the observation uses the shipped identification rules, not a pri
     "runStatus must identify versions through lib/telepty-version-policy.js (parseStable)");
   assert.ok(!/adapter\.version/.test(cli.slice(cli.indexOf("function runStatus"), cli.indexOf("function runInit"))),
     "runStatus must not read the adapter's declared version for display");
+});
+
+// The fake writes and reads only inside its own directory: its state location
+// is derived from the script's own path, never received, so no argument can
+// redirect a fixture read or write (#1145 phase 2 — the reported
+// argv-to-filesystem flow is corrected at its origin, not suppressed). argv
+// stays data: tool and args are recorded, never joined into a path.
+test("fixture integrity :: the fake's state location is not an input", { timeout: RUN_TIMEOUT_MS }, () => {
+  const sb = mkSandbox("path-independence");
+  try {
+    const decoy = path.join(sb.root, "decoy");
+    fs.mkdirSync(decoy, { recursive: true, mode: 0o700 });
+    // A readable decoy forbidden.json would hijack the fake's control flow if
+    // the state dir were an input; it must be ignored.
+    fs.writeFileSync(path.join(decoy, "forbidden.json"), JSON.stringify(["telepty"]));
+    const shaped = [decoy, path.join(decoy, "calls.jsonl"), `..${path.sep}..${path.sep}escape`];
+    const r = spawnSync(process.execPath, [sb.fakeJs, ...shaped], {
+      cwd: sb.root,
+      env: { PATH: sb.fakebin, HOME: sb.home, TMPDIR: sb.tmp, LANG: "C" },
+      encoding: "utf8",
+      timeout: RUN_TIMEOUT_MS,
+      windowsHide: true,
+    });
+    const d = `exit=${r.status} signal=${r.signal}\n${r.stdout}${r.stderr}`;
+    assert.deepEqual(fs.readdirSync(decoy), ["forbidden.json"],
+      `an argv value redirected a fixture write into ${decoy}\n${d}`);
+    assert.ok(!fs.existsSync(path.join(sb.root, "escape")) && !fs.existsSync(path.join(os.tmpdir(), "escape")),
+      `an argv value escaped the sandbox\n${d}`);
+    const calls = readCalls(sb);
+    assert.equal(calls.length, 1, `the call must be logged in the derived state dir\n${d}`);
+    assert.equal(calls[0].tool, shaped[0], "argv must be recorded as data");
+    assert.deepEqual(calls[0].args, shaped.slice(1), "argv must be recorded as data");
+    assert.ok(!fs.existsSync(path.join(sb.state, "forbidden.jsonl")),
+      `the decoy forbidden list was read from an argv path\n${d}`);
+  } finally {
+    if (!KEEP) fs.rmSync(sb.root, { recursive: true, force: true, maxRetries: 5 });
+  }
 });
 
 test("status :: fixture precondition: no real telepty or npm on the sandbox PATH", () => {
