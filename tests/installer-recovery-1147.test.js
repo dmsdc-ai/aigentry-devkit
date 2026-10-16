@@ -965,28 +965,84 @@ test("a degraded replay does not clear the unknown effect it could not resolve",
 // ── 5c. a failed begin-run must not orphan its own lock (review RW2) ────────
 //
 // Real filesystem failure, not a simulation: the state directory is sized so
-// that install-journal.lock (20-char name) fits inside the path limit while
-// install-journal.json.tmp-<pid>-<rand> (~43-char name) does not. The limit is
-// MEASURED by probing, so this holds on a 1024- and a 4096-byte PATH_MAX alike.
+// that install-journal.lock (20-char name) fits inside the path limit while the
+// writer's install-journal.json.tmp-<pid>-<12 hex> does not, so atomicWrite's
+// real openSync raises a real ENAMETOOLONG.
+//
+// The limit is MEASURED, never assumed, so this holds on a 1024- and a
+// 4096-byte PATH_MAX alike. The earlier version instead *hoped* to land in the
+// window: it extended the path in 100-char steps until mkdir failed, which
+// leaves the deepest directory anywhere in a 101-char band below the ceiling,
+// and then appended one component needing both `len+1+20 <= ceiling` and
+// `len+1+43 > ceiling` — a ~23-char window. Whenever the coarse step overshot
+// (deepest > ceiling-23), every single-component candidate was already past the
+// window and the row died in its own precondition with nothing measured. So:
+// measure the ceiling first, then construct a directory of exactly the length
+// the oracle needs.
 function mkWriteFailingStateDir(sb) {
   const LOCK = "install-journal.lock";
-  const tmpish = `install-journal.json.tmp-${process.pid}-abcdef123456`;
-  let base = path.join(sb.root, "deep");
-  fs.mkdirSync(base, { recursive: true });
+  // The name that must fail is written by the CHILD begin-run process, whose pid
+  // may be shorter than this test's, so probing with our own pid can tune the
+  // window too loosely. Probe with the SHORTEST form the writer can produce — a
+  // 1-digit pid and the fixed 12 hex chars of crypto.randomBytes(6) — because
+  // every real temp name is at least this long, so if this one cannot be created
+  // neither can any of them.
+  const TMP_SHORTEST = `install-journal.json.tmp-0-${"0".repeat(12)}`;
+  assert.ok(TMP_SHORTEST.length > LOCK.length, "the oracle needs the temp name to be the longer one");
+
+  // Try to create and remove `name` in `dir`: null on success, else the errno.
+  const probe = (dir, name) => {
+    const p = path.join(dir, name);
+    try { fs.writeFileSync(p, "x"); fs.unlinkSync(p); return null; }
+    catch (err) { return err.code || String(err.message); }
+  };
+
+  // 1. Descend in coarse steps until the filesystem refuses, remembering every
+  //    directory we actually created so we can back off to a precise one.
+  const chain = [path.join(sb.root, "deep")];
+  fs.mkdirSync(chain[0], { recursive: true });
   for (;;) {
-    const next = path.join(base, "d".repeat(100));
-    try { fs.mkdirSync(next); base = next; } catch (err) { break; }
+    const next = path.join(chain[chain.length - 1], "d".repeat(100));
+    try { fs.mkdirSync(next); chain.push(next); } catch (err) { break; }
   }
-  for (let pad = 250; pad >= 1; pad -= 1) {
-    const cand = path.join(base, "d".repeat(pad));
-    try { fs.mkdirSync(cand); } catch (err) { continue; }
-    let lockOk = false;
-    try { fs.writeFileSync(path.join(cand, LOCK), "x"); fs.unlinkSync(path.join(cand, LOCK)); lockOk = true; } catch (err) { /* too long */ }
-    let tmpFails = false;
-    try { fs.writeFileSync(path.join(cand, tmpish), "x"); } catch (err) { tmpFails = err.code === "ENAMETOOLONG"; }
-    if (lockOk && tmpFails) return cand;
+  const deepest = chain[chain.length - 1];
+
+  // 2. MEASURE the ceiling: the longest filename still creatable in `deepest`.
+  //    Monotone (a longer path never succeeds where a shorter one failed), so a
+  //    binary search is exact rather than a sampled guess.
+  let lo = 0;
+  let hi = 255; // NAME_MAX; the search tells us which limit actually binds
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (probe(deepest, "n".repeat(mid)) === null) lo = mid; else hi = mid - 1;
   }
-  assert.fail("could not construct a directory where the lock fits but the journal temp file does not");
+  assert.ok(lo >= 1, `no filename fits in the deepest directory (len ${deepest.length}); cannot measure the path ceiling`);
+  assert.ok(lo < 255, `NAME_MAX, not PATH_MAX, is binding here (deepest len ${deepest.length}, longest name ${lo}); the coarse descent did not reach the path ceiling`);
+  const ceiling = deepest.length + 1 + lo; // longest creatable file path, measured
+
+  // 3. Size the state directory exactly: the lock path lands ON the ceiling and
+  //    the shortest possible temp path lands beyond it.
+  const target = ceiling - 1 - LOCK.length;
+  const parent = chain.filter((d) => d.length + 2 <= target).pop();
+  assert.ok(parent, `no created ancestor is short enough for a ${target}-char state directory (ceiling ${ceiling})`);
+  const padLen = target - parent.length - 1;
+  assert.ok(padLen >= 1 && padLen <= 255, `the single component would be ${padLen} chars, outside NAME_MAX (target ${target}, parent ${parent.length}, ceiling ${ceiling})`);
+  const dir = path.join(parent, "d".repeat(padLen));
+  try { fs.mkdirSync(dir); } catch (err) {
+    if (err.code !== "EEXIST") assert.fail(`could not create the ${target}-char state directory (ceiling ${ceiling}, errno ${err.code})`);
+  }
+  assert.equal(dir.length, target, "the constructed state directory must be exactly the measured length");
+
+  // 4. VERIFY the oracle by measurement before handing the directory over: the
+  //    lock name must really fit, and the shortest real temp name must really
+  //    fail, with exactly ENAMETOOLONG and not some unrelated errno.
+  const lockCode = probe(dir, LOCK);
+  const tmpCode = probe(dir, TMP_SHORTEST);
+  assert.equal(lockCode, null,
+    `the ${LOCK.length}-char lock name must fit in the state directory (measured ceiling ${ceiling}, dir ${dir.length}, errno ${lockCode})`);
+  assert.equal(tmpCode, "ENAMETOOLONG",
+    `the ${TMP_SHORTEST.length}-char journal temp name must fail with ENAMETOOLONG (measured ceiling ${ceiling}, dir ${dir.length}, got ${tmpCode})`);
+  return dir;
 }
 
 test("a begin-run whose journal write really fails releases its own lock", { skip: SKIP_SH, timeout: RUN_TIMEOUT_MS }, () => {

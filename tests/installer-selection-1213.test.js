@@ -99,7 +99,9 @@ const FAKE_JS = String.raw`"use strict";
 // is concatenated from a caller-supplied value. The tool name is still
 // caller-supplied, so it is checked against the closed vocabulary the fixture
 // itself wrote into the private state, and anything else is refused inert with
-// exit 98 before a single byte is read or written.
+// exit 98 before anything caller-named is read and before any write. (The two
+// fixed, fixture-written files tools.json and forbidden.json are read first —
+// that is where the vocabulary and the tripwire list come from.)
 const fs = require("fs");
 const path = require("path");
 const STATE_DIR = path.join(__dirname, "state");

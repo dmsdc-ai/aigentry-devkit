@@ -247,12 +247,47 @@ test("phase-8 hermetic install generates all artifacts and is idempotent", () =>
     const dispatchLink = path.join(sb.home, ".local", "bin", "dispatch.sh");
     assert.ok(fs.existsSync(dispatchLink), "dispatch.sh linked onto PATH");
 
-    // §8.5 re-point: orchestrator self-symlink → THIS devkit bin/, target exists.
-    const repointed = path.join(orchDir, "bin", "open-session.sh");
-    assert.ok(fs.lstatSync(repointed).isSymbolicLink(), "open-session.sh is a symlink");
-    const repTarget = fs.readlinkSync(repointed);
-    assert.equal(repTarget, path.join(REPO, "bin", "open-session.sh"));
-    assert.ok(fs.existsSync(repTarget), "re-point target exists (not dangling)");
+    // §8.5 re-point. The loop at install.sh:950 is driven by the adapter's
+    // DECLARED list, and the devkit currently declares none: #613 A2 made
+    // open-session.sh an orchestrator-owned real file (it owns its runtime spawn
+    // entrypoint) and #614 did the same for tq-*.sh and trust-*.sh, so all five
+    // were removed from self_symlink_repoint and §8.5 is a forward-compatibility
+    // no-op until a future self-symlink is declared. Assert that declared
+    // contract rather than the pre-#613 behaviour: whatever the adapter declares
+    // must be re-pointed into THIS devkit's bin/, and whatever it does not
+    // declare must be left exactly as the clone shipped it.
+    const adapter = JSON.parse(fs.readFileSync(
+      path.join(REPO, "config", "modules", "orchestrator-role.adapter.json"), "utf-8"));
+    const declaredRepoint = adapter["x-git-install"].self_symlink_repoint;
+    assert.ok(Array.isArray(declaredRepoint), "self_symlink_repoint must be a declared list");
+    // Vacuous while the declaration is empty — that is the honest consequence of
+    // the product's own declaration, and it starts asserting again by itself the
+    // moment a self-symlink is re-declared.
+    for (const name of declaredRepoint) {
+      const repointed = path.join(orchDir, "bin", name);
+      assert.ok(fs.lstatSync(repointed).isSymbolicLink(), `${name} is re-pointed as a symlink`);
+      assert.equal(fs.readlinkSync(repointed), path.join(REPO, "bin", name));
+      assert.ok(fs.existsSync(fs.readlinkSync(repointed)), `re-point target exists (not dangling): ${name}`);
+    }
+    // Discriminating negative for the undeclared names: the devkit still SHIPS
+    // bin/open-session.sh, so a stray re-point would succeed if §8.5 made one.
+    // Requiring its absence in the clone is what catches a silent return of the
+    // pre-#613 behaviour instead of letting it pass unnoticed.
+    for (const name of ["open-session.sh"].filter((n) => !declaredRepoint.includes(n))) {
+      assert.ok(fs.existsSync(path.join(REPO, "bin", name)),
+        `the devkit still ships bin/${name}, so an undeclared re-point would succeed`);
+      assert.equal(fs.existsSync(path.join(orchDir, "bin", name)), false,
+        `${name} is orchestrator-owned and undeclared: phase 8 must not create it in the clone`);
+    }
+    // The clone's own bin entries stay orchestrator-owned real files: not
+    // replaced by symlinks into the devkit, and byte-identical to the fixture.
+    for (const name of ["dispatch.sh", "session-reconciler.sh", "install-instructions.sh"]) {
+      const inClone = path.join(orchDir, "bin", name);
+      assert.equal(fs.lstatSync(inClone).isSymbolicLink(), false,
+        `${name} must stay an orchestrator-owned real file`);
+      assert.deepEqual(fs.readFileSync(inClone), fs.readFileSync(path.join(FIXTURE, "bin", name)),
+        `${name} must be left as the clone shipped it`);
+    }
 
     // config.json generated, parameterized at sandbox.
     const cfg = JSON.parse(fs.readFileSync(path.join(sb.aigentryHome, "config.json"), "utf-8"));
