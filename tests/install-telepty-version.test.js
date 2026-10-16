@@ -114,18 +114,41 @@ function setBound(m, key, v) {
 // ── fake commands ───────────────────────────────────────────────────────────
 
 const FAKE_JS = String.raw`"use strict";
-// Inert fake for task-1213 installer tests. argv: <stateDir> <tool> ...args
+// Inert fake for task-1213 installer tests. argv: <tool> ...args.
+// All paths are fixed relative to this emitted program, never argv or env.
 const fs = require("fs");
 const path = require("path");
-const stateDir = process.argv[2];
-const tool = process.argv[3];
-const args = process.argv.slice(4);
+const stateDir = path.join(__dirname, "state");
+const tool = process.argv[2];
+const args = process.argv.slice(3);
 const PKG = "@dmsdc-ai/aigentry-telepty";
-const st = (n) => path.join(stateDir, n);
+const tools = ["npm", "npx", "curl", "tmux", "claude", "telepty", "git", "brew", "sudo", "launchctl", "systemctl", "apt-get", "dnf", "yum", "pacman", "open", "cmux", "direnv", "winget", "choco", "scoop", "schtasks"];
+const leaves = ["calls.jsonl", "forbidden.json", "npm.mode", "registry.latest", "npm.wrong", "telepty.version", "telepty.stdout", "telepty.exitcode", "telepty.hang", "telepty.hang-late", "transitions.log"];
+if (!tools.includes(tool) || (tool === "npm" &&
+    !(args.length === 3 && ["install", "i", "add"].includes(args[0]) &&
+      ["-g", "--global"].includes(args[1]) && (args[2] === PKG || args[2].startsWith(PKG + "@"))))) process.exit(98);
+function check(file, directory, optional = false) {
+  let s;
+  try { s = fs.lstatSync(file); } catch (err) { if (optional && err.code === "ENOENT") return; throw err; }
+  if (s.isSymbolicLink() || (directory ? !s.isDirectory() : !s.isFile() || s.nlink !== 1) ||
+      fs.realpathSync(file) !== path.resolve(file)) throw Error("unsafe fixture path");
+}
+const st = (n) => { if (!leaves.includes(n)) throw Error("unknown fixture leaf"); return path.join(stateDir, n); };
 const read = (n) => { try { return fs.readFileSync(st(n)); } catch (_) { return null; } };
 const text = (n) => { const b = read(n); return b === null ? null : b.toString("utf8"); };
 function log(extra) {
   fs.appendFileSync(st("calls.jsonl"), JSON.stringify(Object.assign({ tool, args, pid: process.pid, t: Date.now() }, extra || {})) + "\n");
+}
+try {
+check(__dirname, true);
+check(stateDir, true);
+for (const name of leaves) check(st(name), false, true);
+const gb = path.join(__dirname, "globalbin");
+const shims = path.join(stateDir, "shims");
+const shimNames = process.platform === "win32" ? ["telepty.cmd", "telepty.ps1"] : ["telepty"];
+if (tool === "npm") {
+  check(gb, true); check(shims, true);
+  for (const name of shimNames) { check(path.join(shims, name), false); check(path.join(gb, name), false, true); }
 }
 const forbidden = JSON.parse(text("forbidden.json") || "[]");
 if (forbidden.includes(tool)) {
@@ -146,9 +169,8 @@ if (forbidden.includes(tool)) {
     const before = text("telepty.version");
     fs.writeFileSync(st("telepty.version"), ver);
     for (const f of ["telepty.stdout", "telepty.exitcode", "telepty.hang"]) { try { fs.unlinkSync(st(f)); } catch (_) {} }
-    const gb = text("globalbin.path").trim();
-    for (const f of fs.readdirSync(st("shims"))) {
-      fs.copyFileSync(path.join(st("shims"), f), path.join(gb, f));
+    for (const f of shimNames) {
+      fs.copyFileSync(path.join(shims, f), path.join(gb, f));
       if (process.platform !== "win32") fs.chmodSync(path.join(gb, f), 0o755);
     }
     fs.appendFileSync(st("transitions.log"), "telepty " + (before === null ? "ABSENT" : before) + " -> " + ver + " (spec=" + spec + ")\n");
@@ -173,6 +195,7 @@ if (forbidden.includes(tool)) {
 } else {
   log();
 }
+} catch (_) { process.stderr.write("fixture: unsafe or unavailable owned layout\n"); process.exitCode = 98; }
 `;
 
 const sq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
@@ -181,12 +204,12 @@ const psq = (s) => `'${String(s).replace(/'/g, "''")}'`;
 function writeShims(dir, tool, sb) {
   if (IS_WIN) {
     fs.writeFileSync(path.join(dir, `${tool}.cmd`),
-      `@echo off\r\n"${process.execPath}" "${sb.fakeJs}" "${sb.state}" ${tool} %*\r\nexit /b %ERRORLEVEL%\r\n`);
+      `@echo off\r\n"${process.execPath}" "${sb.fakeJs}" ${tool} %*\r\nexit /b %ERRORLEVEL%\r\n`);
     fs.writeFileSync(path.join(dir, `${tool}.ps1`),
-      `& ${psq(process.execPath)} ${psq(sb.fakeJs)} ${psq(sb.state)} ${psq(tool)} @args\r\nexit $LASTEXITCODE\r\n`);
+      `& ${psq(process.execPath)} ${psq(sb.fakeJs)} ${psq(tool)} @args\r\nexit $LASTEXITCODE\r\n`);
   } else {
     const p = path.join(dir, tool);
-    fs.writeFileSync(p, `#!/bin/sh\nexec ${sq(process.execPath)} ${sq(sb.fakeJs)} ${sq(sb.state)} ${tool} "$@"\n`);
+    fs.writeFileSync(p, `#!/bin/sh\nexec ${sq(process.execPath)} ${sq(sb.fakeJs)} ${tool} "$@"\n`);
     fs.chmodSync(p, 0o755);
   }
 }
@@ -209,7 +232,6 @@ function mkSandbox(label) {
   fs.writeFileSync(sb.fakeJs, FAKE_JS);
   fs.writeFileSync(path.join(sb.state, "calls.jsonl"), "");
   fs.writeFileSync(path.join(sb.state, "forbidden.json"), JSON.stringify(FORBIDDEN));
-  fs.writeFileSync(path.join(sb.state, "globalbin.path"), sb.globalbin);
   for (const t of [...RECORDERS, ...FORBIDDEN]) writeShims(sb.fakebin, t, sb);
   writeShims(sb.shims, "telepty", sb);
   if (!IS_WIN) {
@@ -664,12 +686,15 @@ function prepare(sb, row) {
   if (row.extraBin) {
     // A second telepty first on PATH, with its own modeled version; npm never touches it.
     const dir = path.join(row.extraBin.tilde ? sb.home : sb.root, "relbin");
-    const state = path.join(sb.root, "relstate");
+    const extraRoot = path.join(sb.root, "relfixture");
+    const state = path.join(extraRoot, "state");
+    const fakeJs = path.join(extraRoot, "fake.js");
     fs.mkdirSync(dir);
-    fs.mkdirSync(state);
+    fs.mkdirSync(state, { recursive: true });
+    fs.writeFileSync(fakeJs, FAKE_JS);
     if (row.extraBin.version !== null) {
       fs.writeFileSync(path.join(state, "telepty.version"), row.extraBin.version);
-      writeShims(dir, "telepty", { fakeJs: sb.fakeJs, state });
+      writeShims(dir, "telepty", { fakeJs, state });
       if (row.extraBin.ps1Only) fs.unlinkSync(path.join(dir, "telepty.cmd"));
     }
     sb.extraStates = [state];
@@ -795,4 +820,64 @@ test("install.sh adds no uname branch, flock or direct signal", () => {
   assert.ok((sh.match(/\buname\b/g) || []).length <= 1, "new uname use: route OS checks through bin/lib/platform.sh");
   assert.ok(!/\bflock\b/.test(sh), "flock is not allowed");
   assert.ok(!/(^|[\s;&|(])kill\s/m.test(sh), "direct signal (kill) is not allowed");
+});
+
+test("fixture security :: caller paths and unknown operands refuse without effects", () => {
+  const sb = mkSandbox("security-operands");
+  try {
+    const before = cliTree(sb.root, sb.log);
+    for (const args of [[sb.state, "npm", "install", "-g", SPEC], ["../../escape"],
+      ["unknown-tool"], ["npm", "install", "--prefix", sb.home, SPEC]]) {
+      const r = spawnSync(process.execPath, [sb.fakeJs, ...args], { encoding: "utf8", timeout: 10000 });
+      assert.equal(r.status, 98, r.stderr);
+      assert.deepEqual(cliTree(sb.root, sb.log), before, "refused operands must not even append a call log");
+    }
+  } finally { if (!KEEP) fs.rmSync(sb.root, { recursive: true, force: true }); }
+});
+
+test("fixture security :: allowed npm and version operations retain modeled behavior", () => {
+  const sb = mkSandbox("security-allowed");
+  try {
+    const run = (...args) => spawnSync(process.execPath, [sb.fakeJs, ...args], { encoding: "utf8", timeout: 10000 });
+    const installed = run("npm", "install", "-g", SPEC);
+    assert.equal(installed.status, 0, installed.stderr);
+    assert.equal(installedVersion(sb), PIN);
+    const version = run("telepty", "--version");
+    assert.equal(version.status, 0, version.stderr);
+    assert.equal(version.stdout.trim(), PIN);
+    assert.deepEqual(readCalls(sb).map(c => c.tool), ["npm", "telepty"]);
+    const sentinel = run("git", "clone", "https://example.invalid/unused");
+    assert.equal(sentinel.status, 97);
+    assert.equal(readCalls(sb).at(-1).forbidden, true);
+  } finally { if (!KEEP) fs.rmSync(sb.root, { recursive: true, force: true }); }
+});
+
+test("fixture security :: symlink and hardlink sinks refuse before writes", () => {
+  for (const kind of ["state-link", "log-link", "log-hardlink", "shim-link", "destination-link"]) {
+    const sb = mkSandbox("security-" + kind);
+    try {
+      const decoy = path.join(sb.root, "decoy");
+      fs.mkdirSync(decoy);
+      const target = path.join(decoy, "untouched");
+      fs.writeFileSync(target, "preserve");
+      if (kind === "state-link") {
+        fs.renameSync(sb.state, path.join(sb.root, "original-state"));
+        fs.symlinkSync(path.join(sb.root, "original-state"), sb.state, "junction");
+      } else if (kind === "shim-link") {
+        fs.rmSync(sb.shims, { recursive: true });
+        fs.symlinkSync(decoy, sb.shims, "junction");
+      } else if (kind === "destination-link") {
+        fs.rmdirSync(sb.globalbin);
+        fs.symlinkSync(decoy, sb.globalbin, "junction");
+      } else {
+        const log = path.join(sb.state, "calls.jsonl");
+        fs.unlinkSync(log);
+        if (kind === "log-hardlink") fs.linkSync(target, log); else fs.symlinkSync(target, log);
+      }
+      const before = cliTree(sb.root, sb.log);
+      const r = spawnSync(process.execPath, [sb.fakeJs, "npm", "install", "-g", SPEC], { encoding: "utf8", timeout: 10000 });
+      assert.equal(r.status, 98, r.stderr);
+      assert.deepEqual(cliTree(sb.root, sb.log), before);
+    } finally { if (!KEEP) fs.rmSync(sb.root, { recursive: true, force: true }); }
+  }
 });
