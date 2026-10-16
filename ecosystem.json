@@ -1,10 +1,10 @@
 {
-  "_comment": "Canonical aigentry ecosystem manifest. Source of truth for the shared README ecosystem table. Versions re-verified live via `npm view` on 2026-07-26 (telepty 0.7.0, brain 0.3.0 released same day; devkit 0.1.14; deliberation/aterm unchanged). Vendored byte-identical into each repo; refresh via aigentry-devkit/scripts/sync-readme-tooling.mjs on any version change. A repo's own row is overridden with its live package.json version at regen time.",
+  "_comment": "Canonical aigentry ecosystem manifest. Source of truth for the shared README ecosystem table. The telepty row is not an `npm view` snapshot: it is the version this devkit installs and tests, taken from the single source of that decision, config/installer-manifest.json (components.telepty.install.version), and kept in agreement with it by tests/install-contract-1145.test.js (#1145 F3). The other rows are a local snapshot, last re-verified live via `npm view` on 2026-07-26 (telepty/brain released that day; deliberation/aterm unchanged); they are refreshed by hand, never at build time. Vendored byte-identical into each repo; refresh via aigentry-devkit/scripts/sync-readme-tooling.mjs on any change. A repo's own row is overridden with its live package.json version at regen time.",
   "modules": [
     {
       "name": "telepty",
       "package": "@dmsdc-ai/aigentry-telepty",
-      "version": "0.7.1",
+      "version": "0.8.5",
       "role": "Cross-terminal / cross-machine prompt transport (PTY daemon)",
       "maturity": "Shipping",
       "license": "MIT"

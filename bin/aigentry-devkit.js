@@ -600,6 +600,28 @@ function runUpdate(options = {}) {
   runInstall({ ...options, force: true });
 }
 
+// #1145 F2 — `status` reports what the host runs, never what an adapter
+// declares. A module's version is read from its own healthcheck stdout using
+// the shipped identification rules (lib/telepty-version-policy.js): ASCII-trim,
+// at most one leading "v", exactly one stable X.Y.Z token, and at most
+// MAX_PROBE_BYTES bytes of output. Everything else — spawn failure, nonzero
+// exit, prose, several tokens, empty or oversized output — is "unknown", so a
+// stale declared pin can never be displayed as an observation. Declared install
+// targets live in config/installer-manifest.json; they are not shown here.
+const MAX_PROBE_BYTES = 1024;
+
+function observedVersion(stdout) {
+  if (stdout === null || stdout === undefined) return null;
+  const bytes = Buffer.isBuffer(stdout) ? stdout : Buffer.from(String(stdout), "latin1");
+  if (bytes.length > MAX_PROBE_BYTES) return null;
+  const candidate = bytes
+    .toString("latin1")
+    .replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "")
+    .replace(/^v/, "");
+  const { parseStable } = require("../lib/telepty-version-policy");
+  return parseStable(candidate) ? candidate : null;
+}
+
 function runStatus() {
   const modulesDir = path.join(rootDir, "config", "modules");
   let adapterFiles = [];
@@ -620,7 +642,7 @@ function runStatus() {
   const COL_STATUS = 12;
   const header =
     "Module".padEnd(COL_NAME) +
-    "Version".padEnd(COL_VERSION) +
+    "Version (observed)".padEnd(COL_VERSION) +
     "Health";
   const separator = "-".repeat(COL_NAME + COL_VERSION + COL_STATUS);
 
@@ -632,10 +654,10 @@ function runStatus() {
     if (!adapter) continue;
 
     const name = adapter.name || file.replace(".adapter.json", "");
-    const version = adapter.version || "unknown";
     const healthcheck = adapter.healthcheck && adapter.healthcheck.command;
 
     let health = "unknown";
+    let observed = null;
     if (!healthcheck) {
       health = "no-healthcheck";
     } else {
@@ -651,6 +673,9 @@ function runStatus() {
         health = "not-installed";
       } else if (result.status === 0) {
         health = "healthy";
+        // Only a healthcheck that succeeded identifies a version, exactly as
+        // the installer's policy refuses to read a failed probe's output.
+        observed = observedVersion(result.stdout);
       } else {
         health = "unhealthy";
       }
@@ -667,13 +692,19 @@ function runStatus() {
 
     process.stdout.write(
       name.padEnd(COL_NAME) +
-        version.padEnd(COL_VERSION) +
+        (observed || "unknown").padEnd(COL_VERSION) +
         healthLabel +
         "\n"
     );
   }
 
-  process.stdout.write("\n");
+  process.stdout.write([
+    "",
+    "Version (observed) = the version the module's own healthcheck printed.",
+    "unknown = not installed, no healthcheck, a failed healthcheck, or output that is not a single X.Y.Z version.",
+    "Install targets are declared in config/installer-manifest.json, not here.",
+    "",
+  ].join("\n"));
 }
 
 function runInit() {

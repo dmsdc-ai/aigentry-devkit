@@ -172,54 +172,59 @@ or `not checked` when the telepty phase did not run.
 
 ## Offline / Firewalled Install
 
-`aigentry-devkit` uses a generic **install-with-fallback** system for all aigentry components. Each component (brain, telepty, deliberation, dustcraw, amplify) declares a fallback chain in its adapter manifest at `config/modules/<component>.adapter.json`. When the primary install method fails, the installer automatically tries the next entry in the chain.
+Component installs have no fallback chain, no alternative-source retry and no `latest` fallback. Each
+component is installed by exactly one attempt of the one method `config/installer-manifest.json`
+declares for it, and what happens when that attempt fails is the component's `failure_policy`:
 
-### Environment variables
+| `failure_policy` | Components | On failure |
+|---|---|---|
+| `hard` | `devkit-core`, `telepty`, `deliberation`, `wtm-experiment` | the install stops with a non-zero exit; no later phase runs |
+| `soft` | `brain`, `dustcraw`, `registry-wiring`, `amplify`, `bridge`, `orchestrator-role` | a warning is printed, the component is left uninstalled, and the remaining phases continue |
 
-| Variable | Values | Description |
-|----------|--------|-------------|
-| `AIGENTRY_INSTALL_FALLBACK_MODE` | `auto` (default) · `prompt` · `never` | `auto`: silent fallback. `prompt`: ask on TTY (auto on CI). `never`: fail loudly on first error. |
-| `AIGENTRY_INSTALL_TIMEOUT` | seconds (default `180`) | Total wall-clock budget for a chain (all entries summed). |
-| `AIGENTRY_VERBOSE` | `1` | Stream every install attempt's full output. |
-| `AIGENTRY_QUIET` | `1` | Only print the final result line per component. |
+What that means on a firewalled or offline host:
 
-### CLI flags
+- An already-installed, in-range `telepty` is **kept with no npm call**, so a fully offline rerun of
+  a previously completed install does not need the registry for that phase (see
+  [telepty version compatibility](#telepty-version-compatibility)).
+- A missing or too-old `telepty` needs the registry: its npm install is one exact-pin attempt, and a
+  failure stops the install (`hard`) rather than falling back to another version or source.
+- Optional components that cannot be fetched only cost you those components. `brain` unavailable
+  means brain features are unavailable — there is no local stub server standing in for it.
+- Nothing bypasses npm's own proxy configuration: if your network needs `HTTPS_PROXY` or
+  `NODE_EXTRA_CA_CERTS`, set them before running the installer, and prefer `npm` settings you
+  already trust. Credential and permission errors are passed through as npm reported them.
+
+### Narrowing what a run touches
 
 ```bash
-aigentry setup --verbose
-aigentry setup --quiet
-aigentry setup --install-timeout 300
-aigentry setup --fallback-mode never     # hard fail on any primary failure
+# Install only the components you can actually reach (comma-separated; default: devkit-core,telepty,deliberation)
+AIGENTRY_INSTALL_COMPONENTS=devkit-core bash install.sh
+
+# Resume at a phase number or component name after fixing connectivity
+AIGENTRY_INSTALL_RESUME=telepty bash install.sh
+
+# Point at a different manifest (e.g. an internally pinned copy)
+AIGENTRY_INSTALL_MANIFEST=/path/to/installer-manifest.json bash install.sh
 ```
 
-### Error classification
+`bash install.sh` itself takes one flag, `--force` (`-f`), to overwrite existing devkit assets. The
+CLI entry point (`aigentry-devkit setup`) additionally accepts `--profile`, `--manifest`, `--resume`
+and `--dry-run`; `aigentry-devkit setup --dry-run` prints the resolved plan without installing
+anything.
 
-The installer classifies failures before deciding to retry or fallback:
+### What the installer records
 
-| Class | Action |
-|-------|--------|
-| `network` (ETIMEDOUT, ECONNRESET, ENOTFOUND, EAI_AGAIN) | 2 attempts with 2s / 4s backoff, then next chain entry |
-| `not-found` (E404, "Not Found") | Skip retry, immediately next entry |
-| `auth` (E401, E403, 401, 403) | **HALT** — never fallback (may mask credential issue) |
-| `permission` (EACCES) | **HALT** — hint: try `sudo` or `npm install --prefix "$HOME/.npm-global"` |
-| `disk` (ENOSPC) | **HALT** |
-| `unknown` | 1 attempt, then next entry (full stderr logged) |
-
-### Logs
-
-Each install attempt writes a structured log to:
+The durable record is a single file, written in the last phase of a run:
 
 ```
-${XDG_CONFIG_HOME:-$HOME/.config}/aigentry-devkit/logs/install-<timestamp>-<component>.log
+${XDG_CONFIG_HOME:-$HOME/.config}/aigentry-devkit/install-state.json
 ```
 
-Logs contain the exact command, exit code, stderr tail, error class, and decision (retry / fallback / halt) per attempt.
-
-### Troubleshooting
-
-- **All attempts fail, company proxy suspected**: Set `HTTPS_PROXY` + `NODE_EXTRA_CA_CERTS` and re-run. If the 403 persists, check with your IT team — the installer will not silently bypass auth-class errors.
-- **Brain unavailable (package not yet on npm)**: The brain fallback chain includes a **stub** entry that registers a local MCP stub server (`bin/aigentry-brain-stub.mjs`) so other ecosystem components keep working with a degraded `brain_status_degraded` tool until the real package is available.
-- **Want a no-fallback run**: `AIGENTRY_INSTALL_FALLBACK_MODE=never aigentry setup`.
+It holds the selected profile and components, the observed `telepty` version, and the settings each
+component phase resolved. There is no per-attempt log file. To see what a phase did, run the
+installer with its output visible, or re-run `aigentry-devkit doctor` / `aigentry-devkit status`
+afterwards — `status` reports the version each module's own healthcheck prints, and `unknown` when a
+module cannot be identified.
 
 ### Post-Installation
 
