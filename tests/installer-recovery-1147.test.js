@@ -196,7 +196,7 @@ function runInstaller(sb, opts = {}) {
     HOME: sb.home,
     XDG_CONFIG_HOME: sb.xdg,
     TMPDIR: sb.tmp,
-    PATH: [sb.fakebin, "/usr/bin", "/bin"].join(path.delimiter),
+    PATH: opts.path || [sb.fakebin, "/usr/bin", "/bin"].join(path.delimiter),
     LANG: "C",
     TERM: "dumb",
     USER: "fixture",
@@ -258,6 +258,29 @@ function describe(sb, r) {
 function assertNoRealActuator(sb, r) {
   const breached = calls(sb).filter((c) => c.forbidden);
   assert.deepEqual(breached.map((c) => c.tool), [], `a refusing sentinel was reached\n${describe(sb, r)}`);
+}
+
+// Coreutils the installer legitimately needs. Symlinked one by one into the
+// sandbox so a row can run with a PATH that contains NOTHING else — which is
+// the only hermetic way to make a prerequisite such as git genuinely absent
+// without ever exposing the host's real git to a fixture.
+const COREUTILS = ["mkdir", "cp", "rm", "ln", "chmod", "ls", "wc", "tr", "grep", "sed",
+  "basename", "dirname", "uname", "mktemp", "hostname", "id", "sleep", "cat"];
+
+function curatedPath(sb) {
+  const dir = path.join(sb.root, "coreutils");
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  for (const c of COREUTILS) {
+    let target = null;
+    for (const d of ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]) {
+      const p = path.join(d, c);
+      if (fs.existsSync(p)) { target = p; break; }
+    }
+    assert.ok(target, `coreutil ${c} not found on this host`);
+    fs.symlinkSync(target, path.join(dir, c));
+  }
+  assert.equal(fs.existsSync(path.join(dir, "git")), false, "the curated PATH must not contain git");
+  return [sb.fakebin, dir].join(path.delimiter);
 }
 
 // Phase 8 must only ever look inside the sandbox.
@@ -469,7 +492,9 @@ test("resuming after a failure appends an attempt and keeps the earlier one", { 
 function seedInterrupted(sb, phase, components) {
   const begin = spawnSync(process.execPath, [JOURNAL_CLI, "begin-run", "--dir", sb.stateDir,
     "--installer", "install.sh", "--profile", "core", "--components", components, "--start-phase", "0"], { encoding: "utf8" });
-  assert.equal(begin.status, 0, begin.stderr);
+  // A refusal here means the journal would not even open a new attempt — e.g. an
+  // earlier unknown for this phase is still unresolved. Surface both streams.
+  assert.equal(begin.status, 0, `seeding an interrupted phase ${phase} was refused:\n${begin.stdout}${begin.stderr}`);
   const runId = begin.stdout.split("\t")[1];
   assert.equal(spawnSync(process.execPath, [JOURNAL_CLI, "phase-begin", "--dir", sb.stateDir,
     "--run", runId, "--phase", String(phase)], { encoding: "utf8" }).status, 0);
@@ -513,6 +538,89 @@ test("=skip leaves the unknown phase alone, =replay re-runs it", { skip: SKIP_SH
     assert.equal(phaseOf(lastAttempt(sb), 5).status, "completed", `=replay really re-runs the phase\n${d}`);
     assert.ok(calls(sb).some((c) => c.tool === "npm"), `=replay reaches the actuator\n${d}`);
     assertNoRealActuator(sb, replayed);
+  } finally { sb.cleanup(); }
+});
+
+// ── 4b. supersession: a resolved unknown must stop blocking (review R1) ─────
+//
+// An unknown effect is a question about one phase at one point in time, not a
+// permanent property of the journal. Once a later run has actually completed
+// that phase, the question is answered and an ordinary run must proceed — while
+// a replay that did NOT land, or a fresh interruption, must still block. The
+// journal stays immutable: resolution is folded chronologically at read time,
+// never by editing, deleting or force-bypassing a record.
+
+test("an unknown effect resolved by a successful replay stops blocking later runs", { skip: SKIP_SH, timeout: RUN_TIMEOUT_MS }, () => {
+  const sb = mkSandbox("supersede-resolved");
+  try {
+    seedInterrupted(sb, 3, "deliberation");
+
+    // Ordinary run refuses while the question is open.
+    const blocked = runInstaller(sb, { components: "deliberation", resume: 3 });
+    assert.notEqual(blocked.code, 0, `must refuse while unresolved\n${describe(sb, blocked)}`);
+
+    // The user answers it once, explicitly.
+    const replayed = runInstaller(sb, { components: "deliberation", resume: 3, env: { AIGENTRY_INSTALL_UNKNOWN_EFFECT: "replay" } });
+    let d = describe(sb, replayed);
+    assert.equal(replayed.code, 0, `the replay must land\n${d}`);
+    assert.equal(phaseOf(lastAttempt(sb), 3).status, "completed", `the replay completed phase 3\n${d}`);
+
+    // ... and from then on an ORDINARY run proceeds: no override, no edit.
+    const ordinary = runInstaller(sb, { components: "deliberation", resume: 3 });
+    d = describe(sb, ordinary);
+    assert.equal(ordinary.code, 0, `a resolved unknown must not block forever\n${d}`);
+    assert.ok(!/interrupted inside phase/.test(ordinary.plain), `no stale refusal\n${d}`);
+    assert.equal(phaseOf(lastAttempt(sb), 3).status, "completed", d);
+
+    // History is immutable: the original unknown record is still there.
+    const j = journal(sb);
+    assert.equal(j.attempts.length, 3, `every attempt is still recorded\n${d}`);
+    assert.equal(phaseOf(j.attempts[0], 3).status, "unknown", `the original unknown is preserved verbatim\n${d}`);
+    assert.equal(j.schema, "aigentry-devkit/install-journal@1", `no schema reset\n${d}`);
+    assertNoRealActuator(sb, ordinary);
+  } finally { sb.cleanup(); }
+});
+
+test("negative control: a replay that failed does not resolve the unknown", { skip: SKIP_SH, timeout: RUN_TIMEOUT_MS }, () => {
+  const sb = mkSandbox("supersede-replay-failed");
+  try {
+    seedInterrupted(sb, 3, "deliberation");
+    failTool(sb, "npx", 1); // the replay itself cannot land
+
+    const replayed = runInstaller(sb, { components: "deliberation", resume: 3, env: { AIGENTRY_INSTALL_UNKNOWN_EFFECT: "replay" } });
+    let d = describe(sb, replayed);
+    assert.notEqual(replayed.code, 0, `the replay must fail this row\n${d}`);
+    assert.equal(phaseOf(lastAttempt(sb), 3).status, "failed", `a failed replay is recorded failed\n${d}`);
+
+    // The question is still open, so an ordinary run must still refuse.
+    const ordinary = runInstaller(sb, { components: "deliberation", resume: 3 });
+    d = describe(sb, ordinary);
+    assert.notEqual(ordinary.code, 0, `a failed replay must not clear the unknown\n${d}`);
+    assert.ok(/interrupted inside phase 3/.test(ordinary.plain), `the refusal must still name phase 3\n${d}`);
+  } finally { sb.cleanup(); }
+});
+
+test("negative control: a fresh interruption re-blocks an already-resolved phase", { skip: SKIP_SH, timeout: RUN_TIMEOUT_MS }, () => {
+  const sb = mkSandbox("supersede-reblocked");
+  try {
+    seedInterrupted(sb, 3, "deliberation");
+    const replayed = runInstaller(sb, { components: "deliberation", resume: 3, env: { AIGENTRY_INSTALL_UNKNOWN_EFFECT: "replay" } });
+    assert.equal(replayed.code, 0, describe(sb, replayed));
+
+    // A new run is interrupted inside the same phase all over again.
+    seedInterrupted(sb, 3, "deliberation");
+
+    // calls.jsonl is cumulative across runs in one sandbox, so compare against a
+    // snapshot taken after the replay rather than against empty.
+    const before = calls(sb).length;
+    const ordinary = runInstaller(sb, { components: "deliberation", resume: 3 });
+    const d = describe(sb, ordinary);
+    assert.notEqual(ordinary.code, 0, `the newer unknown must block again\n${d}`);
+    assert.ok(/interrupted inside phase 3/.test(ordinary.plain), `the refusal must name phase 3\n${d}`);
+    assert.equal(calls(sb).length, before, `nothing new may run after the refusal\n${d}`);
+    // History: the resolved unknown, its replay and the fresh unknown all stand.
+    const j = journal(sb);
+    assert.deepEqual(j.attempts.map((a) => a.outcome), ["unknown", "completed", "unknown"], d);
   } finally { sb.cleanup(); }
 });
 
@@ -655,6 +763,9 @@ test("phase 8 preserves a malformed install-state instead of resetting it", { sk
       `the failure must be reported, not swallowed\n${d}`);
     assert.equal(fs.readFileSync(sb.stateFile, "utf8"), malformed, `the unparseable bytes must survive\n${d}`);
     assert.equal(phaseOf(lastAttempt(sb), 8).status, "completed", d);
+    // The orchestrator setup degraded (clone failed) AND its outcome could not
+    // be recorded, so the journal must not read as a clean completion.
+    assert.equal(phaseOf(lastAttempt(sb), 8).degraded, true, `a degraded phase 8 must be recorded degraded\n${d}`);
     assertNoRealActuator(sb, r);
   } finally { sb.cleanup(); }
 });
@@ -673,6 +784,8 @@ test("phase 8 still records its outcome into a healthy install-state", { skip: S
     assert.equal(state.orchestrator.repo_dir, path.join(sb.root, "projects", "aigentry-orchestrator"), d);
     assert.ok(calls(sb).some((c) => c.tool === "git"), `the inert git fake is what ran\n${d}`);
     assert.equal(modeOf(sb.stateFile), "600", d);
+    // Both durable records agree about the same attempt (review R3).
+    assertOrchestratorRecordsAgree(sb, d);
   } finally { sb.cleanup(); }
 });
 
@@ -690,6 +803,76 @@ test("a later phase 7 rewrite keeps the orchestrator block a previous phase wrot
     assert.deepEqual(state.components, ["devkit-core"], d);
   } finally { sb.cleanup(); }
 });
+
+// ── 7b. phase 8 degradation is recorded consistently (review R3) ────────────
+//
+// The contract: whenever install-state's orchestrator status is not "installed",
+// the journal's phase-8 record MUST be marked degraded. The journal may also be
+// degraded while the status is "installed" (a soft warning during an otherwise
+// successful setup) — that is extra detail, not a contradiction. What must never
+// happen is the journal reading as a clean completion while the product record
+// says the setup degraded or was skipped.
+function assertOrchestratorRecordsAgree(sb, d) {
+  const state = JSON.parse(fs.readFileSync(sb.stateFile, "utf8"));
+  const rec = phaseOf(lastAttempt(sb), 8);
+  assert.ok(rec, `phase 8 must have a journal record\n${d}`);
+  const status = state.orchestrator && state.orchestrator.status;
+  if (status !== "installed") {
+    assert.equal(rec.degraded, true,
+      `install-state says orchestrator="${status}" but the journal records a clean phase 8\n${d}`);
+    assert.ok(rec.detail && rec.detail.length > 0, `the degradation reason must be recorded\n${d}`);
+  }
+  if (!rec.degraded) {
+    assert.equal(status, "installed",
+      `the journal records a clean phase 8 but install-state says orchestrator="${status}"\n${d}`);
+  }
+}
+
+for (const row of [
+  {
+    id: "clone failure",
+    setup: (sb) => allowTool(sb, "git", 1),
+    status: "degraded",
+    needle: /orchestrator clone failed/,
+  },
+  {
+    id: "missing prerequisite",
+    // git genuinely absent — not merely un-shimmed. The run uses a curated PATH
+    // of vetted coreutils only, so the host's real git is unreachable and phase
+    // 8 cannot even start: a degradation of the component this attempt asked
+    // for. Proves the "skipped" branch routes through phase_degraded too.
+    setup: (sb) => { dropTool(sb, "git"); return { path: curatedPath(sb) }; },
+    status: "skipped",
+    needle: /orchestrator-role skipped \(need git\+node\+npm\)/,
+  },
+]) {
+  test(`phase 8 ${row.id} is degraded in BOTH durable records`, { skip: SKIP_SH, timeout: RUN_TIMEOUT_MS }, () => {
+    const sb = mkSandbox(`phase8-${row.id}`);
+    try {
+      const extra = row.setup(sb) || {};
+      const r = runInstaller(sb, { components: "orchestrator-role", resume: "orchestrator-role", env: orchEnv(sb), ...extra });
+      const d = describe(sb, r);
+
+      // Operation semantics and exit policy are unchanged: phase 8 stays soft.
+      assert.equal(r.code, 0, `phase 8 keeps its soft policy\n${d}`);
+      assert.ok(row.needle.test(r.plain), `expected the degradation to be reported\n${d}`);
+
+      const state = JSON.parse(fs.readFileSync(sb.stateFile, "utf8"));
+      assert.equal(state.orchestrator.status, row.status, `existing status semantics preserved\n${d}`);
+
+      const rec = phaseOf(lastAttempt(sb), 8);
+      assert.equal(rec.status, "completed", `the phase still completes under soft policy\n${d}`);
+      assert.equal(rec.degraded, true, `the journal must not read as a clean completion\n${d}`);
+      assert.ok(rec.detail && rec.detail.length > 0, `the reason must be recorded\n${d}`);
+      assertOrchestratorRecordsAgree(sb, d);
+
+      // No real git, service or network was involved either way.
+      assertNoRealActuator(sb, r);
+      assert.deepEqual(calls(sb).filter((c) => ["launchctl", "systemctl", "curl"].includes(c.tool)), [],
+        `no service or network tool may run\n${d}`);
+    } finally { sb.cleanup(); }
+  });
+}
 
 // ── 8. same-byte existing data ──────────────────────────────────────────────
 
@@ -869,6 +1052,12 @@ test("design guard: the journal writer uses no lock syscall, signal or host PID 
   assert.ok(/CRASH_POINTS = \["after-tmp-write", "before-rename", "after-rename"\]/.test(lib), "crash points must stay a fixed enum");
   assert.equal((libCode.match(/AIGENTRY_INSTALL_JOURNAL_CRASH/g) || []).length, 1, "the seam is read in exactly one place");
   // F5: no code construction anywhere on the installer's input paths.
-  assert.ok(!/\bFunction\s*\(/.test(shCode), "install.sh must not construct code");
+  // Precise claim (review R2): the manifest/resume code-construction sink is
+  // gone. This is NOT a blanket "install.sh is eval-free" assertion — the Phase
+  // 8.3 adapter build at install.sh:922 still uses `eval "$build_cmd"` on the
+  // adapter's declared build field. That is pre-existing at the base, out of
+  // this writer's scope, and deliberately not asserted against here.
+  assert.ok(!/\bFunction\s*\(/.test(shCode),
+    "install.sh must not build a program from the manifest/resume path (Function())");
   assert.ok(!/\beval\b/.test(libCode), "the journal writer must not eval");
 });

@@ -884,7 +884,7 @@ if should_run_phase 8 && component_selected "orchestrator-role"; then
   ORCH_DIR="${AIGENTRY_ORCH_DIR:-$PROJECTS_ROOT/aigentry-orchestrator}"
 
   if ! command -v git >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
-    warn "orchestrator-role skipped (need git+node+npm)"
+    phase_degraded "orchestrator-role skipped (need git+node+npm)"
     ORCH_STATUS="skipped"
   else
     # 8.2 Clone or update (idempotent; dirty tree → keep local).
@@ -905,7 +905,7 @@ if should_run_phase 8 && component_selected "orchestrator-role"; then
         || git clone "$ORCH_REPO" "$ORCH_DIR" 2>/dev/null; then
         ORCH_STATUS="installed"
       else
-        warn "orchestrator clone failed — orchestrator-role degraded (core install unaffected)"
+        phase_degraded "orchestrator clone failed — orchestrator-role degraded (core install unaffected)"
         ORCH_STATUS="degraded"
       fi
     fi
@@ -919,7 +919,7 @@ if should_run_phase 8 && component_selected "orchestrator-role"; then
         build_cmd="$ORCH_BUILD_CMD"
         [ -f "$ORCH_DIR/package-lock.json" ] || build_cmd="${build_cmd/npm ci/npm install}"
         info "Building orchestrator: $build_cmd"
-        ( cd "$ORCH_DIR" && eval "$build_cmd" ) || warn "orchestrator built incompletely — continuing best-effort"
+        ( cd "$ORCH_DIR" && eval "$build_cmd" ) || phase_degraded "orchestrator built incompletely — continuing best-effort"
       fi
 
       # 8.4 PATH-link the orchestrator's own real scripts (dispatch.sh,
@@ -930,7 +930,7 @@ if should_run_phase 8 && component_selected "orchestrator-role"; then
           ln -sf "$ORCH_DIR/bin/$b" "$WTM_BIN/$b"
           info "Linked $b → $WTM_BIN/$b"
         else
-          warn "orchestrator bin missing: $b (skipped link)"
+          phase_degraded "orchestrator bin missing: $b (skipped link)"
         fi
       done
       if ! echo "$PATH" | tr ':' '\n' | grep -q "$WTM_BIN"; then
@@ -951,7 +951,7 @@ if should_run_phase 8 && component_selected "orchestrator-role"; then
         if [ -e "$DEVKIT_DIR/bin/$s" ]; then
           ln -sfn "$DEVKIT_DIR/bin/$s" "$ORCH_DIR/bin/$s"
         else
-          warn "devkit bin missing for re-point: $s (left as-is)"
+          phase_degraded "devkit bin missing for re-point: $s (left as-is)"
         fi
       done
 
@@ -959,9 +959,9 @@ if should_run_phase 8 && component_selected "orchestrator-role"; then
       # (no --force → preserves user edits; honors $AIGENTRY_HOME for tests).
       if [ -f "$ORCH_DIR/bin/install-instructions.sh" ]; then
         AIGENTRY_HOME="${AIGENTRY_HOME:-$HOME/.aigentry}" bash "$ORCH_DIR/bin/install-instructions.sh" \
-          || warn "install-instructions.sh exited non-zero — instruction tree may be incomplete"
+          || phase_degraded "install-instructions.sh exited non-zero — instruction tree may be incomplete"
       else
-        warn "install-instructions.sh not found in clone — instruction tree skipped"
+        phase_degraded "install-instructions.sh not found in clone — instruction tree skipped"
       fi
 
       # 8.7 Reconciler daemon — GENERATE from template (never copy); load
@@ -992,11 +992,11 @@ if should_run_phase 8 && component_selected "orchestrator-role"; then
                 launchctl enable "gui/$uid/com.aigentry.reconciler" 2>/dev/null || true
                 info "Loaded reconciler daemon (launchd, KeepAlive)"
               else
-                warn "launchctl bootstrap failed — load manually: launchctl bootstrap gui/$uid \"$PLIST_DEST\""
+                phase_degraded "launchctl bootstrap failed — load manually: launchctl bootstrap gui/$uid \"$PLIST_DEST\""
               fi
             fi
           else
-            warn "launchd template missing — reconciler daemon not generated"
+            phase_degraded "launchd template missing — reconciler daemon not generated"
           fi
           ;;
         Linux)
@@ -1011,14 +1011,14 @@ if should_run_phase 8 && component_selected "orchestrator-role"; then
             else
               systemctl --user daemon-reload 2>/dev/null || true
               systemctl --user enable --now aigentry-reconciler.service 2>/dev/null \
-                || warn "systemctl enable failed — load manually: systemctl --user enable --now aigentry-reconciler.service"
+                || phase_degraded "systemctl enable failed — load manually: systemctl --user enable --now aigentry-reconciler.service"
             fi
           else
-            warn "systemd --user not available — reconciler not loaded. Run manually: bash $ORCH_DIR/bin/session-reconciler.sh --loop"
+            phase_degraded "systemd --user not available — reconciler not loaded. Run manually: bash $ORCH_DIR/bin/session-reconciler.sh --loop"
           fi
           ;;
         *)
-          warn "No launchd/systemd on $PLATFORM — run reconciler manually: bash $ORCH_DIR/bin/session-reconciler.sh --loop"
+          phase_degraded "No launchd/systemd on $PLATFORM — run reconciler manually: bash $ORCH_DIR/bin/session-reconciler.sh --loop"
           ;;
       esac
 
@@ -1028,7 +1028,7 @@ if should_run_phase 8 && component_selected "orchestrator-role"; then
       if node -e 'require(process.argv[1]).writeOrchestratorConfig({projectsRoot:process.argv[2],deviceId:process.argv[3]})' "$DEVKIT_DIR/lib/bootstrap.js" "$PROJECTS_ROOT" "$ORCH_DEVICE_ID"; then
         info "Generated ~/.aigentry/config.json (roles → $PROJECTS_ROOT)"
       else
-        warn "config.json generation failed"
+        phase_degraded "config.json generation failed"
       fi
 
       # 8.9 Hooks deep-merge into ~/.claude/settings.json (PostToolUse rewritten
@@ -1036,7 +1036,7 @@ if should_run_phase 8 && component_selected "orchestrator-role"; then
       if node -e 'require(process.argv[1]).mergeClaudeHooks({orchDir:process.argv[2]})' "$DEVKIT_DIR/lib/bootstrap.js" "$ORCH_DIR"; then
         info "Merged orchestrator Claude hooks into ~/.claude/settings.json"
       else
-        warn "Claude hooks merge failed"
+        phase_degraded "Claude hooks merge failed"
       fi
     fi
   fi
@@ -1047,7 +1047,7 @@ if should_run_phase 8 && component_selected "orchestrator-role"; then
   # (#1147 F7). Phase 8 keeps its soft policy, so this warns and continues.
   node "$DEVKIT_DIR/lib/install-state.js" merge-orchestrator \
     --file "$DEVKIT_STATE_FILE" --status "$ORCH_STATUS" --repo-dir "$ORCH_DIR" \
-    || warn "could not record the orchestrator-role outcome in $DEVKIT_STATE_FILE"
+    || phase_degraded "could not record the orchestrator-role outcome in $DEVKIT_STATE_FILE"
   info "orchestrator-role: $ORCH_STATUS"
   journal_phase_done 8
 fi
