@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "setup": { "contract_major": 1, "module": "lib/setup.js", "catalogue": "config/setup-capabilities.json", "mode": "configure-only", "installation": false },
   "compatibility": {
     "node": {
       "devkit_minimum": "18.0.0",

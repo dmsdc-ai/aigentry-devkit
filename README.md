@@ -7,10 +7,10 @@ Part of the [aigentry platform](https://github.com/dmsdc-ai).
 ## Quickstart
 
 ```bash
-npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit install
+aigentry-devkit setup --configure-only --non-interactive --profile core --runtime defer --dry-run
 ```
 
-Then restart your CLI so new MCP/skill settings load. List available profiles with `npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit profiles`; full walkthrough in [`docs/quickstart.md`](docs/quickstart.md).
+This D1 preview changes nothing. Review its exact local-write plan, then remove --dry-run and add the printed --accept-plan digest to save a preference. Runtime installation and verification remain unavailable. List available profiles with `npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit profiles`; full walkthrough in [`docs/quickstart.md`](docs/quickstart.md).
 
 ## Features
 
@@ -87,10 +87,10 @@ Pre-configured settings with template substitution:
 
 ### Quick Start
 
-Recommended path:
+For an already available D1 devkit, preview a local preference:
 
 ```bash
-npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit install
+aigentry-devkit setup --configure-only --non-interactive --profile core --runtime defer --dry-run
 ```
 
 List profiles first:
@@ -99,21 +99,17 @@ List profiles first:
 npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit profiles
 ```
 
-Install a specific profile:
+Preview a specific profile preference:
 
 ```bash
-npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit install --profile autoresearch-public
+aigentry-devkit setup --configure-only --non-interactive --profile autoresearch-public --runtime defer --dry-run
 ```
 
 Use `curator-public` for `dustcraw + brain + registry wiring`, or `ecosystem-full` for the whole stack.
 
-Force reinstall:
+Force reinstall is unavailable through the D1 CLI; --force is refused.
 
-```bash
-npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit install --force
-```
-
-Manual install (local clone) is still available:
+Legacy direct shell installers remain separate, unbounded D2 work. The following historical commands do not use the D1 consent gate:
 
 macOS / Linux:
 
@@ -131,7 +127,7 @@ cd aigentry-devkit
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-The installer will:
+The legacy shell installer performs these effects (D1 configure-only does none of them):
 
 1. Verify Node.js and optional dependencies (Claude Code CLI, tmux, direnv)
 2. Install devkit assets, skills, HUD, and templates
@@ -590,7 +586,7 @@ Language-specific requirements for the un-bundled skills (only if you install th
 ### Installation Flow
 
 ```
-npx --yes --package @dmsdc-ai/aigentry-devkit aigentry-devkit install
+aigentry-devkit setup --configure-only --non-interactive --profile core --runtime defer --dry-run
   ├─ dispatches to install.sh (macOS/Linux) or install.ps1 (Windows)
   ├─ Check prerequisites (Node.js, npm, optional tools)
   ├─ Install skills to ~/.claude/skills/
@@ -688,3 +684,42 @@ aigentry-devkit is one component of the aigentry platform — an open-source eng
 ---
 
 **aigentry-devkit** - Streamline your AI development workflow.
+
+## Configure-only setup (D1)
+
+Explicit `aigentry-devkit setup` and `install` now enter one metadata-only
+selection flow. Runtime installation is unavailable. `update` refuses before
+npm until a bounded D2 update plan exists. Direct shell installers and the
+legacy bare/default CLI route remain separate D2 work.
+
+Preview an exact local preference write:
+
+`aigentry-devkit setup --configure-only --non-interactive --profile core --runtime defer --dry-run`
+
+Review the output, then repeat without `--dry-run`, adding the printed
+`--accept-plan <digest>`. A changed package, host, selection, observation or
+journal invalidates consent. In a terminal the flow offers profile/runtime
+selection, back, skip and cancellation; saving requires `--configure-only`
+and typing the exact digest. EOF cancels. `--revisit` redetects and shows a
+saved choice only as a suggestion.
+
+Only defer and a darwin/linux native-srt preference can be saved. External
+runtimes are gated, with compatibility, privilege, services, data, license and
+cost unknowns. File detection is never runtime verification.
+Saving appends a preference attempt to the existing private installer journal;
+it preserves unresolved phases and does not replay or unlock them. Windows
+persistence is gated pending native ACL proof. Status labels desired
+preferences separately from observed runtime health.
+
+Authentication is a separate owner-controlled procedure using the provider's
+official documentation for the chosen client/version. Setup does not inspect
+credentials, run clients, provision tokens, boot workers or verify confinement.
+
+Integration API: CommonJS `lib/setup.js` exports `contractMajor = 1` and
+`async run(argv, io = {})`, returning `Promise<number>`: 0 for a preview,
+saved preference or explicit unsaved skip; 1 for refusal/cancel/EOF.
+argv contains setup options without the command name. Optional io has only
+stdin, stdout, stderr streams. Import has no filesystem or runtime effects.
+A future unified CLI must validate the resolved package identity, version and
+fixed module location before calling this interface in process; no old-CLI
+fallback is supported.

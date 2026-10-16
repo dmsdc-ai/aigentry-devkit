@@ -1,5 +1,16 @@
 #!/usr/bin/env node
 
+// Explicit setup routes must precede even logger/scaffold imports.
+if (["setup", "install", "update"].includes(process.argv[2])) {
+  if (process.argv[2] === "update") {
+    process.stderr.write("D1 update unavailable: bounded D2 update plan required; no npm or installation performed. Use setup --configure-only --dry-run for preferences.\n");
+    process.exitCode = 1;
+  } else {
+    require("../lib/setup").run(process.argv.slice(3)).then(code => { process.exitCode = code; }, () => { process.exitCode = 1; });
+  }
+  return;
+}
+
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
@@ -773,8 +784,17 @@ function recoveryJournalReport() {
     ];
   }
 
+  const setupLines = [];
+  if (read.journal && read.journal.setup) {
+    try {
+      const choice = require("../lib/install-state").validateSetupChoice(read.journal.setup);
+      setupLines.push("Setup preference: " + choice.profile + "/" + choice.runtime + " — " + choice.outcome + ", not runtime-verified; authentication not checked.");
+    } catch (_) { setupLines.push("Setup preference: UNKNOWN (invalid record); runtime not verified."); }
+  }
+
   if (unresolved.length === 0) {
     return [
+      ...setupLines,
       "Recovery journal: ok — no phase is left unresolved.",
       "",
     ];
@@ -785,6 +805,7 @@ function recoveryJournalReport() {
     .map((n) => (PHASES[n] ? `${n} (${PHASES[n].label})` : String(n)))
     .join(", ");
   return [
+    ...setupLines,
     `Recovery journal: ok — phases not proven resolved: ${named}`,
     "Replay handling depends on each phase's policy and the selected components/start phase.",
     "If the installer refuses an unknown external effect, AIGENTRY_INSTALL_UNKNOWN_EFFECT=skip",

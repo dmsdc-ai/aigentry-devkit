@@ -360,6 +360,19 @@ function writeManifest(sb, manifest) {
   return p;
 }
 
+
+// D1 CLI effects oracle: all fixture bytes/types/modes except harness stdout.
+function cliTree(root, log) {
+  const out = [];
+  function walk(p) {
+    if (p === log) return;
+    const st = fs.lstatSync(p);
+    out.push([path.relative(root,p), st.mode, st.isSymbolicLink() ? fs.readlinkSync(p) : st.isFile() ? fs.readFileSync(p).toString("base64") : null]);
+    if (st.isDirectory()) for (const f of fs.readdirSync(p).sort()) walk(path.join(p,f));
+  }
+  walk(root); return out;
+}
+
 async function runCaller(caller, sb, row) {
   const health = IS_WIN ? await startHealthServer() : null;
   const env = { ...baseEnv(sb, health), ...(row.env || {}) };
@@ -386,6 +399,7 @@ async function runCaller(caller, sb, row) {
   }
 
   const before = { fingerprint: installedFingerprint(sb), version: installedVersion(sb) };
+  const cliBefore = caller.startsWith("cli-") ? cliTree(sb.root, sb.log) : null;
   const out = fs.openSync(sb.log, "w");
   const t0 = Date.now();
   let child;
@@ -415,6 +429,8 @@ async function runCaller(caller, sb, row) {
   const teleptyNpm = calls.filter((c) => c.tool === "npm" && c.args.some((a) => a === PKG || a.startsWith(`${PKG}@`)));
   return {
     caller,
+    cliBefore,
+    cliAfter: caller.startsWith("cli-") ? cliTree(sb.root, sb.log) : null,
     code,
     elapsed,
     output,
@@ -686,10 +702,17 @@ for (const row of ROWS) {
           assert.ok(r.output.split(/\r?\n/).some((l) => l.trim() === `telepty:    ${row.expect.observed}`),
             `summary must print the verified observation ${row.expect.observed}\n${describe(r)}`);
         }
-        assertOutcome(r, row, sb);
-        if (caller === "cli-update") {
-          const devkit = r.npmAll.filter((c) => c.args.includes("@dmsdc-ai/aigentry-devkit@latest"));
-          assert.equal(devkit.length, 1, `update self-install call\n${describe(r)}`);
+        if (caller.startsWith("cli-")) {
+          assert.equal(r.code, 1, describe(r));
+          assert.match(r.output, /D1 .*unavailable|unsupported or duplicate setup option/, describe(r));
+          assert.deepEqual(r.calls, [], "D1 CLI must not invoke npm, runtime, daemon or health tools");
+          assert.deepEqual(r.health, [], "D1 CLI must not probe health");
+          assert.deepEqual(r.after, r.before, "installed bytes/version remain unchanged");
+          assert.deepEqual(r.cliAfter, r.cliBefore, "complete fixture tree remains unchanged");
+          assert.equal(r.state, null, "D1 CLI must not write legacy Phase 7 state");
+          if (caller === "cli-update") assert.equal(r.npmAll.length, 0, "no npm@latest self-update");
+        } else {
+          assertOutcome(r, row, sb);
         }
       } finally {
         if (!KEEP) fs.rmSync(sb.root, { recursive: true, force: true, maxRetries: 5 });

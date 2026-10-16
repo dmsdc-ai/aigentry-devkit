@@ -674,3 +674,17 @@ test("status :: recovery — a pending safe phase does not imply unconditional r
     if (!KEEP) fs.rmSync(sb.root, { recursive: true, force: true, maxRetries: 5 });
   }
 });
+
+test("status :: saved preference remains unverified and does not resolve a pending phase", { timeout: RUN_TIMEOUT_MS + 30000 }, () => {
+  const sb = mkSandbox("setup-preference");
+  try {
+    seedRunningPhase(sb, 5, "dustcraw");
+    const shared = require("../lib/install-state");
+    shared.saveSetupChoice(stateDir(sb), { profile:"core",runtime:"defer",outcome:"deferred",
+      verification:"not-verified",catalogue_revision:1,plan_digest:"a".repeat(64) }, shared.inspectSetupStorage(stateDir(sb)));
+    const out=runStatus(sb);
+    assert.equal(out.code,0,describe(out));
+    assert.match(out.stdout,/Setup preference: core\/defer.*not runtime-verified/);
+    assert.match(recoveryLine(out.stdout),/not proven resolved: 5/);
+  } finally { if(!KEEP) fs.rmSync(sb.root,{recursive:true,force:true}); }
+});

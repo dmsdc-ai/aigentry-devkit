@@ -1445,3 +1445,23 @@ test("design guard: the journal writer uses no lock syscall, signal or host PID 
     "install.sh must not build a program from the manifest/resume path (Function())");
   assert.ok(!/\beval\b/.test(libCode), "the journal writer must not eval");
 });
+
+test("configure-only shared writer preserves unresolved history and refuses stale identity", () => {
+  const sb=mkSandbox("setup-shared-writer");
+  try {
+    const shared=require("../lib/install-state");
+    fs.mkdirSync(sb.stateDir,{recursive:true,mode:0o700});
+    const prior={schema:shared.SCHEMA,attempts:[{run_id:"prior",outcome:"running",phases:[{phase:5,status:"running"}]}]};
+    fs.writeFileSync(sb.journal,JSON.stringify(prior),{mode:0o600});
+    const observed=shared.inspectSetupStorage(sb.stateDir);
+    const choice={profile:"core",runtime:"native-srt",outcome:"selected",verification:"not-verified",catalogue_revision:1,plan_digest:"b".repeat(64)};
+    shared.saveSetupChoice(sb.stateDir,choice,observed);
+    const after=journal(sb);
+    assert.deepEqual(after.attempts[0],prior.attempts[0]);
+    assert.deepEqual(shared.unresolvedPhases(after),[5]);
+    assert.throws(()=>shared.saveSetupChoice(sb.stateDir,choice,observed),/stale/);
+    assert.equal(fs.existsSync(sb.lock),false);
+    assert.equal(fs.existsSync(sb.stateFile),false,"no second state journal");
+    assert.throws(()=>shared.validateSetupChoice({...choice,token:"synthetic"}),/invalid/);
+  } finally {sb.cleanup();}
+});

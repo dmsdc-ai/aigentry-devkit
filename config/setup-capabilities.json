@@ -1,0 +1,122 @@
+{
+  "revision": 1,
+  "scope": "preferences only; installation and runtime verification unavailable",
+  "runtimes": [
+    {
+      "id": "defer",
+      "hosts": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "preference": true,
+      "executables": [],
+      "disclosure": "No runtime action; local preference write only.",
+      "architecture": "unverified",
+      "license_cost": "unknown; no acceptance",
+      "data_services_privilege": "unknown; no changes",
+      "installation": false,
+      "verification": "not-verified"
+    },
+    {
+      "id": "native-srt",
+      "hosts": [
+        "darwin",
+        "linux"
+      ],
+      "preference": true,
+      "executables": [],
+      "disclosure": "Existing native runner requirements and effective confinement unverified; preference only.",
+      "architecture": "unverified",
+      "license_cost": "unknown; no acceptance",
+      "data_services_privilege": "unknown; no changes",
+      "installation": false,
+      "verification": "not-verified"
+    },
+    {
+      "id": "docker-desktop",
+      "hosts": [
+        "darwin",
+        "win32"
+      ],
+      "preference": false,
+      "executables": [
+        "docker"
+      ],
+      "disclosure": "VM storage, OS integration and possible privileged helper require primary-source/native evidence.",
+      "architecture": "unverified",
+      "license_cost": "unknown; no acceptance",
+      "data_services_privilege": "unknown; no changes",
+      "installation": false,
+      "verification": "not-verified"
+    },
+    {
+      "id": "docker-engine-rootless",
+      "hosts": [
+        "linux"
+      ],
+      "preference": false,
+      "executables": [
+        "dockerd"
+      ],
+      "disclosure": "Rootless operation, namespaces, service/network/image storage unverified. No rootful fallback.",
+      "architecture": "unverified",
+      "license_cost": "unknown; no acceptance",
+      "data_services_privilege": "unknown; no changes",
+      "installation": false,
+      "verification": "not-verified"
+    },
+    {
+      "id": "podman",
+      "hosts": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "preference": false,
+      "executables": [
+        "podman"
+      ],
+      "disclosure": "Native/managed VM, network and storage semantics unverified.",
+      "architecture": "unverified",
+      "license_cost": "unknown; no acceptance",
+      "data_services_privilege": "unknown; no changes",
+      "installation": false,
+      "verification": "not-verified"
+    },
+    {
+      "id": "rancher-desktop",
+      "hosts": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "preference": false,
+      "executables": [
+        "rdctl"
+      ],
+      "disclosure": "Engine mode, VM and privileged integration unverified.",
+      "architecture": "unverified",
+      "license_cost": "unknown; no acceptance",
+      "data_services_privilege": "unknown; no changes",
+      "installation": false,
+      "verification": "not-verified"
+    },
+    {
+      "id": "orbstack",
+      "hosts": [
+        "darwin"
+      ],
+      "preference": false,
+      "executables": [
+        "orb"
+      ],
+      "disclosure": "Host integration and entitlement unverified.",
+      "architecture": "unverified",
+      "license_cost": "unknown; no acceptance",
+      "data_services_privilege": "unknown; no changes",
+      "installation": false,
+      "verification": "not-verified"
+    }
+  ]
+}
