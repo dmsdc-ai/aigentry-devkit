@@ -8,7 +8,14 @@
 // what the installer did and that no real operation ran. Nothing touches the
 // real npm registry, global prefix, daemon, launchd/systemd, services or the
 // user's config, and no fake stands in for a missing required product source.
-// Credentials are synthetic markers; no host credential is read or migrated.
+// Credentials are synthetic markers generated at runtime; no host credential is
+// read or migrated.
+//
+// Fixture hardening (#1147 phase 2): the fake actuator derives its private
+// state directory from its own location, never from argv/env/cwd, every
+// filename it touches is a literal, and a tool outside the fixture's closed
+// vocabulary is refused inert. A dedicated fixture-control row proves an
+// unrelated argv cannot redirect the fake's reads or writes.
 //
 // Coverage (one row or more each): every mutating phase fails independently,
 // positive completion, repeated resume, unknown-effect refusal, interrupted
@@ -38,7 +45,11 @@ const IS_WIN = process.platform === "win32";
 const SKIP_SH = IS_WIN ? "install.sh is a POSIX caller; install.ps1 covers win32 (needs a native runner)" : false;
 const RUN_TIMEOUT_MS = 180000;
 const KEEP = process.env.AIGENTRY_TEST_KEEP === "1";
-const SYNTHETIC_KEY = "SYNTHETIC-ONLY-aigentry-1147-not-a-real-key";
+// Generated fresh per run from node:crypto, so this file contains no literal
+// secret-shaped string at all. The anti-leak assertions below check this exact
+// value, so they get strictly stronger: a different random marker every run
+// cannot be accidentally satisfied by a pre-existing byte sequence on disk.
+const SYNTHETIC_KEY = `SYNTHETIC-ONLY-1147-${crypto.randomBytes(24).toString("hex")}`;
 
 // Private fixture files must not be group/world readable.
 process.umask(0o077);
@@ -49,32 +60,46 @@ const FORBIDDEN = ["git", "brew", "sudo", "launchctl", "systemctl", "apt-get", "
 // ── inert fake actuator ─────────────────────────────────────────────────────
 
 const FAKE_JS = String.raw`"use strict";
-// Inert fake for the #1147 recovery tests. argv: <stateDir> <tool> ...args
+// Inert fake for the #1147 recovery tests. argv: <tool> ...args
+//
+// The private state directory is NOT taken from argv, env or cwd: it is the
+// fixed "state" sibling of this very script, so no caller argument can move a
+// read or a write outside the fixture. Every filename below is a literal — none
+// is concatenated from a caller-supplied value. The tool name is still
+// caller-supplied, so it is checked against the closed vocabulary the fixture
+// itself wrote into the private state, and anything else is refused inert with
+// exit 98 before a single byte is read or written.
+//
 // Never performs a real action: it records the call and returns a modelled exit
 // code. A tool listed in forbidden.json records the breach and exits 97.
 const fs = require("fs");
 const path = require("path");
-const stateDir = process.argv[2];
-const tool = process.argv[3];
-const args = process.argv.slice(4);
-const st = (n) => path.join(stateDir, n);
+const STATE_DIR = path.join(__dirname, "state");
+const st = (n) => path.join(STATE_DIR, n);
 const text = (n) => { try { return fs.readFileSync(st(n), "utf8"); } catch (_) { return null; } };
+const tool = process.argv[2];
+const args = process.argv.slice(3);
 const log = (extra) => fs.appendFileSync(st("calls.jsonl"),
   JSON.stringify(Object.assign({ tool, args, pid: process.pid, t: Date.now() }, extra || {})) + "\n");
 
+const vocabulary = JSON.parse(text("tools.json") || "[]");
 const forbidden = JSON.parse(text("forbidden.json") || "[]");
-if (forbidden.includes(tool)) {
+if (!vocabulary.includes(tool)) {
+  process.stderr.write("fake: refusing a tool outside the fixture vocabulary\n");
+  process.exitCode = 98;
+} else if (forbidden.includes(tool)) {
   log({ forbidden: true });
   process.exitCode = 97;
 } else {
   log();
-  // exit.<tool> models a failing actuator for one phase at a time.
-  const code = text("exit." + tool);
   if (tool === "telepty" && ["--version", "-v", "version"].includes(args[0])) {
     const v = text("telepty.version");
     if (v !== null) process.stdout.write(v + "\n");
   }
-  process.exitCode = code ? Number(code.trim()) : 0;
+  // exits.json models a failing actuator for one phase at a time. It is a map
+  // keyed by the already-validated tool name, so no path is derived from argv.
+  const exits = JSON.parse(text("exits.json") || "{}");
+  process.exitCode = Object.prototype.hasOwnProperty.call(exits, tool) ? Number(exits[tool]) : 0;
 }
 `;
 
@@ -101,6 +126,10 @@ function mkSandbox(label) {
   fs.writeFileSync(sb.fakeJs, FAKE_JS);
   fs.writeFileSync(path.join(sb.state, "calls.jsonl"), "");
   fs.writeFileSync(path.join(sb.state, "forbidden.json"), JSON.stringify(FORBIDDEN));
+  // The closed vocabulary the fake validates against: exactly the tools this
+  // fixture installs a shim for. Written by the fixture, never by a caller.
+  fs.writeFileSync(path.join(sb.state, "tools.json"), JSON.stringify([...RECORDERS, ...FORBIDDEN]));
+  fs.writeFileSync(path.join(sb.state, "exits.json"), "{}");
   sb.tools = new Set();
   for (const t of [...RECORDERS, ...FORBIDDEN]) addTool(sb, t);
   // The pinned runtime: `node` must resolve to this very interpreter.
@@ -115,9 +144,12 @@ function writeShim(sb, name, target) {
   fs.chmodSync(p, 0o700);
 }
 
+// The shim passes the tool name and the caller's arguments only. It does NOT
+// pass the state directory: the fake derives that from its own location, so no
+// argv can redirect it.
 function addTool(sb, tool) {
   const p = path.join(sb.fakebin, tool);
-  fs.writeFileSync(p, `#!/bin/sh\nexec ${sq(process.execPath)} ${sq(sb.fakeJs)} ${sq(sb.state)} ${tool} "$@"\n`);
+  fs.writeFileSync(p, `#!/bin/sh\nexec ${sq(process.execPath)} ${sq(sb.fakeJs)} ${tool} "$@"\n`);
   fs.chmodSync(p, 0o700);
   sb.tools.add(tool);
 }
@@ -128,8 +160,20 @@ function dropTool(sb, tool) {
 }
 
 // Model one actuator failing, which is how a phase is made to fail on its own.
+// Kept in one map file keyed by tool name, so the fixture never builds a path
+// out of a tool name.
+function exitsPath(sb) {
+  return path.join(sb.state, "exits.json");
+}
 function failTool(sb, tool, code = 1) {
-  fs.writeFileSync(path.join(sb.state, `exit.${tool}`), String(code));
+  const exits = JSON.parse(fs.readFileSync(exitsPath(sb), "utf8"));
+  exits[tool] = code;
+  fs.writeFileSync(exitsPath(sb), JSON.stringify(exits));
+}
+function unfailTool(sb, tool) {
+  const exits = JSON.parse(fs.readFileSync(exitsPath(sb), "utf8"));
+  delete exits[tool];
+  fs.writeFileSync(exitsPath(sb), JSON.stringify(exits));
 }
 
 // Phase 8 uses git by design, so for those rows git stops being a sentinel and
@@ -398,7 +442,7 @@ test("resuming after a failure appends an attempt and keeps the earlier one", { 
     const firstAttempt = JSON.stringify(journal(sb).attempts[0]);
 
     // Same cause fixed, resumed by NAME this time (the F5 lookup path).
-    fs.rmSync(path.join(sb.state, "exit.npx"));
+    unfailTool(sb, "npx");
     const second = runInstaller(sb, { components: "deliberation", resume: "deliberation", env: { AIGENTRY_INSTALL_UNKNOWN_EFFECT: "replay" } });
     const d = describe(sb, second);
     assert.equal(second.code, 0, d);
@@ -738,6 +782,77 @@ test("fixture precondition: the installer resolves only fakes and the pinned nod
       assert.ok(!fs.existsSync(path.join(dir, "telepty")), `${dir}/telepty would defeat these rows`);
       assert.ok(!fs.existsSync(path.join(dir, "dustcraw")), `${dir}/dustcraw would defeat these rows`);
     }
+  } finally { sb.cleanup(); }
+});
+
+// The fake's state location is structural, not negotiable by its caller. Under
+// the previous argv shape the state directory WAS argv[2], so a caller could
+// point the fake's reads and writes at a directory of its choosing; these rows
+// are what makes that impossible rather than merely unlikely.
+test("fixture control: no caller argv can move the fake's reads or writes", () => {
+  const sb = mkSandbox("fixture-control");
+  try {
+    const decoy = path.join(sb.root, "decoy-state");
+    const runFake = (...argv) => spawnSync(process.execPath, [sb.fakeJs, ...argv], {
+      cwd: sb.root,
+      env: { PATH: process.env.PATH, HOME: sb.home, TMPDIR: sb.tmp },
+      encoding: "utf8",
+      timeout: 30000,
+    });
+    const untouched = hashTree(sb.root);
+
+    // A tool outside the fixture vocabulary is refused inert: no log, no write.
+    const unknown = runFake("not-a-fixture-tool");
+    assert.equal(unknown.status, 98, `unknown tool must be refused: ${unknown.stderr}`);
+    assert.equal(hashTree(sb.root), untouched, "a refused tool must not write anything");
+
+    // A traversal-shaped tool name is just an unknown tool — it never reaches a
+    // filename, because no filename is built from the tool name any more.
+    const traversal = runFake("../../../../decoy-state");
+    assert.equal(traversal.status, 98, "a traversal-shaped tool name must be refused");
+    assert.equal(hashTree(sb.root), untouched, "a refused tool must not write anything");
+
+    // The OLD argv shape: a state directory in argv[2]. It is now read as a tool
+    // name and refused, so the caller cannot nominate the state directory.
+    const asStateDir = runFake(decoy, "npm", "install", "-g", "pkg");
+    assert.equal(asStateDir.status, 98, "a path in the tool position is not a tool");
+    assert.equal(fs.existsSync(decoy), false, "the decoy state directory was never created");
+    assert.equal(hashTree(sb.root), untouched, "a refused call must not write anything");
+    assert.deepEqual(calls(sb), [], "nothing may be logged for refused calls");
+
+    // A legitimate tool records into the FIXED private state even when its own
+    // arguments look exactly like a redirect target: args stay data.
+    const ok = runFake("npm", "--prefix", decoy, "install", "-g", "pkg");
+    assert.equal(ok.status, 0, `a fixture tool must still work: ${ok.stderr}`);
+    assert.equal(fs.existsSync(decoy), false, "an argv that looks like a path must stay data");
+    const logged = calls(sb);
+    assert.equal(logged.length, 1, "the call landed in the fixed private state");
+    assert.equal(logged[0].tool, "npm");
+    assert.deepEqual(logged[0].args, ["--prefix", decoy, "install", "-g", "pkg"],
+      "tool and args are preserved as data");
+    // calls.jsonl is the ONLY thing that changed anywhere under the sandbox.
+    const expected = hashTree(sb.root);
+    fs.writeFileSync(path.join(sb.state, "calls.jsonl"), "");
+    assert.notEqual(expected, untouched, "the fixture control must actually observe a change");
+    assert.equal(hashTree(sb.root), untouched, "only the fixed calls.jsonl was written");
+
+    // The tripwire still fires through the same fixed state.
+    const sentinel = runFake("git", "clone", "https://example.invalid/x.git");
+    assert.equal(sentinel.status, 97, "a refusing sentinel must still trip");
+    assert.equal(calls(sb).filter((c) => c.forbidden).length, 1, "the breach is recorded");
+  } finally { sb.cleanup(); }
+});
+
+test("fixture control: the fake's vocabulary covers exactly the installed shims", { skip: SKIP_SH }, () => {
+  const sb = mkSandbox("vocabulary");
+  try {
+    const vocabulary = JSON.parse(fs.readFileSync(path.join(sb.state, "tools.json"), "utf8"));
+    const shimmed = fs.readdirSync(sb.fakebin).filter((n) => n !== "node");
+    assert.deepEqual([...shimmed].sort(), [...vocabulary].sort(),
+      "every shim must be in the vocabulary and vice versa, or a real tool could slip through");
+    // `node` is deliberately not a fake: it is the pinned interpreter itself.
+    assert.equal(fs.readFileSync(path.join(sb.fakebin, "node"), "utf8").includes(process.execPath), true);
+    assert.equal(vocabulary.includes("node"), false, "node is not a fake actuator");
   } finally { sb.cleanup(); }
 });
 

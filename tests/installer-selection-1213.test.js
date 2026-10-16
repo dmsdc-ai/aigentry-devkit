@@ -91,19 +91,31 @@ function requireShell(caller) {
 // ── inert fake actuator ─────────────────────────────────────────────────────
 
 const FAKE_JS = String.raw`"use strict";
-// Inert fake for the #1147 selection tests. argv: <stateDir> <tool> ...args
+// Inert fake for the #1147 selection tests. argv: <tool> ...args
+//
+// The private state directory is NOT taken from argv, env or cwd: it is the
+// fixed "state" sibling of this very script, so no caller argument can move a
+// read or a write outside the fixture. Every filename below is a literal — none
+// is concatenated from a caller-supplied value. The tool name is still
+// caller-supplied, so it is checked against the closed vocabulary the fixture
+// itself wrote into the private state, and anything else is refused inert with
+// exit 98 before a single byte is read or written.
 const fs = require("fs");
 const path = require("path");
-const stateDir = process.argv[2];
-const tool = process.argv[3];
-const args = process.argv.slice(4);
-const st = (n) => path.join(stateDir, n);
+const STATE_DIR = path.join(__dirname, "state");
+const st = (n) => path.join(STATE_DIR, n);
 const text = (n) => { try { return fs.readFileSync(st(n), "utf8"); } catch (_) { return null; } };
+const tool = process.argv[2];
+const args = process.argv.slice(3);
 const log = (extra) => fs.appendFileSync(st("calls.jsonl"),
   JSON.stringify(Object.assign({ tool, args, pid: process.pid, t: Date.now() }, extra || {})) + "\n");
 
+const vocabulary = JSON.parse(text("tools.json") || "[]");
 const forbidden = JSON.parse(text("forbidden.json") || "[]");
-if (forbidden.includes(tool)) {
+if (!vocabulary.includes(tool)) {
+  process.stderr.write("fake: refusing a tool outside the fixture vocabulary\n");
+  process.exitCode = 98;
+} else if (forbidden.includes(tool)) {
   log({ forbidden: true });
   process.exitCode = 97;
 } else {
@@ -119,15 +131,18 @@ if (forbidden.includes(tool)) {
 const sq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 const psq = (s) => `'${String(s).replace(/'/g, "''")}'`;
 
+// Each shim passes the tool name and the caller's arguments only. None passes
+// the state directory: the fake derives that from its own location, so no argv
+// can redirect it.
 function writeTool(sb, tool) {
   if (IS_WIN) {
     fs.writeFileSync(path.join(sb.fakebin, `${tool}.cmd`),
-      `@echo off\r\n"${process.execPath}" "${sb.fakeJs}" "${sb.state}" ${tool} %*\r\nexit /b %ERRORLEVEL%\r\n`);
+      `@echo off\r\n"${process.execPath}" "${sb.fakeJs}" ${tool} %*\r\nexit /b %ERRORLEVEL%\r\n`);
     fs.writeFileSync(path.join(sb.fakebin, `${tool}.ps1`),
-      `& ${psq(process.execPath)} ${psq(sb.fakeJs)} ${psq(sb.state)} ${psq(tool)} @args\r\nexit $LASTEXITCODE\r\n`);
+      `& ${psq(process.execPath)} ${psq(sb.fakeJs)} ${psq(tool)} @args\r\nexit $LASTEXITCODE\r\n`);
   } else {
     const p = path.join(sb.fakebin, tool);
-    fs.writeFileSync(p, `#!/bin/sh\nexec ${sq(process.execPath)} ${sq(sb.fakeJs)} ${sq(sb.state)} ${tool} "$@"\n`);
+    fs.writeFileSync(p, `#!/bin/sh\nexec ${sq(process.execPath)} ${sq(sb.fakeJs)} ${tool} "$@"\n`);
     fs.chmodSync(p, 0o700);
   }
 }
@@ -150,6 +165,9 @@ function mkSandbox(label) {
   fs.writeFileSync(sb.fakeJs, FAKE_JS);
   fs.writeFileSync(path.join(sb.state, "calls.jsonl"), "");
   fs.writeFileSync(path.join(sb.state, "forbidden.json"), JSON.stringify(FORBIDDEN));
+  // The closed vocabulary the fake validates against: exactly the tools this
+  // fixture installs a shim for. Written by the fixture, never by a caller.
+  fs.writeFileSync(path.join(sb.state, "tools.json"), JSON.stringify([...RECORDERS, ...FORBIDDEN]));
   fs.writeFileSync(path.join(sb.state, "telepty.version"), "0.8.5");
   for (const t of [...RECORDERS, ...FORBIDDEN]) writeTool(sb, t);
   if (!IS_WIN) {
@@ -378,6 +396,47 @@ test("sh :: an unknown-but-harmless resume target is still refused the same way"
 });
 
 // ── source-shape regression lock (NOT native acceptance for F9) ─────────────
+
+// Same fixture-state contract as tests/installer-recovery-1147.test.js: the
+// fake's private state is structural, not nominated by its caller.
+test("fixture control: no caller argv can move the fake's reads or writes", { skip: SKIP.sh }, () => {
+  const sb = mkSandbox("fixture-control");
+  try {
+    const decoy = path.join(sb.root, "decoy-state");
+    const runFake = (...argv) => spawnSync(process.execPath, [sb.fakeJs, ...argv], {
+      cwd: sb.root,
+      env: { PATH: process.env.PATH, HOME: sb.home, TMPDIR: sb.tmp },
+      encoding: "utf8",
+      timeout: 30000,
+    });
+
+    // A tool outside the fixture vocabulary — including a traversal-shaped name
+    // and the old "state directory first" argv shape — is refused inert.
+    for (const argv of [["not-a-fixture-tool"], ["../../../../decoy-state"], [decoy, "npm", "install"]]) {
+      const r = runFake(...argv);
+      assert.equal(r.status, 98, `must be refused: ${JSON.stringify(argv)} -> ${r.stderr}`);
+    }
+    assert.equal(fs.existsSync(decoy), false, "the decoy state directory was never created");
+    assert.deepEqual(calls(sb), [], "nothing may be logged for refused calls");
+
+    // A legitimate tool records into the fixed private state; args stay data.
+    const ok = runFake("npm", "--prefix", decoy, "install", "-g", "pkg");
+    assert.equal(ok.status, 0, `a fixture tool must still work: ${ok.stderr}`);
+    assert.equal(fs.existsSync(decoy), false, "an argv that looks like a path must stay data");
+    assert.deepEqual(calls(sb).map((c) => [c.tool, c.args]),
+      [["npm", ["--prefix", decoy, "install", "-g", "pkg"]]], "tool and args preserved as data");
+
+    // The tripwire still fires through the same fixed state.
+    assert.equal(runFake("git", "clone", "https://example.invalid/x.git").status, 97, "sentinel must trip");
+    assert.equal(calls(sb).filter((c) => c.forbidden).length, 1, "the breach is recorded");
+
+    // The vocabulary is exactly the installed shim set.
+    const vocabulary = JSON.parse(fs.readFileSync(path.join(sb.state, "tools.json"), "utf8"));
+    const shimmed = fs.readdirSync(sb.fakebin).filter((n) => n !== "node");
+    assert.deepEqual([...shimmed].sort(), [...vocabulary].sort(),
+      "every shim must be in the vocabulary and vice versa");
+  } finally { sb.cleanup(); }
+});
 
 test("install.ps1 parenthesises every phase guard (source shape, not a PowerShell measurement)", () => {
   const ps = fs.readFileSync(INSTALL_PS1, "utf8");
