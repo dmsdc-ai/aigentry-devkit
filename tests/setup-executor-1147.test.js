@@ -113,9 +113,19 @@ function call(f,args,entry="bin/aigentry-devkit.js",extraEnv={}){
  const env={HOME:f.home,USERPROFILE:f.home,XDG_CONFIG_HOME:path.join(f.home,".config"),
   TMPDIR:path.join(f.tree,"tmp"),TMP:path.join(f.tree,"tmp"),TEMP:path.join(f.tree,"tmp"),PATH:"",...extraEnv};
  const before=snapshot(f.tree),command=[process.execPath,"--require",f.observer,path.join(f.pkg,entry),...args];
- const result=spawnSync(command[0],command.slice(1),{env,encoding:"utf8",timeout:10000});
+ // Capture complete preview bytes outside the measured tree, without pipe limits.
+ const seq=++f.seq,stdoutFile=path.join(f.root,"observers",seq+".stdout"),stderrFile=path.join(f.root,"observers",seq+".stderr");
+ const stdoutFd=fs.openSync(stdoutFile,"wx",0o600);
+ let stderrFd,result;
+ try{
+  stderrFd=fs.openSync(stderrFile,"wx",0o600);
+  result=spawnSync(command[0],command.slice(1),{env,encoding:"utf8",timeout:10000,stdio:["ignore",stdoutFd,stderrFd]});
+ }finally{fs.closeSync(stdoutFd);if(stderrFd!==undefined)fs.closeSync(stderrFd);}
  const after=snapshot(f.tree);
- fs.writeFileSync(path.join(f.root,"observers",++f.seq+".json"),JSON.stringify({command,args,entry,env,before,after,...result},null,2));
+ const capture={stdoutFile,stderrFile,stdoutBytes:fs.statSync(stdoutFile).size,stderrBytes:fs.statSync(stderrFile).size};
+ fs.writeFileSync(path.join(f.root,"observers",seq+".json"),JSON.stringify({command,args,entry,env,before,after,...result,capture},null,2));
+ assert.ok(capture.stdoutBytes<=16*1024*1024&&capture.stderrBytes<=16*1024*1024,"capture exceeds bounded decode; raw files retained");
+ result.stdout=fs.readFileSync(stdoutFile,"utf8");result.stderr=fs.readFileSync(stderrFile,"utf8");
  return result;
 }
 function withFixture(fn){const f=fixture();try{fn(f);}finally{if(!KEEP)fs.rmSync(f.root,{recursive:true,force:true});}}
