@@ -12,6 +12,14 @@ const rootDir = path.resolve(__dirname, "..");
 const HOME = process.env.HOME || process.env.USERPROFILE || "";
 const defaultManifestPath = path.join(rootDir, "config", "installer-manifest.json");
 
+// The installer's own state root, defined once here so no reader invents a
+// second one: install.sh uses ${XDG_CONFIG_HOME:-$HOME/.config}/aigentry-devkit
+// and install.ps1 the same, and both install-state.json and the recovery
+// journal live in it.
+function installStateDir() {
+  return path.join(process.env.XDG_CONFIG_HOME || path.join(HOME, ".config"), "aigentry-devkit");
+}
+
 
 function resolveFullPath(cmd) {
   const result = spawnSync("which", [cmd], { stdio: "pipe", timeout: 3000 });
@@ -460,10 +468,7 @@ function runDoctor() {
   // Orchestrator profile checks (#518) — auto-detected: only shown when the
   // orchestrator profile is installed (installer-state has orchestrator-role /
   // an orchestrator block, or $ORCH_DIR exists). A core-only user is unaffected.
-  const orchStateFile = path.join(
-    process.env.XDG_CONFIG_HOME || path.join(HOME, ".config"),
-    "aigentry-devkit", "install-state.json"
-  );
+  const orchStateFile = path.join(installStateDir(), "install-state.json");
   const orchState = readJson(orchStateFile) || {};
   const orchDir = (orchState.orchestrator && orchState.orchestrator.repo_dir) ||
     process.env.AIGENTRY_ORCH_DIR || "";
@@ -705,6 +710,88 @@ function runStatus() {
     "Install targets are declared in config/installer-manifest.json, not here.",
     "",
   ].join("\n"));
+
+  for (const line of recoveryJournalReport()) process.stdout.write(`${line}\n`);
+}
+
+// ── #1147 recovery journal — read-only, answered by the one shared fold ─────
+//
+// `status` does NOT re-derive chronological folding. It calls the authoritative
+// reader and fold exported by lib/install-state.js, so the rules have exactly
+// one definition and this is a consumer of it: a phase still recorded `running`
+// stays unresolved, a `completed` record carrying `degraded` cannot clear a
+// prior unknown, a clean completion resolves it, and the raw history is kept.
+//
+// Four states stay distinguishable, and the fourth is the reason `null` exists:
+//
+//   absent              no run has recorded a journal yet
+//   ok   + []           recorded, and nothing is left unresolved
+//   ok   + [n, ...]     recorded, and those phases are NOT proven resolved
+//   corrupt/unsupported the fold cannot answer — unresolved_phases is null,
+//                       which means UNKNOWN. Reporting that as zero, none or
+//                       "nothing unresolved" would state the opposite of the
+//                       truth, so it is reported as unknown, with the reason.
+//
+// "Not proven resolved" is never a claim that a process died: during a live
+// install the phase in flight is the expected answer.
+//
+// Read-only and inert: nothing is written, no directory is created, no lock is
+// taken, and no installer, service, daemon or recovery action starts here.
+function recoveryJournalReport() {
+  const dir = installStateDir();
+  const journalFile = path.join(dir, "install-journal.json");
+  let read;
+  let unresolved;
+  try {
+    const { readJournal, unresolvedPhases } = require("../lib/install-state");
+    read = readJournal(dir);
+    unresolved = read.status === "ok" ? unresolvedPhases(read.journal)
+      : read.status === "absent" ? []
+        : null;
+  } catch (err) {
+    // The reader itself is unavailable, so the honest answer is still unknown.
+    return [
+      `Recovery journal: unreadable — unresolved phases UNKNOWN (${err.message})`,
+      "",
+    ];
+  }
+
+  if (read.status === "absent") {
+    return [
+      `Recovery journal: none recorded (${journalFile})`,
+      "No journal is available here; prior installation activity cannot be determined.",
+      "",
+    ];
+  }
+
+  if (unresolved === null) {
+    return [
+      `Recovery journal: ${read.status} — unresolved phases UNKNOWN (${read.reason || "unreadable record"})`,
+      `The record at ${journalFile} was left untouched. UNKNOWN is not "nothing unresolved":`,
+      "inspect or move it aside, then re-run the installer, which refuses to guess.",
+      "",
+    ];
+  }
+
+  if (unresolved.length === 0) {
+    return [
+      "Recovery journal: ok — no phase is left unresolved.",
+      "",
+    ];
+  }
+
+  const { PHASES } = require("../lib/install-state");
+  const named = unresolved
+    .map((n) => (PHASES[n] ? `${n} (${PHASES[n].label})` : String(n)))
+    .join(", ");
+  return [
+    `Recovery journal: ok — phases not proven resolved: ${named}`,
+    "Replay handling depends on each phase's policy and the selected components/start phase.",
+    "If the installer refuses an unknown external effect, AIGENTRY_INSTALL_UNKNOWN_EFFECT=skip",
+    "leaves it alone; =replay explicitly retries it. During a live install the phase in flight",
+    "is listed here too; this is not a claim that anything died.",
+    "",
+  ];
 }
 
 function runInit() {

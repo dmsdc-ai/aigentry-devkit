@@ -140,8 +140,11 @@ function uninstallTelepty(sb) {
 function baseEnv(sb) {
   const env = {
     HOME: sb.home,
+    USERPROFILE: sb.home,
     XDG_CONFIG_HOME: sb.xdg,
     TMPDIR: sb.tmp,
+    TMP: sb.tmp,
+    TEMP: sb.tmp,
     LANG: "C",
     TERM: "dumb",
     USER: "fixture",
@@ -173,7 +176,32 @@ function readCalls(sb) {
     .split("\n").filter(Boolean).map((l) => JSON.parse(l));
 }
 
+// Snapshot every entry without following links. Only the fixture's deliberate
+// append-only call log may change; its contents are checked separately below.
+function fixtureTree(sb) {
+  const entries = [];
+  function visit(relative) {
+    const file = path.join(sb.root, relative);
+    const stat = fs.lstatSync(file);
+    const entry = { path: relative, mode: stat.mode };
+    if (stat.isDirectory()) {
+      entry.type = "directory";
+      entries.push(entry);
+      for (const name of fs.readdirSync(file).sort()) visit(path.join(relative, name));
+    } else {
+      entry.type = stat.isSymbolicLink() ? "symlink" : "file";
+      entry.bytes = stat.isSymbolicLink() ? fs.readlinkSync(file)
+        : relative === path.join("state", "calls.jsonl") ? "fixture-call-log" : fs.readFileSync(file).toString("base64");
+      entries.push(entry);
+    }
+  }
+  visit("");
+  return entries;
+}
+
 function runStatus(sb) {
+  const before = fixtureTree(sb);
+  const logBefore = fs.readFileSync(path.join(sb.state, "calls.jsonl"), "utf8");
   const r = spawnSync(process.execPath, [CLI, "status"], {
     cwd: sb.root,
     env: baseEnv(sb),
@@ -181,8 +209,21 @@ function runStatus(sb) {
     timeout: RUN_TIMEOUT_MS,
     windowsHide: true,
   });
+  assert.deepEqual(fixtureTree(sb), before, "status must preserve the complete fixture tree and journal bytes");
+  const logAfter = fs.readFileSync(path.join(sb.state, "calls.jsonl"), "utf8");
+  assert.ok(logAfter.startsWith(logBefore), "fixture call log must remain append-only");
+  const allowed = fs.readdirSync(MODULES_DIR).filter((f) => f.endsWith(".adapter.json"))
+    .map((f) => JSON.parse(fs.readFileSync(path.join(MODULES_DIR, f), "utf8")).healthcheck?.command)
+    .filter(Boolean).map((command) => command.split(/\s+/));
+  for (const line of logAfter.slice(logBefore.length).split("\n").filter(Boolean)) {
+    const call = JSON.parse(line);
+    assert.ok(RECORDERS.includes(call.tool), "status invoked a forbidden executable");
+    assert.ok(allowed.some(([tool, ...args]) => tool === call.tool && JSON.stringify(args) === JSON.stringify(call.args)),
+      "status invoked an unexpected command or action");
+  }
   const calls = readCalls(sb);
   const forbiddenPath = path.join(sb.state, "forbidden.jsonl");
+  assert.equal(fs.existsSync(forbiddenPath), false, "status must not invoke any forbidden executable");
   return {
     code: r.status,
     signal: r.signal,
@@ -353,6 +394,282 @@ test("status :: fixture precondition: no real telepty or npm on the sandbox PATH
       "npm must resolve to the tripwire");
     uninstallTelepty(sb);
     assert.equal(found(IS_WIN ? "telepty.cmd" : "telepty"), null, "absent rows must have no telepty anywhere on PATH");
+  } finally {
+    if (!KEEP) fs.rmSync(sb.root, { recursive: true, force: true, maxRetries: 5 });
+  }
+});
+
+// ── #1147 recovery-journal reader states ───────────────────────────────────
+//
+// `status` must answer "what is still unresolved?" through the ONE shared fold
+// exported by lib/install-state.js (readJournal + unresolvedPhases), never by
+// re-deriving chronological folding of its own. So these rows build the journal
+// with the REAL writer — begin-run / phase-begin / phase-end — and the subject
+// is that original fold over real journal bytes, not a copied builder.
+//
+// Four reader states must stay distinguishable: absent, valid-and-resolved,
+// valid-and-unresolved, and corrupt/unsupported. The last one is the dangerous
+// one: `unresolved_phases` is `null` there, meaning UNKNOWN, and rendering it as
+// zero/none/nothing-unresolved would tell a user the opposite of the truth.
+//
+// The state root is not invented here either: it is the installer's own
+// ${XDG_CONFIG_HOME:-$HOME/.config}/aigentry-devkit, and baseEnv already points
+// XDG_CONFIG_HOME at the sandbox, so the reader and the fixture agree by
+// construction.
+const JOURNAL_CLI = path.join(REPO, "lib", "install-state.js");
+
+const stateDir = (sb) => path.join(sb.xdg, "aigentry-devkit");
+const journalPath = (sb) => path.join(stateDir(sb), "install-journal.json");
+const lockPath = (sb) => path.join(stateDir(sb), "install-journal.lock");
+
+// The real writer. Returns the raw result so a row can assert a refusal too.
+function writer(sb, ...args) {
+  return spawnSync(process.execPath, [JOURNAL_CLI, ...args, "--dir", stateDir(sb)],
+    { cwd: sb.root, env: baseEnv(sb), encoding: "utf8", timeout: RUN_TIMEOUT_MS, windowsHide: true });
+}
+
+function beginRun(sb, components, extra = []) {
+  const r = writer(sb, "begin-run", "--installer", "install.sh", "--profile", "core",
+    "--components", components, "--start-phase", "0", ...extra);
+  assert.equal(r.status, 0, `begin-run must open an attempt: ${r.stdout}${r.stderr}`);
+  return r.stdout.split("\t")[1];
+}
+
+// A phase left `running` with no terminal record: exactly what a SIGKILL leaves,
+// since no handler can run. The lock goes with the dead process.
+function seedRunningPhase(sb, phase, components) {
+  const runId = beginRun(sb, components);
+  assert.equal(writer(sb, "phase-begin", "--run", runId, "--phase", String(phase)).status, 0);
+  fs.rmSync(lockPath(sb), { force: true });
+  return runId;
+}
+
+function recoveryLine(stdout) {
+  return stdout.split(/\r?\n/).find((l) => /^Recovery journal:/.test(l)) || null;
+}
+
+// Nothing in a read may be reported as a count of zero, as "none" or as
+// "nothing unresolved" when the honest answer is "unknown".
+function assertNotAVerdictOfZero(line, d) {
+  for (const bad of [/\bnothing\b/i, /\bnone\b/i, /:\s*0\b/, /\b0 phases?\b/i, /\bno phase\b/i]) {
+    assert.ok(!bad.test(line), `an UNKNOWN answer must not read as zero/none: ${JSON.stringify(line)}\n${d}`);
+  }
+}
+
+test("status :: recovery — an absent journal reads as none recorded, not as a verdict", { timeout: RUN_TIMEOUT_MS + 30000 }, () => {
+  const sb = mkSandbox("recovery-absent");
+  try {
+    installTelepty(sb, { stdout: "0.8.9\n" });
+    assert.equal(fs.existsSync(journalPath(sb)), false, "precondition: no journal");
+    const out = runStatus(sb);
+    const d = describe(out);
+
+    assert.equal(out.code, 0, `status must exit 0\n${d}`);
+    const line = recoveryLine(out.stdout);
+    assert.ok(line, `status must report the recovery journal state\n${d}`);
+    assert.match(line, /none recorded/i, `an absent journal is "none recorded"\n${d}`);
+    assert.ok(!/none has run here yet/i.test(out.stdout), "absence cannot prove no installation ran");
+    // Absent must stay distinguishable from a journal that exists and is clean.
+    assert.ok(!/^Recovery journal:\s*ok\b/.test(line), `absent must not be reported as ok\n${d}`);
+    assert.deepEqual(out.forbidden, [], `status invoked a forbidden tool\n${d}`);
+    // Reading must not create the state root or any file in it.
+    assert.equal(fs.existsSync(journalPath(sb)), false, `status wrote a journal\n${d}`);
+    assert.equal(fs.existsSync(lockPath(sb)), false, `status created a lock\n${d}`);
+  } finally {
+    if (!KEEP) fs.rmSync(sb.root, { recursive: true, force: true, maxRetries: 5 });
+  }
+});
+
+test("status :: recovery — a clean completion reads as resolved", { timeout: RUN_TIMEOUT_MS + 30000 }, () => {
+  const sb = mkSandbox("recovery-resolved");
+  try {
+    installTelepty(sb, { stdout: "0.8.9\n" });
+    const runId = beginRun(sb, "dustcraw");
+    assert.equal(writer(sb, "phase-begin", "--run", runId, "--phase", "5").status, 0);
+    assert.equal(writer(sb, "phase-end", "--run", runId, "--phase", "5", "--status", "completed").status, 0);
+
+    const out = runStatus(sb);
+    const d = describe(out);
+    assert.equal(out.code, 0, `status must exit 0\n${d}`);
+    const line = recoveryLine(out.stdout);
+    assert.ok(line, `status must report the recovery journal state\n${d}`);
+    assert.match(line, /^Recovery journal:\s*ok\b/, `a readable journal is ok\n${d}`);
+    assert.ok(!/not proven resolved/i.test(line), `a clean completion must resolve the phase\n${d}`);
+    assert.ok(!/\b5\b/.test(line), `phase 5 must not be named as unresolved\n${d}`);
+  } finally {
+    if (!KEEP) fs.rmSync(sb.root, { recursive: true, force: true, maxRetries: 5 });
+  }
+});
+
+test("status :: recovery — a phase still running is reported unresolved, never as nothing", { timeout: RUN_TIMEOUT_MS + 30000 }, () => {
+  const sb = mkSandbox("recovery-running");
+  try {
+    installTelepty(sb, { stdout: "0.8.9\n" });
+    seedRunningPhase(sb, 5, "dustcraw");
+    const raw = fs.readFileSync(journalPath(sb));
+    const before = fs.readdirSync(stateDir(sb)).sort();
+    assert.equal(JSON.parse(raw.toString("utf8")).attempts[0].phases[0].status, "running",
+      "precondition: the record is still `running` on disk");
+
+    const out = runStatus(sb);
+    const d = describe(out);
+    assert.equal(out.code, 0, `status must exit 0\n${d}`);
+    const line = recoveryLine(out.stdout);
+    assert.ok(line, `status must report the recovery journal state\n${d}`);
+    assert.match(line, /not proven resolved/i, `a running phase is not proven resolved\n${d}`);
+    assert.match(line, /\b5\b/, `the unresolved phase must be named\n${d}`);
+    assert.ok(!/no phase is left unresolved/i.test(line), `must not claim nothing is unresolved\n${d}`);
+
+    // Read-only: not one byte of the journal, and no new file in the state root.
+    assert.deepEqual(fs.readFileSync(journalPath(sb)), raw, `status rewrote the journal\n${d}`);
+    assert.deepEqual(fs.readdirSync(stateDir(sb)).sort(), before, `status changed the state directory\n${d}`);
+    assert.deepEqual(out.forbidden, [], `status invoked a forbidden tool\n${d}`);
+  } finally {
+    if (!KEEP) fs.rmSync(sb.root, { recursive: true, force: true, maxRetries: 5 });
+  }
+});
+
+test("status :: recovery — a degraded completion does not clear a prior unknown", { timeout: RUN_TIMEOUT_MS + 30000 }, () => {
+  const sb = mkSandbox("recovery-degraded");
+  try {
+    installTelepty(sb, { stdout: "0.8.9\n" });
+    // Interrupted phase 5 (global-npm+external-init, replay: unknown).
+    seedRunningPhase(sb, 5, "dustcraw");
+    // An ordinary run refuses and persists running -> unknown, releasing its own lock.
+    const refused = writer(sb, "begin-run", "--installer", "install.sh", "--profile", "core",
+      "--components", "dustcraw", "--start-phase", "0");
+    assert.equal(refused.status, 1, `the unknown effect must be refused: ${refused.stdout}${refused.stderr}`);
+    assert.equal(JSON.parse(fs.readFileSync(journalPath(sb), "utf8")).attempts[0].phases[0].status, "unknown",
+      "precondition: the interrupted record is now unknown");
+    // The user replays it explicitly, and it soft-fails: completed + degraded.
+    const replayId = beginRun(sb, "dustcraw", ["--unknown-effect", "replay"]);
+    assert.equal(writer(sb, "phase-end", "--run", replayId, "--phase", "5",
+      "--status", "completed", "--degraded", "1", "--detail", "dustcraw init failed").status, 0);
+
+    const out = runStatus(sb);
+    const d = describe(out);
+    assert.equal(out.code, 0, `status must exit 0\n${d}`);
+    const line = recoveryLine(out.stdout);
+    assert.ok(line, `status must report the recovery journal state\n${d}`);
+    assert.match(line, /not proven resolved/i, `a degraded replay cannot answer the question\n${d}`);
+    assert.match(line, /\b5\b/, `phase 5 must still be named\n${d}`);
+    assert.ok(!/no phase is left unresolved/i.test(line), `must not claim nothing is unresolved\n${d}`);
+    // The raw history is retained, degraded fact and all.
+    const j = JSON.parse(fs.readFileSync(journalPath(sb), "utf8"));
+    assert.equal(j.attempts[0].phases[0].status, "unknown", "the original unknown is preserved");
+    assert.equal(j.attempts[1].phases.filter((p) => p.phase === 5)[0].degraded, true, "the degraded fact is preserved");
+  } finally {
+    if (!KEEP) fs.rmSync(sb.root, { recursive: true, force: true, maxRetries: 5 });
+  }
+});
+
+for (const row of [
+  {
+    id: "corrupt", expect: /^Recovery journal:\s*corrupt\b/,
+    seed: (sb) => {
+      const runId = beginRun(sb, "dustcraw");
+      assert.equal(writer(sb, "phase-begin", "--run", runId, "--phase", "5").status, 0);
+      const raw = fs.readFileSync(journalPath(sb));
+      fs.writeFileSync(journalPath(sb), raw.subarray(0, 100)); // torn write
+    },
+  },
+  {
+    id: "unsupported", expect: /^Recovery journal:\s*unsupported\b/,
+    seed: (sb) => {
+      beginRun(sb, "dustcraw");
+      const journal = JSON.parse(fs.readFileSync(journalPath(sb), "utf8"));
+      journal.schema = "aigentry-devkit/install-journal@99";
+      fs.writeFileSync(journalPath(sb), `${JSON.stringify(journal)}\n`);
+    },
+  },
+]) {
+  test(`status :: recovery — a ${row.id} journal reads as UNKNOWN, never as zero`, { timeout: RUN_TIMEOUT_MS + 30000 }, () => {
+    const sb = mkSandbox(`recovery-${row.id}`);
+    try {
+      installTelepty(sb, { stdout: "0.8.9\n" });
+      row.seed(sb);
+      const raw = fs.readFileSync(journalPath(sb));
+
+      const out = runStatus(sb);
+      const d = describe(out);
+      assert.equal(out.code, 0, `status must keep its exit behaviour\n${d}`);
+      const line = recoveryLine(out.stdout);
+      assert.ok(line, `status must report the recovery journal state\n${d}`);
+      assert.match(line, row.expect, `the ${row.id} state must be named\n${d}`);
+      assert.match(line, /unknown/i, `an unreadable journal answers UNKNOWN\n${d}`);
+      // The whole point: `unresolved_phases: null` may never read as "nothing".
+      assertNotAVerdictOfZero(line, d);
+      assert.ok(!/not proven resolved/i.test(line), `UNKNOWN is not a list of phases\n${d}`);
+      // Preserved, never repaired or rewritten by a read.
+      assert.deepEqual(fs.readFileSync(journalPath(sb)), raw, `status rewrote an unreadable journal\n${d}`);
+      assert.deepEqual(out.forbidden, [], `status invoked a forbidden tool\n${d}`);
+    } finally {
+      if (!KEEP) fs.rmSync(sb.root, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+}
+
+test("status :: recovery — the answer comes from the shared fold, not a private re-derivation", () => {
+  const cli = fs.readFileSync(CLI, "utf8");
+  assert.ok(/require\((?:"|')\.\.\/lib\/install-state(?:"|')\)/.test(cli),
+    "status must read through lib/install-state.js (readJournal + unresolvedPhases)");
+  assert.ok(/unresolvedPhases/.test(cli),
+    "status must call the exported fold rather than name its own");
+  // No second chronological fold: the CLI must not walk attempts/phases itself.
+  assert.ok(!/\.attempts\b/.test(cli),
+    "the CLI must not iterate journal attempts[] — that is the shared fold's job");
+  // No second state root: the journal directory is the installer's own.
+  const roots = [...cli.matchAll(/aigentry-devkit["']\s*,/g)].length
+    + [...cli.matchAll(/["']aigentry-devkit["']/g)].length;
+  assert.ok(roots > 0, "the CLI must derive the installer's state directory");
+  assert.ok(/XDG_CONFIG_HOME/.test(cli), "the state root must come from the installer contract");
+});
+
+test("status :: recovery — a valid phaseless journal is recorded and resolved", { timeout: RUN_TIMEOUT_MS + 30000 }, () => {
+  const sb = mkSandbox("recovery-empty");
+  try {
+    beginRun(sb, "");
+    const journal = JSON.parse(fs.readFileSync(journalPath(sb), "utf8"));
+    assert.deepEqual(journal.attempts[0].phases, [], "real writer produced no phase records");
+    const out = runStatus(sb);
+    assert.equal(out.code, 0, describe(out));
+    assert.match(recoveryLine(out.stdout), /^Recovery journal: ok.*no phase is left unresolved/);
+    assert.ok(!/none recorded/i.test(out.stdout), "recorded-empty differs from absent");
+  } finally {
+    if (!KEEP) fs.rmSync(sb.root, { recursive: true, force: true, maxRetries: 5 });
+  }
+});
+
+test("status :: recovery — a clean replay resolves an earlier unknown without erasing history", { timeout: RUN_TIMEOUT_MS + 30000 }, () => {
+  const sb = mkSandbox("recovery-clean-replay");
+  try {
+    seedRunningPhase(sb, 5, "dustcraw");
+    const refused = writer(sb, "begin-run", "--components", "dustcraw", "--start-phase", "0");
+    assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+    const replay = beginRun(sb, "dustcraw", ["--unknown-effect", "replay"]);
+    assert.equal(writer(sb, "phase-begin", "--run", replay, "--phase", "5").status, 0);
+    assert.equal(writer(sb, "phase-end", "--run", replay, "--phase", "5", "--status", "completed").status, 0);
+    const journal = JSON.parse(fs.readFileSync(journalPath(sb), "utf8"));
+    assert.equal(journal.attempts[0].phases[0].status, "unknown");
+    assert.equal(journal.attempts[1].phases[0].status, "completed");
+    const out = runStatus(sb);
+    assert.equal(out.code, 0, describe(out));
+    assert.match(recoveryLine(out.stdout), /^Recovery journal: ok.*no phase is left unresolved/);
+    assert.ok(!/not proven resolved/.test(recoveryLine(out.stdout)));
+  } finally {
+    if (!KEEP) fs.rmSync(sb.root, { recursive: true, force: true, maxRetries: 5 });
+  }
+});
+
+test("status :: recovery — a pending safe phase does not imply unconditional replay refusal", { timeout: RUN_TIMEOUT_MS + 30000 }, () => {
+  const sb = mkSandbox("recovery-safe");
+  try {
+    seedRunningPhase(sb, 1, "devkit-core");
+    const out = runStatus(sb);
+    assert.equal(out.code, 0, describe(out));
+    assert.match(recoveryLine(out.stdout), /not proven resolved: 1 \(devkit-core\)/);
+    assert.ok(!/installer refuses an ordinary re-run/i.test(out.stdout));
+    assert.match(out.stdout, /Replay handling depends on each phase's policy/);
   } finally {
     if (!KEEP) fs.rmSync(sb.root, { recursive: true, force: true, maxRetries: 5 });
   }
