@@ -14,6 +14,7 @@ $InstallComponents = if ($env:AIGENTRY_INSTALL_COMPONENTS) { $env:AIGENTRY_INSTA
 $OptionalComponents = if ($env:AIGENTRY_OPTIONAL_COMPONENTS) { $env:AIGENTRY_OPTIONAL_COMPONENTS.Split(",") | Where-Object { $_ } } else { @() }
 $ResumeTarget = $env:AIGENTRY_INSTALL_RESUME
 $StartPhase = 0
+$ResumeResolvedFrom = "none"
 $DevkitStateDir = if ($env:XDG_CONFIG_HOME) { Join-Path $env:XDG_CONFIG_HOME "aigentry-devkit" } else { Join-Path $HOME ".config\aigentry-devkit" }
 $DevkitStateFile = Join-Path $DevkitStateDir "install-state.json"
 $DevkitEnvFile = Join-Path $DevkitStateDir "env.ps1"
@@ -42,6 +43,17 @@ $DustcrawSelected = $false
 $DustcrawPackage = ""
 $DustcrawConfigPath = ""
 
+# Recovery journal state (#1147), same contract and same writer as install.sh.
+$JournalCli = Join-Path $DevkitDir "lib\install-state.js"
+$DevkitJournalFile = Join-Path $DevkitStateDir "install-journal.json"
+$InstallRunId = ""
+$SkipPhases = @()
+$CurrentPhase = $null
+$PhaseDegraded = ""
+$JournalClosed = $false
+$UnknownEffectPolicy = if ($env:AIGENTRY_INSTALL_UNKNOWN_EFFECT) { $env:AIGENTRY_INSTALL_UNKNOWN_EFFECT } else { "refuse" }
+$ForceUnlock = if ($env:AIGENTRY_INSTALL_FORCE_UNLOCK) { $env:AIGENTRY_INSTALL_FORCE_UNLOCK } else { "0" }
+
 if (-not (Test-Path $ManifestPath)) {
   throw "Installer manifest not found: $ManifestPath"
 }
@@ -51,8 +63,10 @@ $Manifest = Get-Content $ManifestPath -Raw | ConvertFrom-Json
 if ($ResumeTarget) {
   if ($ResumeTarget -match '^\d+$') {
     $StartPhase = [int]$ResumeTarget
+    $ResumeResolvedFrom = "numeric"
   } elseif ($Manifest.components.PSObject.Properties.Name -contains $ResumeTarget) {
     $StartPhase = [int]$Manifest.components.$ResumeTarget.phase
+    $ResumeResolvedFrom = "component"
   } else {
     throw "Unknown resume target: $ResumeTarget"
   }
@@ -76,7 +90,10 @@ function Test-ComponentSelected([string]$Name) {
 }
 
 function Should-RunPhase([int]$Phase) {
-  return $Phase -ge $StartPhase
+  if ($Phase -lt $StartPhase) { return $false }
+  # Phases the journal told us to leave alone (AIGENTRY_INSTALL_UNKNOWN_EFFECT=skip).
+  if ($script:SkipPhases -contains $Phase) { return $false }
+  return $true
 }
 
 function Is-Interactive {
@@ -135,41 +152,117 @@ function Normalize-Bool([string]$Value) {
 
 function Write-InstallerState {
   New-Item -ItemType Directory -Path $DevkitStateDir -Force | Out-Null
-  $state = [ordered]@{
-    generated_at = (Get-Date).ToString("o")
-    profile = $InstallProfile
-    manifest_path = $ManifestPath
-    components = $InstallComponents
-    optional_components = $OptionalComponents
-    telepty = [ordered]@{
-      version = $(if ($TeleptyInstalledVersion) { $TeleptyInstalledVersion } else { $null })
-      base_url = $TeleptyBaseUrl
-    }
-    deliberation = [ordered]@{
-      runtime_path = $DeliberationRuntimePath
-      doctor_ok = $DeliberationDoctorOk
-    }
-    brain = [ordered]@{
-      selected = $BrainSelected
-      package = $(if ($BrainPackage) { $BrainPackage } else { $null })
-      profile_root = $BrainProfileRoot
-      install_mode = $BrainInstallMode
-      remote_url = $(if ($BrainRemoteUrl) { $BrainRemoteUrl } else { $null })
-      project_id = $(if ($BrainProjectId) { $BrainProjectId } else { $null })
-    }
-    registry = [ordered]@{
-      mode = $(if ($RegistryMode) { $RegistryMode } else { "skip" })
-      api_url = $(if ($RegistryApiUrl) { $RegistryApiUrl } else { $null })
-      api_key = $(if ($RegistryApiKey) { $RegistryApiKey } else { $null })
-    }
-    dustcraw = [ordered]@{
-      selected = $DustcrawSelected
-      package = $(if ($DustcrawPackage) { $DustcrawPackage } else { $null })
-      preset = $(if ($DustcrawPreset) { $DustcrawPreset } else { $null })
-      config_path = $(if ($DustcrawConfigPath) { $DustcrawConfigPath } else { $null })
-    }
+  # Same single writer as install.sh: atomic (tmp + rename) and mode 0600, so an
+  # interruption can no longer truncate the file and a torn file can no longer
+  # read as "nothing installed" (#1147 F7).
+  #
+  # AIGENTRY_API_KEY is deliberately NOT handed over: the writer only receives a
+  # presence boolean, so the durable record cannot contain the secret (#1147
+  # F8/H1). env.ps1 stays its only sink.
+  $vars = [ordered]@{
+    AIGENTRY_ST_PROFILE = $InstallProfile
+    AIGENTRY_ST_MANIFEST = $ManifestPath
+    AIGENTRY_ST_COMPONENTS = ($InstallComponents -join ",")
+    AIGENTRY_ST_OPTIONAL_COMPONENTS = ($OptionalComponents -join ",")
+    AIGENTRY_ST_JOURNAL_PATH = $DevkitJournalFile
+    AIGENTRY_ST_TELEPTY_VERSION = $TeleptyInstalledVersion
+    AIGENTRY_ST_TELEPTY_BASE_URL = $TeleptyBaseUrl
+    AIGENTRY_ST_DELIBERATION_RUNTIME_PATH = $DeliberationRuntimePath
+    AIGENTRY_ST_DELIBERATION_DOCTOR_OK = $(if ($DeliberationDoctorOk) { "true" } else { "false" })
+    AIGENTRY_ST_BRAIN_SELECTED = $(if ($BrainSelected) { "true" } else { "false" })
+    AIGENTRY_ST_BRAIN_PACKAGE = $BrainPackage
+    AIGENTRY_ST_BRAIN_PROFILE_ROOT = $BrainProfileRoot
+    AIGENTRY_ST_BRAIN_INSTALL_MODE = $BrainInstallMode
+    AIGENTRY_ST_BRAIN_REMOTE_URL = $BrainRemoteUrl
+    AIGENTRY_ST_BRAIN_PROJECT_ID = $BrainProjectId
+    AIGENTRY_ST_REGISTRY_MODE = $RegistryMode
+    AIGENTRY_ST_REGISTRY_API_URL = $RegistryApiUrl
+    AIGENTRY_ST_REGISTRY_API_KEY_PRESENT = $(if ($RegistryApiKey) { "true" } else { "false" })
+    AIGENTRY_ST_DUSTCRAW_SELECTED = $(if ($DustcrawSelected) { "true" } else { "false" })
+    AIGENTRY_ST_DUSTCRAW_PACKAGE = $DustcrawPackage
+    AIGENTRY_ST_DUSTCRAW_PRESET = $DustcrawPreset
+    AIGENTRY_ST_DUSTCRAW_CONFIG_PATH = $DustcrawConfigPath
   }
-  $state | ConvertTo-Json -Depth 6 | Set-Content -Path $DevkitStateFile -Encoding utf8
+  foreach ($name in $vars.Keys) { Set-Item -Path "env:$name" -Value ([string]$vars[$name]) }
+  try {
+    & node $JournalCli write-state --file $DevkitStateFile
+    if ($LASTEXITCODE -ne 0) { throw "installer state could not be written to $DevkitStateFile" }
+  } finally {
+    foreach ($name in $vars.Keys) { Remove-Item -Path "env:$name" -ErrorAction SilentlyContinue }
+  }
+}
+
+# ── recovery journal (#1147 F6/F7/F8) ───────────────────────────────────────
+# lib\install-state.js is the single writer, shared with install.sh, so the two
+# installers cannot drift on schema, atomicity, permissions or redaction.
+# Limitation, stated rather than papered over: PowerShell has no portable signal
+# handler, so Ctrl-C / a hard kill runs neither `trap` nor `finally`. Such a run
+# leaves its phase `running` on disk and the NEXT run reclassifies it `unknown`
+# — which is exactly the interrupted-effect path, never a silent success.
+function Start-InstallJournal {
+  # Flags with an empty value are omitted rather than passed as "": Windows
+  # PowerShell 5.1 does not reliably hand an empty argument to a native command,
+  # and a dropped one would shift every flag after it. The reader defaults any
+  # absent flag to the same empty value.
+  $journalArgs = @("begin-run", "--dir", $DevkitStateDir, "--installer", "install.ps1",
+    "--start-phase", "$StartPhase", "--resolved-from", $ResumeResolvedFrom,
+    "--unknown-effect", $UnknownEffectPolicy, "--force-unlock", $ForceUnlock,
+    "--registry-api-key-present", $(if ($RegistryApiKey) { "true" } else { "false" }))
+  if ($InstallProfile) { $journalArgs += @("--profile", $InstallProfile) }
+  if ($InstallComponents) { $journalArgs += @("--components", ($InstallComponents -join ",")) }
+  if ($OptionalComponents) { $journalArgs += @("--optional-components", ($OptionalComponents -join ",")) }
+  if ($ResumeTarget) { $journalArgs += @("--resume-raw", $ResumeTarget) }
+  $line = & node $JournalCli @journalArgs
+  $fields = @("$line" -split "`t", 5)
+  if ($LASTEXITCODE -ne 0) {
+    throw $(if ($fields.Count -gt 4 -and $fields[4]) { $fields[4] } else { "installer recovery journal could not be opened at $DevkitJournalFile; nothing was installed" })
+  }
+  $script:InstallRunId = $fields[1]
+  if ($fields[3] -and $fields[3] -ne "-") { $script:SkipPhases = @($fields[3] -split "," | Where-Object { $_ } | ForEach-Object { [int]$_ }) }
+  Write-Info $fields[4]
+}
+
+function Start-JournalPhase([int]$Phase) {
+  $script:CurrentPhase = $Phase
+  $script:PhaseDegraded = ""
+  & node $JournalCli phase-begin --dir $DevkitStateDir --run $script:InstallRunId --phase $Phase
+  if ($LASTEXITCODE -ne 0) { throw "could not record the start of phase $Phase in $DevkitJournalFile; this phase changed nothing" }
+}
+
+function Complete-JournalPhase([int]$Phase) {
+  $journalArgs = @("phase-end", "--dir", $DevkitStateDir, "--run", $script:InstallRunId, "--phase", "$Phase", "--status", "completed")
+  if ($script:PhaseDegraded) { $journalArgs += @("--degraded", "1", "--detail", $script:PhaseDegraded) }
+  $script:CurrentPhase = $null
+  $script:PhaseDegraded = ""
+  & node $JournalCli @journalArgs
+  if ($LASTEXITCODE -ne 0) { Write-Warn "could not record the completion of phase $Phase in $DevkitJournalFile" }
+}
+
+# A soft failure inside a phase: the installer continues by policy, the record
+# keeps the reason and marks the phase degraded rather than completed-clean.
+function Set-PhaseDegraded([string]$Reason) {
+  $script:PhaseDegraded = $(if ($script:PhaseDegraded) { "$($script:PhaseDegraded); $Reason" } else { $Reason })
+  Write-Warn $Reason
+}
+
+function Stop-InstallJournal([string]$Outcome, [int]$ExitCode) {
+  if ($script:JournalClosed -or -not $script:InstallRunId) { return }
+  $script:JournalClosed = $true
+  if ($null -ne $script:CurrentPhase -and $Outcome -ne "completed") {
+    & node $JournalCli phase-end --dir $DevkitStateDir --run $script:InstallRunId --phase $script:CurrentPhase `
+      --status failed --exit-code $ExitCode --detail "installer stopped inside phase $($script:CurrentPhase)" 2>$null | Out-Null
+  }
+  & node $JournalCli end-run --dir $DevkitStateDir --run $script:InstallRunId --outcome $Outcome --exit-code $ExitCode 2>$null | Out-Null
+  Remove-OwnedTemp
+}
+
+# Owned temporary artifacts only: the credential-bearing dustcraw config THIS
+# run created (#1147 F8). Removed on success and failure alike.
+function Remove-OwnedTemp {
+  if ($script:DustcrawConfigPath -and (Test-Path $script:DustcrawConfigPath)) {
+    Remove-Item -Path $script:DustcrawConfigPath -Force -ErrorAction SilentlyContinue
+    $script:DustcrawConfigPath = ""
+  }
 }
 
 function Write-EnvFanout {
@@ -194,6 +287,14 @@ function Invoke-RegistrySmokeTest([string]$BaseUrl, [string]$ApiKey) {
   }
 }
 
+# Any terminating error below records the running phase as failed and releases
+# the journal lock before the installer dies, so a partial install is never left
+# without a record (#1147 F6). `break` re-raises, so the error still surfaces.
+trap {
+  Stop-InstallJournal "failed" 1
+  break
+}
+
 Write-Host ""
 Write-Host "  ===============================================" -ForegroundColor Cyan
 Write-Host "   aigentry-devkit installer (PowerShell)" -ForegroundColor Cyan
@@ -212,6 +313,11 @@ if (-not $nodeCmd) { throw "node not found. Install Node.js 18+ first." }
 Write-Info "Node.js $(& node -v) found"
 $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
 if (-not $npmCmd) { throw "npm not found. Install Node.js (npm included)." }
+# node is present, so the durable record can be opened before anything mutates
+# the machine. A corrupt, unsupported, locked or interrupted-unknown journal
+# refuses here, with nothing installed and nothing deleted (#1147 F6).
+Start-InstallJournal
+Start-JournalPhase 0
 if (Get-Command tmux -ErrorAction SilentlyContinue) {
   Write-Info "tmux found (deliberation monitor can run in tmux)"
 } else {
@@ -222,6 +328,7 @@ if (Get-Command claude -ErrorAction SilentlyContinue) {
 } else {
   Write-Warn "Claude Code CLI not found. Install with: npm install -g @anthropic-ai/claude-code"
 }
+Complete-JournalPhase 0
 
 $skillsDest = Join-Path $ClaudeDir "skills"
 # Parity with install.sh (#1204): every agent CLI reads skills from its own user dir.
@@ -239,8 +346,9 @@ $hudDest = Join-Path $ClaudeDir "hud"
 $wtmSrc = Join-Path $DevkitDir "tools\wtm"
 $wtmDest = Join-Path $HOME ".local\lib\wtm"
 
-if (Should-RunPhase 1 -and (Test-ComponentSelected "devkit-core")) {
+if ((Should-RunPhase 1) -and (Test-ComponentSelected "devkit-core")) {
   Write-Header "Phase 1. Devkit Core Assets"
+  Start-JournalPhase 1
 
   # Parity with install.sh: bundled skills (skills/*) + distributable template
   # skills (templates/skills/*) install the same way (#739 D2).
@@ -282,10 +390,12 @@ if (Should-RunPhase 1 -and (Test-ComponentSelected "devkit-core")) {
     Copy-Item -Path (Join-Path $wtmSrc '*') -Destination $wtmDest -Recurse -Force
     Write-Info "WTM copied to $wtmDest"
   }
+  Complete-JournalPhase 1
 }
 
 if ((Should-RunPhase 2) -and (Test-ComponentSelected "telepty")) {
   Write-Header "Phase 2. Telepty"
+  Start-JournalPhase 2
   # #1213: same shared policy as install.sh (lib\telepty-version-policy.js), which runs
   # the bounded `telepty --version` probe itself (5s, 1024 bytes). npm runs only for an
   # absent or too-old telepty; a newer compatible install is kept, and an
@@ -331,10 +441,12 @@ if ((Should-RunPhase 2) -and (Test-ComponentSelected "telepty")) {
   }
   if (-not $healthy) { throw "telepty daemon health check failed (GET /api/meta)" }
   Write-Info "telepty daemon is healthy"
+  Complete-JournalPhase 2
 }
 
-if (Should-RunPhase 3 -and (Test-ComponentSelected "deliberation")) {
+if ((Should-RunPhase 3) -and (Test-ComponentSelected "deliberation")) {
   Write-Header "Phase 3. Deliberation"
+  Start-JournalPhase 3
   Write-Info "Running canonical deliberation installer"
   npx --yes --package @dmsdc-ai/aigentry-deliberation deliberation-install
   if ($LASTEXITCODE -ne 0) { throw "Canonical deliberation installer failed" }
@@ -342,14 +454,16 @@ if (Should-RunPhase 3 -and (Test-ComponentSelected "deliberation")) {
   Write-Info "Running deliberation doctor"
   try {
     npx --yes --package @dmsdc-ai/aigentry-deliberation deliberation-doctor
-    if ($LASTEXITCODE -eq 0) { $DeliberationDoctorOk = $true; Write-Info "deliberation doctor passed" } else { Write-Warn "deliberation doctor failed" }
+    if ($LASTEXITCODE -eq 0) { $DeliberationDoctorOk = $true; Write-Info "deliberation doctor passed" } else { Set-PhaseDegraded "deliberation doctor failed" }
   } catch {
-    Write-Warn "deliberation doctor failed"
+    Set-PhaseDegraded "deliberation doctor failed"
   }
+  Complete-JournalPhase 3
 }
 
-if (Should-RunPhase 4 -and (Test-ComponentSelected "brain")) {
+if ((Should-RunPhase 4) -and (Test-ComponentSelected "brain")) {
   Write-Header "Phase 4. Brain"
+  Start-JournalPhase 4
   $BrainSelected = $true
   $BrainPackage = $Manifest.components.brain.install.package
   Prompt-Choice ([ref]$BrainInstallMode) "Choose brain install mode" $BrainInstallMode @("local", "sync")
@@ -362,17 +476,19 @@ if (Should-RunPhase 4 -and (Test-ComponentSelected "brain")) {
   if ($LASTEXITCODE -eq 0 -and (Get-Command aigentry-brain -ErrorAction SilentlyContinue)) {
     try {
       aigentry-brain health | Out-Null
-      if ($LASTEXITCODE -eq 0) { Write-Info "aigentry-brain health check passed" } else { Write-Warn "aigentry-brain health check failed. Run 'aigentry-brain setup' for manual completion." }
+      if ($LASTEXITCODE -eq 0) { Write-Info "aigentry-brain health check passed" } else { Set-PhaseDegraded "aigentry-brain health check failed. Run 'aigentry-brain setup' for manual completion." }
     } catch {
-      Write-Warn "aigentry-brain health check failed. Run 'aigentry-brain setup' for manual completion."
+      Set-PhaseDegraded "aigentry-brain health check failed. Run 'aigentry-brain setup' for manual completion."
     }
   } else {
-    Write-Warn "aigentry-brain install failed"
+    Set-PhaseDegraded "aigentry-brain install failed"
   }
+  Complete-JournalPhase 4
 }
 
-if (Should-RunPhase 5 -and (Test-ComponentSelected "dustcraw")) {
+if ((Should-RunPhase 5) -and (Test-ComponentSelected "dustcraw")) {
   Write-Header "Phase 5. Dustcraw"
+  Start-JournalPhase 5
   $DustcrawSelected = $true
   $DustcrawPackage = $Manifest.components.dustcraw.install.package
   $DustcrawVersion = $Manifest.components.dustcraw.install.version
@@ -390,15 +506,19 @@ if (Should-RunPhase 5 -and (Test-ComponentSelected "dustcraw")) {
     $dustcrawConfig | ConvertTo-Json -Depth 4 | Set-Content -Path $DustcrawConfigPath -Encoding utf8
     try {
       dustcraw init --preset $DustcrawPreset --config $DustcrawConfigPath --non-interactive
-      if ($LASTEXITCODE -eq 0) { Write-Info "dustcraw initialized with preset '$DustcrawPreset'" } else { Write-Warn "dustcraw init failed" }
+      if ($LASTEXITCODE -eq 0) { Write-Info "dustcraw initialized with preset '$DustcrawPreset'" } else { Set-PhaseDegraded "dustcraw init failed" }
     } catch {
-      Write-Warn "dustcraw init failed"
+      Set-PhaseDegraded "dustcraw init failed"
     }
+    # The handoff file carries the registry key, so it dies with the handoff —
+    # on this path, on the init-failure path and in the trap (#1147 F8). Its
+    # path is cleared too, so no stale pointer is recorded in install-state.
+    Remove-OwnedTemp
     if (-not $DustcrawRunDemo) {
       if (Is-Interactive) { Prompt-Choice ([ref]$DustcrawRunDemo) "Run dustcraw demo now?" "yes" @("yes", "no") } else { $DustcrawRunDemo = "yes" }
     }
     if ((Normalize-Bool $DustcrawRunDemo) -eq "true") {
-      try { dustcraw demo --non-interactive } catch { Write-Warn "dustcraw demo failed" }
+      try { dustcraw demo --non-interactive } catch { Set-PhaseDegraded "dustcraw demo failed" }
     }
     if (-not $DustcrawEnableService) {
       if (Is-Interactive) { Prompt-Choice ([ref]$DustcrawEnableService) "Enable dustcraw background service now?" "no" @("yes", "no") } else { $DustcrawEnableService = "no" }
@@ -407,12 +527,14 @@ if (Should-RunPhase 5 -and (Test-ComponentSelected "dustcraw")) {
       Write-Warn "dustcraw service registration surface is not wired yet. Complete it in dustcraw once a stable public command is available."
     }
   } else {
-    Write-Warn "dustcraw install failed or command not found"
+    Set-PhaseDegraded "dustcraw install failed or command not found"
   }
+  Complete-JournalPhase 5
 }
 
-if (Should-RunPhase 6 -and (Test-ComponentSelected "registry-wiring")) {
+if ((Should-RunPhase 6) -and (Test-ComponentSelected "registry-wiring")) {
   Write-Header "Phase 6. Registry Wiring"
+  Start-JournalPhase 6
   Prompt-Choice ([ref]$RegistryMode) "Choose registry mode" $(if ($RegistryMode) { $RegistryMode } else { 'skip' }) @("cloud", "self_hosted", "skip")
 
   switch ($RegistryMode) {
@@ -454,17 +576,25 @@ if (Should-RunPhase 6 -and (Test-ComponentSelected "registry-wiring")) {
   }
 
   if ($RegistryMode -ne 'skip' -and $RegistryApiUrl -and $RegistryApiKey) {
-    if (Invoke-RegistrySmokeTest $RegistryApiUrl $RegistryApiKey) { Write-Info "registry wiring smoke test passed" } else { Write-Warn "registry wiring smoke test failed" }
+    if (Invoke-RegistrySmokeTest $RegistryApiUrl $RegistryApiKey) { Write-Info "registry wiring smoke test passed" } else { Set-PhaseDegraded "registry wiring smoke test failed" }
   }
+  Complete-JournalPhase 6
 }
 
 if (Should-RunPhase 7) {
   Write-Header "Phase 7. Config Fan-Out"
+  Start-JournalPhase 7
   Write-InstallerState
   Write-EnvFanout
   Write-Info "Wrote installer state: $DevkitStateFile"
   Write-Info "Wrote env fan-out: $DevkitEnvFile"
+  Complete-JournalPhase 7
 }
+
+# Every mutating phase is done: close the attempt record and release the lock
+# here, so a throw in the cosmetic summary below cannot turn a completed
+# install into a recorded failure.
+Stop-InstallJournal "completed" 0
 
 Write-Header "Phase 8. Cross-platform Notes"
 Write-Info "Manage deliberation runtime with the canonical installer surface from aigentry-deliberation."
