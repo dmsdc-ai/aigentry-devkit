@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 
-// Explicit setup routes must precede even logger/scaffold imports.
-if (["setup", "install", "update"].includes(process.argv[2])) {
+// All implicit and explicit setup routes precede logger/scaffold imports.
+const setupArg = process.argv[2];
+if (!setupArg || setupArg.startsWith("-") || ["setup", "install", "update"].includes(setupArg)) {
   if (process.argv[2] === "update") {
     process.stderr.write("D1 update unavailable: bounded D2 update plan required; no npm or installation performed. Use setup --configure-only --dry-run for preferences.\n");
     process.exitCode = 1;
   } else {
-    require("../lib/setup").run(process.argv.slice(3)).then(code => { process.exitCode = code; }, () => { process.exitCode = 1; });
+    require("../lib/setup").run(process.argv.slice(!setupArg || setupArg.startsWith("-") ? 2 : 3)).then(code => { process.exitCode = code; }, () => { process.exitCode = 1; });
   }
   return;
 }
