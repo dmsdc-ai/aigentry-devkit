@@ -1,6 +1,7 @@
 {
   "name": "telepty",
-  "version": "0.1.45",
+  "x-version-source": "Derived, do not edit here (#1145 F1): version = config/installer-manifest.json compatibility.telepty.target; attach.install_command = components.telepty.install.package@components.telepty.install.version. The manifest is the single source of the install decision (lib/telepty-version-policy.js enforces it); tests/install-contract-1145.test.js fails if these drift apart.",
+  "version": "0.8.5",
   "capabilities": {
     "cli": true,
     "daemon": true,
@@ -15,7 +16,7 @@
     "timeout_ms": 5000
   },
   "attach": {
-    "install_command": "npm install -g @dmsdc-ai/aigentry-telepty@0.1.45",
+    "install_command": "npm install -g @dmsdc-ai/aigentry-telepty@0.8.5",
     "post_install": ["telepty daemon"],
     "env_vars": {
       "AIGENTRY_TELEPTY_URL": "http://localhost:3848"
