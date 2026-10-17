@@ -108,8 +108,6 @@ jobs:
           for file in ordinary.json alias.json ordinary.stdout ordinary.stderr alias.stdout alias.stderr assertions.json summary.json; do
             test -f "${receipts[0]}/$file"
           done
-          # Archive only the owned root; tar preserves alias links and native modes.
-          tar -cf "$RUN_ROOT/evidence.tar" -C "$RUN_ROOT" home config tmp execution-status.txt identity.txt stdout.txt stderr.txt exit-code.txt
 
       - name: Require Windows evidence
         if: always() && runner.os == 'Windows'
@@ -127,8 +125,40 @@ jobs:
               if (-not (Test-Path -LiteralPath (Join-Path $receipts[0].FullName $file) -PathType Leaf)) { throw "Missing $caller receipt: $file" }
             }
           }
-          & tar -cf (Join-Path $env:RUN_ROOT 'evidence.tar') -C $env:RUN_ROOT home config tmp execution-status.txt identity.txt stdout.txt stderr.txt exit-code.txt
+
+      - name: Archive partial Mac evidence
+        if: always() && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d "$RUN_ROOT"
+          test ! -L "$RUN_ROOT"
+          children=()
+          for child in home config tmp execution-status.txt identity.txt stdout.txt stderr.txt exit-code.txt; do
+            if [ -e "$RUN_ROOT/$child" ] || [ -L "$RUN_ROOT/$child" ]; then
+              children+=("$child")
+            fi
+          done
+          test "${#children[@]}" -gt 0
+          # Explicit children only; tar does not dereference links or include itself.
+          tar -cf "$RUN_ROOT/evidence.tar" -C "$RUN_ROOT" "${children[@]}"
+          test -f "$RUN_ROOT/evidence.tar"
+
+      - name: Archive partial Windows evidence
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Get-Item -LiteralPath $env:RUN_ROOT -Force
+          if (-not $root.PSIsContainer -or ($root.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Owned run root unavailable or linked' }
+          $allowed = @('home','config','tmp','execution-status.txt','identity.txt','stdout.txt','stderr.txt','exit-code.txt')
+          $present = @(Get-ChildItem -LiteralPath $env:RUN_ROOT -Force | Select-Object -ExpandProperty Name)
+          $children = @($allowed | Where-Object { $present -ccontains $_ })
+          if ($children.Count -eq 0) { throw 'No owned evidence children available' }
+          # No recursion during selection, no dereference option, no archive operand.
+          & tar -cf (Join-Path $env:RUN_ROOT 'evidence.tar') -C $env:RUN_ROOT @children
           if ($LASTEXITCODE -ne 0) { throw 'Owned evidence archive failed' }
+          if (-not (Test-Path -LiteralPath (Join-Path $env:RUN_ROOT 'evidence.tar') -PathType Leaf)) { throw 'Owned evidence archive missing' }
 
       - name: Retain owned evidence on success or failure
         if: always()
