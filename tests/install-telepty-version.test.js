@@ -933,6 +933,228 @@ test("fixture security :: symlink and hardlink sinks refuse before writes", () =
 });
 
 
+// Separate identity sibling: never a baseline for the uninstrumented controls.
+// The first executable statements capture the owned profile before identity work.
+function nativeIdentityScript(profile, root) {
+ return String.raw`$profilePath = ${psq(profile)}
+$fixtureRoot = ${psq(root)}
+$snapshot = {
+  $r = [ordered]@{ exists = $null; regular = $null; link = $null; length = $null; sha256 = $null; incomplete = $false }
+  $stream = $null; $hash = $null
+  try {
+    $parent = [IO.Path]::GetDirectoryName($profilePath)
+    while ($parent.Length -ge $fixtureRoot.Length) {
+      if (([IO.File]::GetAttributes($parent) -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'refused profile ancestor link' }
+      if ($parent -eq $fixtureRoot) { break }
+      $parent = [IO.Path]::GetDirectoryName($parent)
+    }
+    $a = [IO.File]::GetAttributes($profilePath)
+    $r.exists = $true
+    $r.link = ($a -band [IO.FileAttributes]::ReparsePoint) -ne 0
+    $r.regular = -not $r.link -and ($a -band [IO.FileAttributes]::Directory) -eq 0 -and ($a -band [IO.FileAttributes]::Device) -eq 0
+    if (-not $r.regular) { throw 'refused nonregular profile or link' }
+    $f = [IO.FileInfo]::new($profilePath)
+    $r.length = $f.Length
+    $r.creationTimeUtc = $f.CreationTimeUtc.ToString('o')
+    $r.lastWriteTimeUtc = $f.LastWriteTimeUtc.ToString('o')
+    if ($f.Length -gt 1048576) { throw 'profile exceeds 1 MiB' }
+    $stream = [IO.File]::Open($profilePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+    if ($stream.Length -ne $r.length) { throw 'profile changed before read' }
+    $bytes = [byte[]]::new([int]$r.length); $offset = 0
+    while ($offset -lt $bytes.Length) {
+      $n = $stream.Read($bytes, $offset, $bytes.Length - $offset)
+      if ($n -eq 0) { throw 'short profile read' }
+      $offset += $n
+    }
+    if ($stream.Length -ne $r.length) { throw 'profile changed during read' }
+    $hash = [Security.Cryptography.SHA256]::Create()
+    $r.sha256 = [BitConverter]::ToString($hash.ComputeHash($bytes)).Replace('-', '').ToLowerInvariant()
+  } catch [IO.FileNotFoundException] { $r.exists = $false
+  } catch [IO.DirectoryNotFoundException] { $r.exists = $false
+  } catch { $r.incomplete = $true; $r.error = $_.Exception.Message.Substring(0, [Math]::Min(384, $_.Exception.Message.Length))
+  } finally { if ($null -ne $stream) { $stream.Dispose() }; if ($null -ne $hash) { $hash.Dispose() } }
+  $r
+}
+$entry = & $snapshot
+[Console]::WriteLine('{"stage":"entry","profile":' + (ConvertTo-Json -InputObject $entry -Depth 4 -Compress) + '}')
+$ErrorActionPreference = 'Stop'
+$identity = [ordered]@{ pid = $PID; bitness = [IntPtr]::Size * 8; psVersion = [string]$PSVersionTable.PSVersion; psEdition = [string]$PSVersionTable.PSEdition; clrVersion = [string]$PSVersionTable.CLRVersion; environmentVersion = [Environment]::Version.ToString(); assemblies = @(); modules = @(); images = @(); errors = @(); truncated = $false }
+$identity.environment = [ordered]@{
+  DOTNET_MultiCoreJitNoProfileGather = [Environment]::GetEnvironmentVariable('DOTNET_MultiCoreJitNoProfileGather')
+  COMPlus_MultiCoreJitNoProfileGather = [Environment]::GetEnvironmentVariable('COMPlus_MultiCoreJitNoProfileGather')
+}
+$imagePaths = @{}
+function Add-Image([string]$imagePath) {
+  if ([string]::IsNullOrEmpty($imagePath)) { return }
+  if ($imagePaths.ContainsKey($imagePath)) { return }
+  if ($imagePaths.Count -ge 8) {
+    $identity.truncated = $true
+    $identity.images += [ordered]@{ path = $imagePath; incomplete = $true; error = 'eight unique image hash limit' }
+    return
+  }
+  $imagePaths[$imagePath] = $true
+}
+try {
+  $current = [Diagnostics.Process]::GetCurrentProcess()
+  try {
+    $identity.executable = $current.MainModule.FileName
+    Add-Image $identity.executable
+    # Only the current process; immediately discard every non-allowlisted module.
+    $admitted = @('powershell.exe', 'pwsh.exe', 'clr.dll', 'coreclr.dll', 'mscoree.dll', 'mscoreei.dll', 'hostfxr.dll', 'hostpolicy.dll', 'pwrshplugin.dll', 'system.management.automation.dll', 'microsoft.powershell.consolehost.dll')
+    foreach ($m in $current.Modules) {
+      if ($admitted -notcontains $m.ModuleName.ToLowerInvariant()) { continue }
+      if ($identity.modules.Count -ge 8) { $identity.truncated = $true; break }
+      try {
+        $identity.modules += [ordered]@{ name = $m.ModuleName; path = $m.FileName; fileVersion = $m.FileVersionInfo.FileVersion; productVersion = $m.FileVersionInfo.ProductVersion }
+        Add-Image $m.FileName
+      } catch { $identity.errors += 'module: ' + $_.Exception.Message.Substring(0, [Math]::Min(384, $_.Exception.Message.Length)) }
+    }
+  } finally { $current.Dispose() }
+} catch { $identity.errors += 'process: ' + $_.Exception.Message.Substring(0, [Math]::Min(384, $_.Exception.Message.Length)) }
+try {
+  $assemblies = @([object].Assembly, [System.Management.Automation.PSObject].Assembly)
+  $consoleAssembly = $null
+  foreach ($a in [AppDomain]::CurrentDomain.GetAssemblies()) {
+    if ($a.GetName().Name -ne 'Microsoft.PowerShell.ConsoleHost') { continue }
+    $consoleAssembly = $a; break
+  }
+  if ($null -ne $consoleAssembly) { $assemblies += $consoleAssembly } else { $identity.errors += 'console-host assembly not found among loaded assemblies' }
+  foreach ($a in $assemblies) {
+    $identity.assemblies += [ordered]@{ name = $a.GetName().Name; version = $a.GetName().Version.ToString(); location = $a.Location; imageRuntimeVersion = $a.ImageRuntimeVersion }
+    Add-Image $a.Location
+  }
+} catch { $identity.errors += 'assembly: ' + $_.Exception.Message.Substring(0, [Math]::Min(384, $_.Exception.Message.Length)) }
+$total = 0L
+foreach ($imagePath in $imagePaths.Keys) {
+  $r = [ordered]@{ path = $imagePath; length = $null; sha256 = $null; incomplete = $false }; $stream = $null; $hash = $null
+  try {
+    $parent = [IO.Path]::GetDirectoryName($imagePath)
+    while (-not [string]::IsNullOrEmpty($parent)) {
+      if (([IO.File]::GetAttributes($parent) -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'refused image ancestor link' }
+      $next = [IO.Path]::GetDirectoryName($parent)
+      if ($next -eq $parent) { break }
+      $parent = $next
+    }
+    $a = [IO.File]::GetAttributes($imagePath)
+    if (($a -band ([IO.FileAttributes]::ReparsePoint -bor [IO.FileAttributes]::Directory -bor [IO.FileAttributes]::Device)) -ne 0) { throw 'refused image link or nonregular file' }
+    $r.length = ([IO.FileInfo]::new($imagePath)).Length
+    if ($r.length -gt 67108864 -or $total + $r.length -gt 268435456) { throw 'image hash byte budget exceeded' }
+    $stream = [IO.File]::Open($imagePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    if ($stream.Length -ne $r.length) { throw 'image changed before read' }
+    $total += $r.length
+    $bytes = [byte[]]::new([int]$r.length); $offset = 0
+    while ($offset -lt $bytes.Length) {
+      $n = $stream.Read($bytes, $offset, $bytes.Length - $offset)
+      if ($n -eq 0) { throw 'short image read' }
+      $offset += $n
+    }
+    if ($stream.Length -ne $r.length) { throw 'image changed during read' }
+    $hash = [Security.Cryptography.SHA256]::Create()
+    $r.sha256 = [BitConverter]::ToString($hash.ComputeHash($bytes)).Replace('-', '').ToLowerInvariant()
+  } catch { $r.incomplete = $true; $r.error = $_.Exception.Message.Substring(0, [Math]::Min(384, $_.Exception.Message.Length))
+  } finally { if ($null -ne $stream) { $stream.Dispose() }; if ($null -ne $hash) { $hash.Dispose() } }
+  $identity.images += $r
+}
+# Reserve space for both profile snapshots; report explicit truncation, not malformed JSON.
+$json = ConvertTo-Json -InputObject $identity -Depth 8 -Compress
+while ([Text.Encoding]::UTF8.GetByteCount($json) -gt 10000) {
+  $identity.truncated = $true
+  if ($identity.images.Count -gt 0) { $identity.images = @($identity.images | Select-Object -SkipLast 1) }
+  elseif ($identity.modules.Count -gt 0) { $identity.modules = @($identity.modules | Select-Object -SkipLast 1) }
+  elseif ($identity.assemblies.Count -gt 0) { $identity.assemblies = @($identity.assemblies | Select-Object -SkipLast 1) }
+  else { $identity = [ordered]@{ pid = $PID; truncated = $true; error = 'identity metadata exceeded output budget' } }
+  $json = ConvertTo-Json -InputObject $identity -Depth 8 -Compress
+}
+[Console]::WriteLine('{"stage":"identity","value":' + $json + '}')
+$preExit = & $snapshot
+[Console]::WriteLine('{"stage":"preExit","profile":' + (ConvertTo-Json -InputObject $preExit -Depth 4 -Compress) + '}')
+exit 1
+`;
+}
+
+function nativeIdentityProfile(profile, root) {
+ const record={path:profile,exists:null,incomplete:false};
+ let fd;
+ try {
+  for(let parent=path.dirname(profile);;parent=path.dirname(parent)) {
+   const s=fs.lstatSync(parent);
+   if(s.isSymbolicLink()||!s.isDirectory())throw Error("refused profile ancestor link/non-directory");
+   if(parent===root)break;
+   if(parent===path.dirname(parent))throw Error("profile escaped owned root");
+  }
+  const s=fs.lstatSync(profile);
+  Object.assign(record,{exists:true,regular:s.isFile(),link:s.isSymbolicLink(),length:s.size,mode:s.mode,nlink:s.nlink,
+   birthtimeMs:s.birthtimeMs,ctimeMs:s.ctimeMs,mtimeMs:s.mtimeMs,atimeMs:s.atimeMs});
+  if(s.isSymbolicLink()||!s.isFile()||s.nlink!==1||s.size>1048576)throw Error("refused unsafe or oversized profile");
+  fd=fs.openSync(profile,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW||0));
+  const opened=fs.fstatSync(fd);
+  if(!opened.isFile()||opened.nlink!==1||opened.ino!==s.ino||opened.dev!==s.dev||opened.size!==s.size)throw Error("profile changed before read");
+  const bytes=Buffer.alloc(s.size);
+  let offset=0;
+  while(offset<bytes.length){const n=fs.readSync(fd,bytes,offset,bytes.length-offset,null);if(!n)throw Error("short profile read");offset+=n;}
+  if(fs.fstatSync(fd).size!==s.size)throw Error("profile changed during read");
+  record.sha256=crypto.createHash("sha256").update(bytes).digest("hex");
+ }catch(error){if(error.code==="ENOENT")record.exists=false;else{record.incomplete=true;record.error=String(error.message).slice(0,384);}}
+ finally{if(fd!==undefined)fs.closeSync(fd);}
+ return record;
+}
+
+function observeNativeIdentity(caller) {
+ const receipt={diagnostic:"tpv-native-identity",caller,byteLimit:65536,identityByteLimit:16384,truncated:false,
+  limitation:"Identity/formatting may change JIT behavior. Entry presence rules out script-time prevention; after-exit-only presence does not identify the writer. cliTree excludes timestamps and transient writes; controls remain independent.",
+  result:null,errors:[]};
+ let sb,profile;
+ try {
+  requireShell(caller);
+  sb=mkSandbox("identity-"+caller);
+  profile=path.join(sb.home,"AppData","Local","Microsoft","Windows","PowerShell","StartupProfileData-NonInteractive");
+  receipt.before=nativeIdentityProfile(profile,sb.root);
+  if(receipt.before.exists!==false||receipt.before.incomplete)throw Error("identity requires a fresh empty profile fixture");
+  const script=path.join(sb.evidence,"identity.ps1"),body=nativeIdentityScript(profile,sb.root);
+  fs.writeFileSync(script,body,{flag:"wx",mode:0o600});
+  receipt.script={path:script,sha256:crypto.createHash("sha256").update(body).digest("hex")};
+  receipt.argv=[caller==="pwsh"?PWSH:WINPS,"-NoProfile","-ExecutionPolicy","Bypass","-File",script];
+  receipt.cwd=sb.root;
+  const env={...baseEnv(sb,null),AIGENTRY_INSTALL_COMPONENTS:"telepty",AIGENTRY_INSTALL_RESUME:"2"};
+  receipt.environment={DOTNET_MultiCoreJitNoProfileGather:env.DOTNET_MultiCoreJitNoProfileGather,COMPlus_MultiCoreJitNoProfileGather:env.COMPlus_MultiCoreJitNoProfileGather};
+  // This script launches no descendants. SIGKILL prevents a timeout waiting on a handled signal;
+  // maxBuffer bounds both pipes, and stdin is closed rather than left waiting for input.
+  const result=spawnSync(receipt.argv[0],receipt.argv.slice(1),{cwd:sb.root,env,stdio:["ignore","pipe","pipe"],
+   windowsHide:true,timeout:RUN_TIMEOUT_MS,killSignal:"SIGKILL",maxBuffer:16384});
+  receipt.result={status:result.status,signal:result.signal,error:result.error?{code:result.error.code,message:String(result.error.message).slice(0,1024)}:null};
+  receipt.afterExit=nativeIdentityProfile(profile,sb.root);
+  for(const stream of ["stdout","stderr"]){
+   const bytes=result[stream]||Buffer.alloc(0);
+   receipt[stream]=bytes.subarray(0,16384).toString("utf8");
+   receipt[stream+"Truncated"]=bytes.length>16384||!!(result.error&&result.error.code==="ENOBUFS");
+   if(receipt[stream+"Truncated"])receipt.truncated=true;
+  }
+  try {
+   const stages=receipt.stdout.trim().split(/\r?\n/).map(line=>JSON.parse(line));
+   if(stages.length!==3||stages.map(row=>row.stage).join(",")!=="entry,identity,preExit")throw Error("missing identity stages");
+   receipt.identityComplete=!stages[0].profile.incomplete&&!stages[2].profile.incomplete&&
+    stages[1].value.errors.length===0&&!stages[1].value.truncated&&!stages[1].value.images.some(row=>row.incomplete);
+   if(!receipt.identityComplete)receipt.errors.push({message:"incomplete child identity/profile observation; see stdout"});
+  }catch(error){receipt.errors.push({message:"identity output: "+String(error.message).slice(0,384)});}
+ }catch(error){receipt.errors.push({code:error.code||null,message:String(error.message).slice(0,1024)});}
+ if(sb&&profile&&!receipt.afterExit){try{receipt.afterExit=nativeIdentityProfile(profile,sb.root);}
+  catch(error){receipt.errors.push({message:"after-exit: "+String(error.message).slice(0,384)});}}
+ if(sb){try{fs.writeFileSync(path.join(sb.evidence,"identity.json"),JSON.stringify(receipt),{flag:"wx",mode:0o600});}
+  catch(error){receipt.errors.push({message:String(error.message).slice(0,384)});}}
+ // Do not let a supplemental observation failure erase controls or their ordinary failure.
+ const prefix="AIGENTRY_NATIVE_IDENTITY ";
+ let encoded=JSON.stringify(receipt);
+ while(Buffer.byteLength(prefix+encoded+"\n")>65536){
+  receipt.truncated=true;
+  if(receipt.stderr&&receipt.stderr.length>1024){receipt.stderr=receipt.stderr.slice(0,Math.floor(receipt.stderr.length/2));receipt.stderrTruncated=true;}
+  else if(receipt.stdout&&receipt.stdout.length>1024){receipt.stdout=receipt.stdout.slice(0,Math.floor(receipt.stdout.length/2));receipt.stdoutTruncated=true;}
+  else {receipt.argv=undefined;receipt.cwd=undefined;receipt.script=undefined;receipt.before=undefined;receipt.afterExit=undefined;receipt.errors=[{message:"metadata omitted: receipt byte budget"}];}
+  encoded=JSON.stringify(receipt);
+ }
+ console.log(prefix+encoded);
+ return receipt;
+}
+
 // Native Windows-only diagnostics; missing shells fail these rows, without
 // changing the existing policy matrix's platform skips or preservation checks.
 if(IS_WIN)for(const caller of ["pwsh","ps51"])test("native diagnostic: "+caller+" host versus gated installer",()=>{
@@ -1076,6 +1298,11 @@ if(IS_WIN)for(const caller of ["pwsh","ps51"])test("native diagnostic: "+caller+
    stage.changes.pop();stage.omittedEntries++;receipt.truncated=true;
   }
   console.log(prefix+JSON.stringify(receipt));
+  const identity=observeNativeIdentity(caller);
+  if(identity.errors.length||!identity.result||identity.result.error||identity.result.signal||identity.result.status!==1||
+     !identity.afterExit||identity.afterExit.incomplete||identity.truncated){
+   failures.push({stage:"identity",message:"supplemental identity observation incomplete; see AIGENTRY_NATIVE_IDENTITY"});
+  }
   assert.deepEqual(failures,[]);
  }finally{
   const summary={diagnostic:"tpv-native",caller,evidence,cases:observations.map(r=>({stage:r.stage,availability:r.availability,root:r.root||null,status:r.result?r.result.status:null,changedPathCount:(r.delta||[]).length,changedPaths:(r.delta||[]).slice(0,32).map(row=>row.path)}))};
