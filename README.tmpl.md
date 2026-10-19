@@ -77,7 +77,7 @@ Pre-configured settings with template substitution:
 
 ## Installation
 
-D2 supports **partial local assets** on POSIX and the existing configure-only preference flow. Full profile installation, package installs, runtime verification, settings/hooks activation, services, update, replacement, and public replay remain gated. Windows writes are unavailable pending native private-storage validation; direct PowerShell refuses before launching children.
+D2 supports **partial local assets** on POSIX and the existing configure-only preference flow. Full profile installation, package installs, runtime verification, settings/hooks activation, services, update, replacement, and public replay remain gated. Windows product asset and setup-storage writes remain refused pending native private-storage validation. Direct PowerShell refuses before launching children; the shell host can independently write profiling data. Measured PowerShell 5.1 creates a profile even for an inert refusal, so whole-invocation no-write acceptance remains blocked.
 
 ### Preview and consent
 
@@ -467,7 +467,7 @@ Add templates to `config/` and update both `install.sh` and `install.ps1` to dep
 - **Codex CLI**: Latest (optional, for Codex integration)
 - **tmux**: Latest (optional, for deliberation monitoring)
 - **direnv**: Latest (optional, for environment management)
-- **PowerShell**: 7+ recommended on Windows
+- **PowerShell**: 7+ recommended on Windows. This recommendation is not a default-host or whole-invocation no-write guarantee.
 
 Language-specific requirements for the un-bundled skills (only if you install them by hand — see
 "Un-bundled skills (written fallback)"):
@@ -527,7 +527,7 @@ User message with keywords
 | Node.js | 18+ | 20 LTS, 22 |
 | macOS | Ventura+ | Yes |
 | Linux | Ubuntu 22.04+ | Yes |
-| Windows | 10/11 + PowerShell | Yes |
+| Windows | 10/11 + PowerShell | Yes; asset writes gated; PowerShell 5.1 whole-invocation no-write acceptance blocked. |
 
 ## Contributing
 
