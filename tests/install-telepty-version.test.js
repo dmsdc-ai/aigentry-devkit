@@ -232,6 +232,13 @@ function mkSandbox(label) {
     evidence,
   };
   for (const d of [sb.home, sb.xdg, sb.tmp, sb.fakebin, sb.globalbin, sb.shims]) fs.mkdirSync(d, { recursive: true });
+  if (IS_WIN) {
+    // Declared empty profile inputs, still covered by every whole-tree snapshot.
+    // PowerShell 7.6.6 selects LocalApplicationData/Microsoft/PowerShell for its cache.
+    for (const parts of [["AppData", "Roaming"], ["AppData", "Local", "Microsoft", "PowerShell"]]) {
+      fs.mkdirSync(path.join(sb.home, ...parts), { recursive: true });
+    }
+  }
   fs.writeFileSync(sb.fakeJs, FAKE_JS);
   fs.writeFileSync(path.join(sb.state, "calls.jsonl"), "");
   fs.writeFileSync(path.join(sb.state, "forbidden.json"), JSON.stringify(FORBIDDEN));
@@ -309,6 +316,9 @@ function baseEnv(sb, health) {
       USERPROFILE: sb.home,
       APPDATA: path.join(sb.home, "AppData", "Roaming"),
       LOCALAPPDATA: path.join(sb.home, "AppData", "Local"),
+      // CoreCLR reference: disable host JIT profile gathering, not profile usage.
+      // Native CI must verify this configured host; default-host behavior is not proved.
+      DOTNET_MultiCoreJitNoProfileGather: "1",
       TEMP: sb.tmp,
       TMP: sb.tmp,
       USERNAME: "fixture",
@@ -952,6 +962,11 @@ if(IS_WIN)for(const caller of ["pwsh","ps51"])test("native diagnostic: "+caller+
     try{assert.notDeepEqual(cliTree(sb.root,sb.log),record.before);}
     finally{fs.unlinkSync(probe);}
     assert.deepEqual(cliTree(sb.root,sb.log),record.before);
+    const cacheProbe=path.join(sb.home,"AppData","Local","Microsoft","PowerShell","fixture-cache-probe");
+    fs.writeFileSync(cacheProbe,"fabricated cache mutation",{flag:"wx"});
+    try{assert.notDeepEqual(cliTree(sb.root,sb.log),record.before,"cache-subtree changes must remain observable");}
+    finally{fs.unlinkSync(cacheProbe);}
+    assert.deepEqual(cliTree(sb.root,sb.log),record.before,"cache control must restore the exact tree");
     const out=fs.openSync(path.join(evidence,stage+".stdout"),"wx",0o600);
     let err;
     try{
