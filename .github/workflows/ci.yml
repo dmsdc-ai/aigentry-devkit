@@ -22,7 +22,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-          cache: npm
 
       - name: Install dependencies
         run: npm ci
@@ -36,3 +35,6 @@ jobs:
       # On Node 18 the caller rows assert the telepty engine refusal.
       - name: Telepty version policy tests
         run: node --test tests/telepty-version-policy.test.js tests/install-telepty-version.test.js tests/init-containment-1147.test.js
+
+      - name: Status, setup and recovery contract tests
+        run: node --test tests/status-observation-1145.test.js tests/setup-selection-1193.test.js tests/setup-executor-1147.test.js tests/installer-recovery-1147.test.js tests/installer-selection-1213.test.js tests/install-contract-1145.test.js

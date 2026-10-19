@@ -3,6 +3,12 @@
 All notable changes to `@dmsdc-ai/aigentry-devkit` are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased — 0.2.0 preparation
+
+- Observe installed status and shared recovery history without treating saved preferences or package presence as verified runtime readiness.
+- Select setup profiles and runtime preferences with explicit plan-bound consent; optionally copy selected bundled skills/HUD as partial local assets. Full profile installation and runtime activation remain gated.
+- Preserve malformed or unresolved journal history, reject stale consent and unsafe storage, and contain legacy installer entry paths. Configure-only calls preserve caller lifecycle; partial asset receipts do not resolve unknown legacy effects.
+
 ## 0.1.14 — 2026-07-26
 
 ### Removed
