@@ -238,6 +238,8 @@ function mkSandbox(label) {
     for (const parts of [["AppData", "Roaming"], ["AppData", "Local", "Microsoft", "PowerShell"]]) {
       fs.mkdirSync(path.join(sb.home, ...parts), { recursive: true });
     }
+    // PS5.1 native receipts place its cache under the legacy Windows subtree.
+    fs.mkdirSync(path.join(sb.home, "AppData", "Local", "Microsoft", "Windows", "PowerShell"), { recursive: true });
   }
   fs.writeFileSync(sb.fakeJs, FAKE_JS);
   fs.writeFileSync(path.join(sb.state, "calls.jsonl"), "");
@@ -319,6 +321,8 @@ function baseEnv(sb, health) {
       // CoreCLR reference: disable host JIT profile gathering, not profile usage.
       // Native CI must verify this configured host; default-host behavior is not proved.
       DOTNET_MultiCoreJitNoProfileGather: "1",
+      // Compatibility spelling for native measurement; Desktop CLR recognition is unproved.
+      COMPlus_MultiCoreJitNoProfileGather: "1",
       TEMP: sb.tmp,
       TMP: sb.tmp,
       USERNAME: "fixture",
@@ -967,6 +971,11 @@ if(IS_WIN)for(const caller of ["pwsh","ps51"])test("native diagnostic: "+caller+
     try{assert.notDeepEqual(cliTree(sb.root,sb.log),record.before,"cache-subtree changes must remain observable");}
     finally{fs.unlinkSync(cacheProbe);}
     assert.deepEqual(cliTree(sb.root,sb.log),record.before,"cache control must restore the exact tree");
+    const legacyCacheProbe=path.join(sb.home,"AppData","Local","Microsoft","Windows","PowerShell","fixture-cache-probe");
+    fs.writeFileSync(legacyCacheProbe,"fabricated legacy cache mutation",{flag:"wx"});
+    try{assert.notDeepEqual(cliTree(sb.root,sb.log),record.before,"legacy cache-subtree changes must remain observable");}
+    finally{fs.unlinkSync(legacyCacheProbe);}
+    assert.deepEqual(cliTree(sb.root,sb.log),record.before,"legacy cache control must restore the exact tree");
     const out=fs.openSync(path.join(evidence,stage+".stdout"),"wx",0o600);
     let err;
     try{
