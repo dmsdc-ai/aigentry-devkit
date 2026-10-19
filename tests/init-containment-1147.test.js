@@ -1,0 +1,286 @@
+"use strict";
+const test=require("node:test"),assert=require("node:assert/strict"),fs=require("node:fs"),path=require("node:path"),os=require("node:os");
+const {spawnSync}=require("node:child_process");
+const REPO=path.resolve(__dirname,".."),KEEP=process.env.AIGENTRY_TEST_KEEP==="1";
+process.umask(0o077);
+const SOURCES=["bin/aigentry-devkit.js","lib/workspace-init.js","lib/bootstrap.js","lib/logger-emit.js",
+ "lib/scaffold/project/index.js","lib/scaffold/project/generate.js","lib/scaffold/project/merge.js",
+ "lib/scaffold/project/stdout.js","lib/scaffold/project/uninstall.js","lib/scaffold/project/sentinel.js"];
+const GUARD=String.raw`"use strict";
+const fs=require("fs"),path=require("path"),Module=require("module");
+const pkg=path.resolve(__dirname,"../tree/package");
+let dest=path.resolve(__dirname,"../tree/home/.config/aigentry/aigentry.yml");
+const allowed=new Set(JSON.parse(fs.readFileSync(path.join(__dirname,"sources.json"))).map(p=>path.join(pkg,p)));
+const events=path.join(__dirname,"effects.jsonl");
+const fail=effect=>()=>{fs.appendFileSync(events,JSON.stringify({effect})+"\n");throw Error("UNEXPECTED_EFFECT:"+effect);};
+for(const n of ["spawn","spawnSync","exec","execSync","execFile","execFileSync","fork"])require("child_process")[n]=fail("child_process."+n);
+for(const [m,names] of [["net",["connect","createConnection","createServer"]],["tls",["connect","createServer"]],["http",["request","get","createServer"]],["https",["request","get","createServer"]],["dgram",["createSocket"]]]){
+ for(const n of names)require(m)[n]=fail(m+"."+n);
+}
+require("net").Socket.prototype.connect=fail("Socket.connect");
+require("net").Server.prototype.listen=fail("Server.listen");
+global.fetch=fail("fetch");
+const load=Module._load;
+Module._load=function(request,parent,isMain){
+ const resolved=Module._resolveFilename(request,parent,isMain);
+ if(!Module.isBuiltin(resolved)&&!allowed.has(resolved))return fail("module:"+resolved)();
+ return load.apply(this,arguments);
+};
+if(fs.existsSync(path.join(__dirname,"race"))){
+ const declaration=path.join(__dirname,"race-target.json"),file=fs.lstatSync(declaration);
+ if(!file.isFile()||file.isSymbolicLink()||file.nlink!==1||file.size>16384||
+    (process.platform!=="win32"&&((file.mode&0o077)!==0||file.uid!==process.getuid())))throw Error("UNSAFE_RACE_DECLARATION");
+ const race=JSON.parse(fs.readFileSync(declaration,"utf8"));
+ const tree=fs.realpathSync(path.resolve(__dirname,"../tree"));
+ if(race.destination!==path.join(process.env.HOME,".config/aigentry/aigentry.yml")||
+    race.target!==path.join(path.dirname(process.env.HOME),"outside/sentinel")||
+    race.parent.path!==path.join(tree,"home/.config/aigentry"))throw Error("INVALID_RACE_TARGET");
+ dest=race.destination;
+ const inspectParent=()=>{
+  const canonical=fs.realpathSync(path.dirname(dest)),s=fs.lstatSync(canonical);
+  if(canonical!==race.parent.path||!s.isDirectory()||s.isSymbolicLink()||
+     s.dev!==race.parent.dev||s.ino!==race.parent.ino||s.uid!==race.parent.uid||s.mode!==race.parent.mode||
+     (process.platform!=="win32"&&(s.uid!==process.getuid()||(s.mode&0o077)!==0)))throw Error("RACE_PARENT_CHANGED");
+  return {path:canonical,dev:s.dev,ino:s.ino,uid:s.uid,mode:s.mode};
+ };
+ inspectParent();
+ let hits=0;
+ const copy=fs.copyFileSync;
+ fs.copyFileSync=function(src,dst,flags){
+  if(dst===dest){
+   if(++hits!==1)throw Error("DUPLICATE_RACE_HIT");
+   const parent=inspectParent();
+   fs.symlinkSync(race.target,dst);
+   fs.writeFileSync(path.join(__dirname,"race.json"),JSON.stringify({hits,src,dst,flags,destination:dest,target:fs.readlinkSync(dst),parent}),{flag:"wx",mode:0o600});
+  }
+  return copy.apply(this,arguments);
+ };
+}
+`;
+function snapshot(root){
+ const out={};
+ function walk(p){
+  const s=fs.lstatSync(p),rel=path.relative(root,p).split(path.sep).join("/");
+  out[rel]={mode:s.mode,nlink:s.nlink,value:s.isSymbolicLink()?fs.readlinkSync(p):s.isFile()?fs.readFileSync(p).toString("base64"):null};
+  if(s.isDirectory())for(const n of fs.readdirSync(p).sort())walk(path.join(p,n));
+ }
+ walk(root);return out;
+}
+function fixture(){
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),"init1147-")),tree=path.join(root,"tree"),observer=path.join(root,"observers");
+ for(const d of ["home","tmp","outside","package/bin","package/config"])fs.mkdirSync(path.join(tree,d),{recursive:true,mode:0o700});
+ fs.mkdirSync(observer,{mode:0o700});
+ for(const n of [...SOURCES,"package.json","config/aigentry.yml.template"]){
+  fs.mkdirSync(path.dirname(path.join(tree,"package",n)),{recursive:true,mode:0o700});
+  fs.copyFileSync(path.join(REPO,n),path.join(tree,"package",n));
+ }
+ fs.writeFileSync(path.join(tree,"outside/sentinel"),"outside must remain identical",{mode:0o600});
+ fs.writeFileSync(path.join(observer,"guard.cjs"),GUARD);
+ fs.writeFileSync(path.join(observer,"sources.json"),JSON.stringify(SOURCES));
+ // Calibrate native metadata independently, before product execution. Windows
+ // stat modes are not ACL/privacy proof; lack of symlink capability must fail.
+ const probe=path.join(observer,"probe");fs.mkdirSync(probe);
+ const dirStat=fs.lstatSync(probe),empty=dirStat.nlink;
+ fs.writeFileSync(path.join(probe,"file"),"x");
+ const file=fs.lstatSync(probe).nlink-empty;fs.mkdirSync(path.join(probe,"dir"));
+ const directory=fs.lstatSync(probe).nlink-empty-file;
+ fs.symlinkSync(path.join(probe,"file"),path.join(probe,"link"),"file");
+ const symlink=fs.lstatSync(probe).nlink-empty-file-directory,linkStat=fs.lstatSync(path.join(probe,"link"));
+ fs.copyFileSync(path.join(tree,"package/config/aigentry.yml.template"),path.join(probe,"copy"));
+ const copyStat=fs.lstatSync(path.join(probe,"copy"));
+ assert.ok(dirStat.isDirectory());assert.ok(linkStat.isSymbolicLink());assert.ok(copyStat.isFile());
+ if(process.platform!=="win32"){
+  assert.equal(empty,2);assert.ok([0,1].includes(file));assert.equal(directory,1);
+  assert.equal(dirStat.mode&0o777,0o700);assert.equal(copyStat.nlink,1);assert.equal(linkStat.nlink,1);
+ }else{
+  // Preserve native values in exact comparisons, without imposing POSIX counts.
+  for(const value of [empty,file,directory,symlink,linkStat.nlink,copyStat.nlink])assert.ok(Number.isInteger(value)&&value>=0);
+ }
+ const metadata={platform:process.platform,privacy:process.platform==="win32"?"native stat only; Windows ACL privacy unverified":"POSIX private directory mode asserted",
+  directory:{mode:dirStat.mode,nlink:empty},symlink:{mode:linkStat.mode,nlink:linkStat.nlink},copy:{mode:copyStat.mode,nlink:copyStat.nlink}};
+ fs.writeFileSync(path.join(observer,"link-model.json"),JSON.stringify({empty,file,directory,symlink,metadata},null,2));
+ return {root,tree,observer,home:path.join(tree,"home"),dest:path.join(tree,"home/.config/aigentry/aigentry.yml"),links:{empty,file,directory,symlink},metadata};
+}
+function invoke(f){
+ const env={HOME:f.home,USERPROFILE:f.home,XDG_CONFIG_HOME:path.join(f.home,".config"),TMPDIR:path.join(f.tree,"tmp"),TMP:path.join(f.tree,"tmp"),TEMP:path.join(f.tree,"tmp"),PATH:"",AIGENTRY_LOGGER_DISABLED:"1"};
+ const argv=[process.execPath,"--require",path.join(f.observer,"guard.cjs"),path.join(f.tree,"package/bin/aigentry-devkit.js"),"init"];
+ const before=snapshot(f.tree);
+ const out=fs.openSync(path.join(f.observer,"stdout"),"wx",0o600),err=fs.openSync(path.join(f.observer,"stderr"),"wx",0o600);
+ let result;
+ try{result=spawnSync(argv[0],argv.slice(1),{cwd:f.tree,env,stdio:["ignore",out,err],timeout:10000});}
+ finally{fs.closeSync(out);fs.closeSync(err);}
+ const after=snapshot(f.tree);
+ fs.writeFileSync(path.join(f.observer,"result.json"),JSON.stringify({argv,env,cwd:f.tree,before,after,...result},null,2));
+ assert.equal(result.error,undefined);assert.equal(result.signal,null);
+ assert.equal(fs.existsSync(path.join(f.observer,"effects.jsonl")),false,"unexpected imported/child/network effect");
+ return {before,after,result};
+}
+function addExpected(f,expected,rel,node,isDir,isLink=false){
+ expected[rel]=node;
+ expected[path.dirname(rel)==="."?"":path.dirname(rel)].nlink+=isDir?f.links.directory:isLink?f.links.symlink:f.links.file;
+}
+function runCase(name,prepare,verify){
+ test(name,()=>{const f=fixture();try{prepare(f);const observed=invoke(f);verify(f,observed);}finally{if(!KEEP)fs.rmSync(f.root,{recursive:true,force:true});}});
+}
+function parents(f){fs.mkdirSync(path.dirname(f.dest),{recursive:true,mode:0o700});}
+function armRace(f){
+ const canonical=fs.realpathSync(path.dirname(f.dest)),s=fs.lstatSync(canonical);
+ assert.ok(s.isDirectory()&&!s.isSymbolicLink());
+ assert.equal(canonical,path.join(fs.realpathSync(f.tree),"home/.config/aigentry"));
+ if(process.platform!=="win32"){assert.equal(s.uid,process.getuid());assert.equal(s.mode&0o777,0o700);}
+ const declaration={destination:f.dest,target:path.join(f.tree,"outside/sentinel"),parent:{path:canonical,dev:s.dev,ino:s.ino,uid:s.uid,mode:s.mode}};
+ fs.writeFileSync(path.join(f.observer,"race-target.json"),JSON.stringify(declaration),{flag:"wx",mode:0o600});
+ fs.writeFileSync(path.join(f.observer,"race"),"enabled",{flag:"wx",mode:0o600});
+}
+function assertRace(f,record){
+ const declared=JSON.parse(fs.readFileSync(path.join(f.observer,"race-target.json"),"utf8"));
+ assert.equal(record.hits,1,"exactly one real copy call inserts the racing entry");
+ assert.equal(record.dst,f.dest);assert.equal(record.destination,declared.destination);
+ assert.equal(record.target,declared.target);assert.deepEqual(record.parent,declared.parent);
+ assert.equal(record.src,path.join(fs.realpathSync(f.tree),"package/config/aigentry.yml.template"));
+ assert.equal(record.flags,fs.constants.COPYFILE_EXCL,"original exclusive-copy flags retained");
+}
+function refused(f,{before,after,result}){
+ assert.deepEqual(after,before,"refusal must preserve complete tree/bytes/modes/link text");
+ assert.equal(result.status,1);
+ assert.match(fs.readFileSync(path.join(f.observer,"stderr"),"utf8"),/init refuses/);
+}
+runCase("init refuses dangling destination link",f=>{parents(f);fs.symlinkSync(path.join(f.tree,"outside/absent"),f.dest);},refused);
+runCase("init refuses existing target link",f=>{parents(f);fs.symlinkSync(path.join(f.tree,"outside/sentinel"),f.dest);},refused);
+runCase("init refuses ancestor link",f=>{fs.symlinkSync(path.join(f.tree,"outside"),path.join(f.home,".config"),"dir");},refused);
+runCase("init refuses HOME link",f=>{fs.rmdirSync(f.home);fs.symlinkSync(path.join(f.tree,"outside"),f.home,"dir");},refused);
+runCase("init refuses non-directory ancestor",f=>{fs.writeFileSync(path.join(f.home,".config"),"keep");},refused);
+runCase("init refuses nonregular destination",f=>{parents(f);fs.mkdirSync(f.dest);},refused);
+runCase("init preserves entry appearing after check",f=>{parents(f);armRace(f);},(f,{before,after,result})=>{
+ const expected=structuredClone(before);
+ addExpected(f,expected,"home/.config/aigentry/aigentry.yml",{...f.metadata.symlink,value:path.join(f.tree,"outside/sentinel")},false,true);
+ fs.writeFileSync(path.join(f.observer,"expected.json"),JSON.stringify(expected,null,2));
+ assert.equal(fs.existsSync(path.join(f.observer,"race.json")),true,"real copy call must reach deterministic replacement");
+ assertRace(f,JSON.parse(fs.readFileSync(path.join(f.observer,"race.json"),"utf8")));
+ assert.deepEqual(after,expected,"only deliberate racing entry may change");
+ assert.equal(result.status,1);
+ assert.match(fs.readFileSync(path.join(f.observer,"stderr"),"utf8"),/EEXIST/);
+});
+runCase("init creates ordinary fixed destination",()=>{},(f,{before,after,result})=>{
+ const expected=structuredClone(before);
+ for(const rel of ["home/.config","home/.config/aigentry"])addExpected(f,expected,rel,{...f.metadata.directory,value:null},true);
+ const source=before["package/config/aigentry.yml.template"];
+ addExpected(f,expected,"home/.config/aigentry/aigentry.yml",{...f.metadata.copy,value:source.value},false);
+ fs.writeFileSync(path.join(f.observer,"expected.json"),JSON.stringify(expected,null,2));
+ assert.equal(result.status,0);assert.deepEqual(after,expected);
+ assert.match(fs.readFileSync(path.join(f.observer,"stdout"),"utf8"),/Created config:/);
+});
+runCase("init preserves existing regular file",f=>{parents(f);fs.writeFileSync(f.dest,"existing configuration must survive",{mode:0o640});},(f,{before,after,result})=>{
+ assert.equal(result.status,0);assert.deepEqual(after,before);
+ assert.match(fs.readFileSync(path.join(f.observer,"stdout"),"utf8"),/Config already exists, skipping:/);
+});
+
+
+// Native diagnostic only: retain both observations before asserting either.
+// The existing nine cases above remain the acceptance assertions.
+if(process.platform==="darwin")test("native diagnostic: ordinary versus owned ancestor alias",()=>{
+ const evidence=fs.mkdtempSync(path.join(os.tmpdir(),"init1147-native-"));
+ const observations=[];
+ const write=(name,value)=>fs.writeFileSync(path.join(evidence,name),JSON.stringify(value,null,2),{flag:"wx",mode:0o600});
+ try{
+  for(const kind of ["ordinary","alias"]){
+   const record={kind,availability:"unavailable"};
+   observations.push(record);
+   let f;
+   try{
+    f=fixture();
+    record.fixtureRoot=f.root;
+    const physical=path.join(fs.realpathSync(f.root),"physical");
+    fs.mkdirSync(physical,{mode:0o700});
+    fs.renameSync(f.tree,path.join(physical,"tree"));
+    fs.renameSync(f.observer,path.join(physical,"observers"));
+    const alias=path.join(path.dirname(physical),"alias");
+    if(kind==="alias")fs.symlinkSync(physical,alias,"dir");
+    const base=kind==="alias"?alias:physical;
+    f.tree=path.join(base,"tree");f.observer=path.join(base,"observers");
+    f.home=path.join(f.tree,"home");f.dest=path.join(f.home,".config/aigentry/aigentry.yml");
+    parents(f);
+    const target=path.join(f.tree,"outside/sentinel");
+    record.root=f.root;record.tree=f.tree;record.observer=f.observer;
+    record.target=target;
+    record.paths={
+     guard:path.join(f.observer,"guard.cjs"),
+     canonicalGuard:fs.realpathSync(path.join(f.observer,"guard.cjs")),
+     destination:f.dest,
+     canonicalDestinationParent:fs.realpathSync(path.dirname(f.dest)),
+     canonicalTarget:fs.realpathSync(target)
+    };
+    // Instrument the same declared-target protocol after validation, without
+    // changing its destination comparison, symlink operand, module guard or copy flags.
+    const diagnosticGuard=GUARD.replace(
+     'const copy=fs.copyFileSync;',
+     'fs.writeFileSync(path.join(__dirname,"loaded.json"),JSON.stringify({dirname:__dirname,dest,canonicalParent:fs.realpathSync(path.dirname(dest))}),{flag:"wx"});\n const copy=fs.copyFileSync;'
+    ).replace(
+     'fs.copyFileSync=function(src,dst,flags){',
+     'fs.copyFileSync=function(src,dst,flags){\n  fs.writeFileSync(path.join(__dirname,"copy-entry.json"),JSON.stringify({src,dst,flags,dest,matched:dst===dest}),{flag:"wx"});'
+    );
+    fs.writeFileSync(path.join(f.observer,"guard.cjs"),diagnosticGuard);
+    armRace(f);
+    record.raceDeclaration=JSON.parse(fs.readFileSync(path.join(f.observer,"race-target.json"),"utf8"));
+    record.before=snapshot(f.tree);
+    record.expected=structuredClone(record.before);
+    addExpected(f,record.expected,"home/.config/aigentry/aigentry.yml",{...f.metadata.symlink,value:target},false,true);
+    record.env={HOME:f.home,USERPROFILE:f.home,XDG_CONFIG_HOME:path.join(f.home,".config"),TMPDIR:path.join(f.tree,"tmp"),TMP:path.join(f.tree,"tmp"),TEMP:path.join(f.tree,"tmp"),PATH:"",AIGENTRY_LOGGER_DISABLED:"1"};
+    record.argv=[process.execPath,"--require",record.paths.guard,path.join(f.tree,"package/bin/aigentry-devkit.js"),"init"];
+    record.cwd=f.tree;
+    const out=fs.openSync(path.join(evidence,kind+".stdout"),"wx",0o600);
+    let err;
+    try{
+     err=fs.openSync(path.join(evidence,kind+".stderr"),"wx",0o600);
+     const result=spawnSync(record.argv[0],record.argv.slice(1),{cwd:record.cwd,env:record.env,stdio:["ignore",out,err],timeout:10000});
+     record.result={status:result.status,signal:result.signal,error:result.error?{code:result.error.code,message:result.error.message}:null};
+     record.availability=result.error?"unavailable":"observed";
+    }finally{fs.closeSync(out);if(err!==undefined)fs.closeSync(err);}
+   }catch(error){record.error={code:error.code||null,message:error.message};}
+   finally{
+    try{
+     if(f){
+      record.after=snapshot(f.tree);
+      record.guard={};
+      for(const name of ["loaded.json","copy-entry.json","race.json","effects.jsonl"]){
+       const p=path.join(f.observer,name);
+       record.guard[name]=fs.existsSync(p)?fs.readFileSync(p,"utf8"):null;
+      }
+     }
+     for(const stream of ["stdout","stderr"]){
+      const p=path.join(evidence,kind+"."+stream);
+      record[stream]=fs.existsSync(p)?fs.readFileSync(p,"utf8"):null;
+     }
+    }catch(error){record.observationError={code:error.code||null,message:error.message};}
+    finally{write(kind+".json",record);}
+   }
+  }
+  const failures=[];
+  for(const r of observations){
+   try{
+    assert.equal(r.availability,"observed","native fixture/copy capability unavailable");
+    assert.equal(r.error,undefined);assert.equal(r.observationError,undefined);
+    assert.equal(r.result.error,null);assert.equal(r.result.signal,null);
+    assert.equal(r.guard["effects.jsonl"],null);
+    assert.ok(r.guard["loaded.json"],"preloader must load");
+    assert.ok(r.guard["copy-entry.json"],"real copy wrapper must be reached");
+    assert.deepEqual(r.after["outside/sentinel"],r.before["outside/sentinel"]);
+    assert.ok(r.guard["race.json"],"real copy call must reach deterministic replacement");
+    const race=JSON.parse(r.guard["race.json"]);
+    assert.equal(race.hits,1);assert.equal(race.dst,r.paths.destination);
+    assert.equal(race.destination,r.raceDeclaration.destination);assert.deepEqual(race.parent,r.raceDeclaration.parent);
+    assert.equal(race.src,path.join(path.dirname(path.dirname(r.paths.canonicalGuard)),"tree/package/config/aigentry.yml.template"));
+    assert.equal(race.flags,fs.constants.COPYFILE_EXCL);
+    assert.equal(JSON.parse(r.guard["race.json"]).target,r.target,"exact independently defined link target");
+    assert.deepEqual(r.after,r.expected,"only deliberate racing entry may change");
+    assert.equal(r.result.status,1);assert.match(r.stderr,/EEXIST/);
+   }catch(error){failures.push({kind:r.kind,message:error.message});}
+  }
+  write("assertions.json",failures);
+  assert.deepEqual(failures,[]);
+ }finally{
+  const summary={diagnostic:"init1147-native",evidence,cases:observations.map(r=>({kind:r.kind,availability:r.availability,root:r.root||null,copyReached:!!(r.guard&&r.guard["copy-entry.json"]),marker:!!(r.guard&&r.guard["race.json"]),status:r.result?r.result.status:null}))};
+  write("summary.json",summary);
+  console.log("AIGENTRY_NATIVE_DIAGNOSTIC "+JSON.stringify(summary));
+ }
+});

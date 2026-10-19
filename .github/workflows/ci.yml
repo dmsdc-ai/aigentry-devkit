@@ -22,10 +22,110 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-          cache: npm
 
       - name: Install dependencies
         run: npm ci
 
       - name: Validate CLI
         run: node bin/aigentry-devkit.js --help
+
+      # Telepty install-version policy (#1213): pure decide() rows, then the real
+      # callers (install.sh on POSIX, install.ps1 via pwsh + powershell.exe on
+      # Windows, aigentry-devkit setup/update) with inert fake npm/telepty/curl.
+      # On Node 18 the caller rows assert the telepty engine refusal.
+      - name: Telepty version policy tests
+        run: node --test tests/telepty-version-policy.test.js tests/install-telepty-version.test.js tests/init-containment-1147.test.js
+
+      - name: Admit POSIX contract-test temporary root
+        if: ${{ runner.os != 'Windows' }}
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const rows = [];
+          let readCount = 0;
+          let truncated = false;
+          const clip = value => {
+            let text = String(value);
+            while (Buffer.byteLength(JSON.stringify(text)) > 2048) {
+              text = text.slice(0, Math.floor(text.length / 2));
+              truncated = true;
+            }
+            return text;
+          };
+          const record = row => {
+            readCount++;
+            if (rows.length === 64) {
+              rows.shift();
+              truncated = true;
+            }
+            rows.push(row);
+          };
+          const emit = (status, error) => {
+            const receipt = {
+              admission: "posix-contract-temp", status, uid: typeof process.getuid === "function" ? process.getuid() : null,
+              reads: rows, readCount, omittedRows: readCount - rows.length,
+              truncated, error: error ? { code: clip(error.code || ""), message: clip(error.message) } : null
+            };
+            let line;
+            do {
+              receipt.omittedRows = readCount - rows.length;
+              receipt.truncated = truncated;
+              line = JSON.stringify(receipt) + "\n";
+              if (Buffer.byteLength(line) <= 32768) break;
+              rows.shift();
+              truncated = true;
+            } while (true);
+            process.stderr.write(line);
+          };
+          try {
+            if (!["linux", "darwin"].includes(process.platform) || typeof process.getuid !== "function") {
+              throw Error("POSIX temporary-root admission requires native uid");
+            }
+            const uid = process.getuid();
+            const runnerTemp = process.env.RUNNER_TEMP;
+            if (!runnerTemp || !path.isAbsolute(runnerTemp)) throw Error("RUNNER_TEMP must be absolute");
+            const root = fs.realpathSync(runnerTemp);
+            if (/[\r\n]/.test(root)) throw Error("RUNNER_TEMP cannot contain environment-file delimiters");
+            // Admission mirrors setupIdentity's directory predicates; product tests still run unchanged.
+            const admit = (directory, privateLeaf) => {
+              let cursor = path.parse(directory).root;
+              const chain = [cursor];
+              for (const part of directory.slice(cursor.length).split(path.sep).filter(Boolean)) {
+                cursor = path.join(cursor, part);
+                chain.push(cursor);
+              }
+              for (const file of chain) {
+                let stat;
+                try { stat = fs.lstatSync(file); }
+                catch (error) {
+                  record({ path: clip(file), errno: clip(error.code || "unknown") });
+                  throw error;
+                }
+                const privateMode = privateLeaf && file === directory;
+                const rejected = stat.isSymbolicLink() ? "symlink" : !stat.isDirectory() ? "type" :
+                  (stat.uid !== uid && !(stat.uid === 0 && !privateMode)) ? "owner" :
+                  (privateMode ? (stat.mode & 0o777) !== 0o700 : (stat.mode & 0o022) !== 0) ? "mode" : null;
+                record({ path: clip(file), type: stat.isDirectory() ? "directory" : "other",
+                  link: stat.isSymbolicLink(), uid: stat.uid, mode: stat.mode, nlink: stat.nlink,
+                  size: stat.size, dev: stat.dev, ino: stat.ino, privateMode, rejected });
+                if (rejected) throw Error("Unsafe temporary-root ancestor: " + rejected);
+              }
+            };
+            // Reject an unsafe runner parent before creating the unique owned leaf.
+            admit(root, false);
+            const child = fs.mkdtempSync(path.join(root, "aigentry-contract-"));
+            if (fs.realpathSync(child) !== child) throw Error("Temporary-root canonical identity changed");
+            admit(child, true);
+            if (!process.env.GITHUB_ENV) throw Error("GITHUB_ENV is required");
+            fs.appendFileSync(process.env.GITHUB_ENV, "TMPDIR=" + child + "\n");
+            emit("admitted", null);
+          } catch (error) {
+            emit("rejected", error);
+            process.exitCode = 1;
+          }
+          NODE
+
+      - name: Status, setup and recovery contract tests
+        run: node --test tests/status-observation-1145.test.js tests/setup-selection-1193.test.js tests/setup-executor-1147.test.js tests/installer-recovery-1147.test.js tests/installer-selection-1213.test.js tests/install-contract-1145.test.js

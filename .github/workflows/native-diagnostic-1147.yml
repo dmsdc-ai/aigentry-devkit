@@ -1,0 +1,171 @@
+name: Native diagnostic evidence 1147
+
+on:
+  push:
+    branches: [validation/1238-devkit-native-diagnostic]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostic:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      RUN_ROOT: ${{ runner.temp }}/native1147-${{ github.run_id }}-${{ github.run_attempt }}
+      EXPECTED_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.20.0
+
+      - name: Mac paired diagnostic once
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir "$RUN_ROOT"
+          mkdir "$RUN_ROOT/home" "$RUN_ROOT/config" "$RUN_ROOT/tmp"
+          printf '%s\n' NOTRUN > "$RUN_ROOT/execution-status.txt"
+          export HOME="$RUN_ROOT/home" USERPROFILE="$RUN_ROOT/home"
+          export XDG_CONFIG_HOME="$RUN_ROOT/config"
+          export TMPDIR="$RUN_ROOT/tmp" TMP="$RUN_ROOT/tmp" TEMP="$RUN_ROOT/tmp"
+          actual_sha="$(git rev-parse HEAD)"
+          test "$actual_sha" = "$EXPECTED_SHA"
+          node_bin="$(command -v node)"
+          node_version="$("$node_bin" --version)"
+          test "$node_version" = v20.20.0
+          {
+            printf 'checkout=%s\nnode=%s\nplatform=macOS\n' "$actual_sha" "$node_version"
+            printf 'command=%s --test --test-name-pattern=^native diagnostic: tests/init-containment-1147.test.js\n' "$node_bin"
+            shasum -a 256 tests/init-containment-1147.test.js tests/install-telepty-version.test.js .github/workflows/native-diagnostic-1147.yml
+          } > "$RUN_ROOT/identity.txt"
+          set +e
+          "$node_bin" --test '--test-name-pattern=^native diagnostic:' tests/init-containment-1147.test.js > "$RUN_ROOT/stdout.txt" 2> "$RUN_ROOT/stderr.txt"
+          test_exit=$?
+          set -e
+          printf '%s\n' "$test_exit" > "$RUN_ROOT/exit-code.txt"
+          printf '%s\n' OBSERVED > "$RUN_ROOT/execution-status.txt"
+          exit "$test_exit"
+
+      - name: Windows paired diagnostics once
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (Test-Path -LiteralPath $env:RUN_ROOT) { throw 'Owned run root already exists' }
+          New-Item -ItemType Directory -Path $env:RUN_ROOT | Out-Null
+          foreach ($child in @('home','config','tmp')) {
+            New-Item -ItemType Directory -Path (Join-Path $env:RUN_ROOT $child) | Out-Null
+          }
+          Set-Content -LiteralPath (Join-Path $env:RUN_ROOT 'execution-status.txt') -Value 'NOTRUN'
+          $env:HOME = Join-Path $env:RUN_ROOT 'home'
+          $env:USERPROFILE = $env:HOME
+          $env:XDG_CONFIG_HOME = Join-Path $env:RUN_ROOT 'config'
+          $env:TMPDIR = Join-Path $env:RUN_ROOT 'tmp'
+          $env:TMP = $env:TMPDIR
+          $env:TEMP = $env:TMPDIR
+          $actualSha = (& git rev-parse HEAD)
+          if ($LASTEXITCODE -ne 0 -or $actualSha -ne $env:EXPECTED_SHA) { throw 'Checkout identity mismatch' }
+          $nodeBin = (Get-Command node -CommandType Application -ErrorAction Stop).Source
+          $nodeVersion = (& $nodeBin --version)
+          if ($LASTEXITCODE -ne 0 -or $nodeVersion -ne 'v20.20.0') { throw 'Node version mismatch' }
+          $identity = [ordered]@{
+            checkout = $actualSha
+            node = $nodeVersion
+            platform = 'Windows'
+            argv = @($nodeBin,'--test','--test-name-pattern=^native diagnostic:','tests/install-telepty-version.test.js')
+            sources = @(Get-FileHash -Algorithm SHA256 -LiteralPath 'tests/init-containment-1147.test.js','tests/install-telepty-version.test.js','.github/workflows/native-diagnostic-1147.yml' | Select-Object Path,Hash)
+          }
+          $identity | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $env:RUN_ROOT 'identity.txt')
+          # Capture native nonzero as data, then propagate the exact exit below.
+          $PSNativeCommandUseErrorActionPreference = $false
+          & $nodeBin --test '--test-name-pattern=^native diagnostic:' tests/install-telepty-version.test.js 1> (Join-Path $env:RUN_ROOT 'stdout.txt') 2> (Join-Path $env:RUN_ROOT 'stderr.txt')
+          $testExit = $LASTEXITCODE
+          Set-Content -LiteralPath (Join-Path $env:RUN_ROOT 'exit-code.txt') -Value $testExit
+          Set-Content -LiteralPath (Join-Path $env:RUN_ROOT 'execution-status.txt') -Value 'OBSERVED'
+          exit $testExit
+
+      - name: Require Mac evidence
+        if: always() && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in execution-status.txt identity.txt stdout.txt stderr.txt exit-code.txt; do
+            test -f "$RUN_ROOT/$file"
+          done
+          shopt -s nullglob
+          receipts=("$RUN_ROOT"/tmp/init1147-native-*)
+          test "${#receipts[@]}" -eq 1
+          for file in ordinary.json alias.json ordinary.stdout ordinary.stderr alias.stdout alias.stderr assertions.json summary.json; do
+            test -f "${receipts[0]}/$file"
+          done
+
+      - name: Require Windows evidence
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($file in @('execution-status.txt','identity.txt','stdout.txt','stderr.txt','exit-code.txt')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $env:RUN_ROOT $file) -PathType Leaf)) { throw "Missing receipt: $file" }
+          }
+          foreach ($caller in @('pwsh','ps51')) {
+            $receipts = @(Get-ChildItem -LiteralPath (Join-Path $env:RUN_ROOT 'tmp') -Directory -Filter "tpv-native-$caller-*" |
+              Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'summary.json') -PathType Leaf })
+            if ($receipts.Count -ne 1) { throw "Missing or ambiguous $caller summary" }
+            foreach ($file in @('host.json','installer.json','host.stdout','host.stderr','installer.stdout','installer.stderr','comparison.json','assertions.json','summary.json')) {
+              if (-not (Test-Path -LiteralPath (Join-Path $receipts[0].FullName $file) -PathType Leaf)) { throw "Missing $caller receipt: $file" }
+            }
+          }
+
+      - name: Archive partial Mac evidence
+        if: always() && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d "$RUN_ROOT"
+          test ! -L "$RUN_ROOT"
+          children=()
+          for child in home config tmp execution-status.txt identity.txt stdout.txt stderr.txt exit-code.txt; do
+            if [ -e "$RUN_ROOT/$child" ] || [ -L "$RUN_ROOT/$child" ]; then
+              children+=("$child")
+            fi
+          done
+          test "${#children[@]}" -gt 0
+          # Explicit children only; tar does not dereference links or include itself.
+          tar -cf "$RUN_ROOT/evidence.tar" -C "$RUN_ROOT" "${children[@]}"
+          test -f "$RUN_ROOT/evidence.tar"
+
+      - name: Archive partial Windows evidence
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Get-Item -LiteralPath $env:RUN_ROOT -Force
+          if (-not $root.PSIsContainer -or ($root.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Owned run root unavailable or linked' }
+          $allowed = @('home','config','tmp','execution-status.txt','identity.txt','stdout.txt','stderr.txt','exit-code.txt')
+          $present = @(Get-ChildItem -LiteralPath $env:RUN_ROOT -Force | Select-Object -ExpandProperty Name)
+          $children = @($allowed | Where-Object { $present -ccontains $_ })
+          if ($children.Count -eq 0) { throw 'No owned evidence children available' }
+          # No recursion during selection, no dereference option, no archive operand.
+          & tar -cf (Join-Path $env:RUN_ROOT 'evidence.tar') -C $env:RUN_ROOT @children
+          if ($LASTEXITCODE -ne 0) { throw 'Owned evidence archive failed' }
+          if (-not (Test-Path -LiteralPath (Join-Path $env:RUN_ROOT 'evidence.tar') -PathType Leaf)) { throw 'Owned evidence archive missing' }
+
+      - name: Retain owned evidence on success or failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native1147-${{ matrix.os }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ env.RUN_ROOT }}
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7

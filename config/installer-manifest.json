@@ -1,10 +1,19 @@
 {
   "version": 1,
+  "setup": { "contract_major": 1, "module": "lib/setup.js", "catalogue": "config/setup-capabilities.json", "mode": "configure-only or explicit partial assets", "installation": false, "asset_actions": ["install-bundled-skills", "install-bundled-hud"], "profile_installation": "gated" },
   "compatibility": {
-    "node": ">=18",
+    "node": {
+      "devkit_minimum": "18.0.0",
+      "profile_minimum_source": "the highest node_minimum among compatibility.<component> of the required components the selected profile installs",
+      "enforced_by": "lib/telepty-version-policy.js",
+      "note": "devkit_minimum is what the devkit CLI itself needs (package.json engines). A profile install needs whatever its required components need: every built-in profile selects telepty as required with failure_policy hard, so compatibility.telepty.node_minimum is the effective floor and is refused before any mutating phase. The floor is declared once, at the component that imposes it; this field only says where to look."
+    },
     "telepty": {
       "required": true,
-      "target": "0.1.45"
+      "target": "0.8.5",
+      "minimum": "0.8.5",
+      "maximum_exclusive": "0.9.0",
+      "node_minimum": "20.0.0"
     },
     "deliberation": {
       "required": true,
@@ -106,7 +115,7 @@
       "install": {
         "kind": "npm-global",
         "package": "@dmsdc-ai/aigentry-telepty",
-        "version": "0.1.45"
+        "version": "0.8.5"
       },
       "health_checks": [
         "telepty-version",

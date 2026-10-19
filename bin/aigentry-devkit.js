@@ -1,5 +1,17 @@
 #!/usr/bin/env node
 
+// All implicit and explicit setup routes precede logger/scaffold imports.
+const setupArg = process.argv[2];
+if (!setupArg || setupArg.startsWith("-") || ["setup", "install", "update"].includes(setupArg)) {
+  if (process.argv[2] === "update") {
+    process.stderr.write("D1 update unavailable: bounded D2 update plan required; no npm or installation performed. Use setup --configure-only --dry-run for preferences.\n");
+    process.exitCode = 1;
+  } else {
+    require("../lib/setup").run(process.argv.slice(!setupArg || setupArg.startsWith("-") ? 2 : 3)).then(code => { process.exitCode = code; }, () => { process.exitCode = 1; });
+  }
+  return;
+}
+
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
@@ -11,6 +23,14 @@ const { emitModuleEvent } = require("../lib/logger-emit");
 const rootDir = path.resolve(__dirname, "..");
 const HOME = process.env.HOME || process.env.USERPROFILE || "";
 const defaultManifestPath = path.join(rootDir, "config", "installer-manifest.json");
+
+// The installer's own state root, defined once here so no reader invents a
+// second one: install.sh uses ${XDG_CONFIG_HOME:-$HOME/.config}/aigentry-devkit
+// and install.ps1 the same, and both install-state.json and the recovery
+// journal live in it.
+function installStateDir() {
+  return path.join(process.env.XDG_CONFIG_HOME || path.join(HOME, ".config"), "aigentry-devkit");
+}
 
 
 function resolveFullPath(cmd) {
@@ -460,10 +480,7 @@ function runDoctor() {
   // Orchestrator profile checks (#518) — auto-detected: only shown when the
   // orchestrator profile is installed (installer-state has orchestrator-role /
   // an orchestrator block, or $ORCH_DIR exists). A core-only user is unaffected.
-  const orchStateFile = path.join(
-    process.env.XDG_CONFIG_HOME || path.join(HOME, ".config"),
-    "aigentry-devkit", "install-state.json"
-  );
+  const orchStateFile = path.join(installStateDir(), "install-state.json");
   const orchState = readJson(orchStateFile) || {};
   const orchDir = (orchState.orchestrator && orchState.orchestrator.repo_dir) ||
     process.env.AIGENTRY_ORCH_DIR || "";
@@ -600,6 +617,28 @@ function runUpdate(options = {}) {
   runInstall({ ...options, force: true });
 }
 
+// #1145 F2 — `status` reports what the host runs, never what an adapter
+// declares. A module's version is read from its own healthcheck stdout using
+// the shipped identification rules (lib/telepty-version-policy.js): ASCII-trim,
+// at most one leading "v", exactly one stable X.Y.Z token, and at most
+// MAX_PROBE_BYTES bytes of output. Everything else — spawn failure, nonzero
+// exit, prose, several tokens, empty or oversized output — is "unknown", so a
+// stale declared pin can never be displayed as an observation. Declared install
+// targets live in config/installer-manifest.json; they are not shown here.
+const MAX_PROBE_BYTES = 1024;
+
+function observedVersion(stdout) {
+  if (stdout === null || stdout === undefined) return null;
+  const bytes = Buffer.isBuffer(stdout) ? stdout : Buffer.from(String(stdout), "latin1");
+  if (bytes.length > MAX_PROBE_BYTES) return null;
+  const candidate = bytes
+    .toString("latin1")
+    .replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "")
+    .replace(/^v/, "");
+  const { parseStable } = require("../lib/telepty-version-policy");
+  return parseStable(candidate) ? candidate : null;
+}
+
 function runStatus() {
   const modulesDir = path.join(rootDir, "config", "modules");
   let adapterFiles = [];
@@ -620,7 +659,7 @@ function runStatus() {
   const COL_STATUS = 12;
   const header =
     "Module".padEnd(COL_NAME) +
-    "Version".padEnd(COL_VERSION) +
+    "Version (observed)".padEnd(COL_VERSION) +
     "Health";
   const separator = "-".repeat(COL_NAME + COL_VERSION + COL_STATUS);
 
@@ -632,10 +671,10 @@ function runStatus() {
     if (!adapter) continue;
 
     const name = adapter.name || file.replace(".adapter.json", "");
-    const version = adapter.version || "unknown";
     const healthcheck = adapter.healthcheck && adapter.healthcheck.command;
 
     let health = "unknown";
+    let observed = null;
     if (!healthcheck) {
       health = "no-healthcheck";
     } else {
@@ -651,6 +690,9 @@ function runStatus() {
         health = "not-installed";
       } else if (result.status === 0) {
         health = "healthy";
+        // Only a healthcheck that succeeded identifies a version, exactly as
+        // the installer's policy refuses to read a failed probe's output.
+        observed = observedVersion(result.stdout);
       } else {
         health = "unhealthy";
       }
@@ -667,13 +709,113 @@ function runStatus() {
 
     process.stdout.write(
       name.padEnd(COL_NAME) +
-        version.padEnd(COL_VERSION) +
+        (observed || "unknown").padEnd(COL_VERSION) +
         healthLabel +
         "\n"
     );
   }
 
-  process.stdout.write("\n");
+  process.stdout.write([
+    "",
+    "Version (observed) = the version the module's own healthcheck printed.",
+    "unknown = not installed, no healthcheck, a failed healthcheck, or output that is not a single X.Y.Z version.",
+    "Install targets are declared in config/installer-manifest.json, not here.",
+    "",
+  ].join("\n"));
+
+  for (const line of recoveryJournalReport()) process.stdout.write(`${line}\n`);
+}
+
+// ── #1147 recovery journal — read-only, answered by the one shared fold ─────
+//
+// `status` does NOT re-derive chronological folding. It calls the authoritative
+// reader and fold exported by lib/install-state.js, so the rules have exactly
+// one definition and this is a consumer of it: a phase still recorded `running`
+// stays unresolved, a `completed` record carrying `degraded` cannot clear a
+// prior unknown, a clean completion resolves it, and the raw history is kept.
+//
+// Four states stay distinguishable, and the fourth is the reason `null` exists:
+//
+//   absent              no run has recorded a journal yet
+//   ok   + []           recorded, and nothing is left unresolved
+//   ok   + [n, ...]     recorded, and those phases are NOT proven resolved
+//   corrupt/unsupported the fold cannot answer — unresolved_phases is null,
+//                       which means UNKNOWN. Reporting that as zero, none or
+//                       "nothing unresolved" would state the opposite of the
+//                       truth, so it is reported as unknown, with the reason.
+//
+// "Not proven resolved" is never a claim that a process died: during a live
+// install the phase in flight is the expected answer.
+//
+// Read-only and inert: nothing is written, no directory is created, no lock is
+// taken, and no installer, service, daemon or recovery action starts here.
+function recoveryJournalReport() {
+  const dir = installStateDir();
+  const journalFile = path.join(dir, "install-journal.json");
+  let read;
+  let unresolved;
+  try {
+    const { readJournal, unresolvedPhases } = require("../lib/install-state");
+    read = readJournal(dir);
+    unresolved = read.status === "ok" ? unresolvedPhases(read.journal)
+      : read.status === "absent" ? []
+        : null;
+  } catch (err) {
+    // The reader itself is unavailable, so the honest answer is still unknown.
+    return [
+      `Recovery journal: unreadable — unresolved phases UNKNOWN (${err.message})`,
+      "",
+    ];
+  }
+
+  if (read.status === "absent") {
+    return [
+      `Recovery journal: none recorded (${journalFile})`,
+      "No journal is available here; prior installation activity cannot be determined.",
+      "",
+    ];
+  }
+
+  if (unresolved === null) {
+    return [
+      `Recovery journal: ${read.status} — unresolved phases UNKNOWN (${read.reason || "unreadable record"})`,
+      `The record at ${journalFile} was left untouched. UNKNOWN is not "nothing unresolved":`,
+      "inspect or move it aside, then re-run the installer, which refuses to guess.",
+      "",
+    ];
+  }
+
+  const setupLines = [];
+  const assetOutcome = require("../lib/install-state").assetOutcome(read.journal);
+  if (assetOutcome) setupLines.push("Partial local assets: " + assetOutcome + "; full profile installation gated; runtime not verified.");
+  if (read.journal && read.journal.setup) {
+    try {
+      const choice = require("../lib/install-state").validateSetupChoice(read.journal.setup);
+      setupLines.push("Setup preference: " + choice.profile + "/" + choice.runtime + " — " + choice.outcome + ", not runtime-verified; authentication not checked.");
+    } catch (_) { setupLines.push("Setup preference: UNKNOWN (invalid record); runtime not verified."); }
+  }
+
+  if (unresolved.length === 0) {
+    return [
+      ...setupLines,
+      "Recovery journal: ok — no phase is left unresolved.",
+      "",
+    ];
+  }
+
+  const { PHASES } = require("../lib/install-state");
+  const named = unresolved
+    .map((n) => (PHASES[n] ? `${n} (${PHASES[n].label})` : String(n)))
+    .join(", ");
+  return [
+    ...setupLines,
+    `Recovery journal: ok — phases not proven resolved: ${named}`,
+    "Replay handling depends on each phase's policy in the legacy writer API; public replay is unavailable.",
+    "Partial asset installation refuses every unresolved phase. Environment skip/replay/force-unlock flags do not grant consent.",
+    "During a live install the phase in flight",
+    "is listed here too; this is not a claim that anything died.",
+    "",
+  ];
 }
 
 function runInit() {
@@ -681,17 +823,37 @@ function runInit() {
   const templateSrc = path.join(rootDir, "config", "aigentry.yml.template");
   const configDest = path.join(configDir, "aigentry.yml");
 
-  if (!fs.existsSync(configDir)) {
-    fs.mkdirSync(configDir, { recursive: true });
-    process.stdout.write(`Created directory: ${configDir}\n`);
-  } else {
-    process.stdout.write(`Directory already exists: ${configDir}\n`);
+  // Inspect only HOME and the fixed destination chain. These checks do not
+  // prevent a malicious same-UID process from replacing ancestors afterward.
+  for (const dir of [HOME || ".", path.join(HOME, ".config"), configDir]) {
+    let stat;
+    try { stat = fs.lstatSync(dir); }
+    catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    if (stat && (!stat.isDirectory() || stat.isSymbolicLink())) {
+      throw new Error(`init refuses unsafe directory: ${dir}`);
+    }
+    if (!stat) {
+      fs.mkdirSync(dir);
+      if (dir === configDir) process.stdout.write(`Created directory: ${configDir}\n`);
+    } else if (dir === configDir) {
+      process.stdout.write(`Directory already exists: ${configDir}\n`);
+    }
   }
 
-  if (fs.existsSync(configDest)) {
+  let destination;
+  try { destination = fs.lstatSync(configDest); }
+  catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  if (destination && (!destination.isFile() || destination.isSymbolicLink())) {
+    throw new Error(`init refuses unsafe destination: ${configDest}`);
+  }
+  if (destination) {
     process.stdout.write(`Config already exists, skipping: ${configDest}\n`);
   } else if (fs.existsSync(templateSrc)) {
-    fs.copyFileSync(templateSrc, configDest);
+    fs.copyFileSync(templateSrc, configDest, fs.constants.COPYFILE_EXCL);
     process.stdout.write(`Created config: ${configDest}\n`);
   } else {
     process.stderr.write(`Template not found: ${templateSrc}\n`);

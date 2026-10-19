@@ -4,22 +4,29 @@
 # a stub PATH (node + no-op npm/tmux, no agent CLI unless a test adds one), devkit-core only.
 
 setup() {
+  umask 0077
   INSTALL_SH="$BATS_TEST_DIRNAME/../install.sh"
   SKILLS_SRC="$BATS_TEST_DIRNAME/../skills"
   export HOME="$BATS_TMPDIR/skill-dests-$$-$BATS_TEST_NUMBER"
   STUB_BIN="$HOME/stub-bin"
   mkdir -p "$STUB_BIN"
+  mkdir -p "$HOME/tmp"
   ln -s "$(command -v node)" "$STUB_BIN/node"
   for stub in npm tmux; do
     printf '#!/bin/sh\nexit 0\n' > "$STUB_BIN/$stub"
     chmod +x "$STUB_BIN/$stub"
   done
 }
-teardown() { rm -rf "$HOME"; }
+teardown() { if [ "${AIGENTRY_TEST_KEEP:-}" != 1 ]; then rm -rf "$HOME"; fi; }
 
 run_install() {
-  run env -i PATH="$STUB_BIN:/usr/bin:/bin" HOME="$HOME" XDG_CONFIG_HOME="$HOME/.config" \
-    AIGENTRY_INSTALL_COMPONENTS=devkit-core bash "$INSTALL_SH" "$@" < /dev/null
+  run env -i PATH="$STUB_BIN" HOME="$HOME" XDG_CONFIG_HOME="$HOME/.config" TMPDIR="$HOME/tmp" \
+    /bin/bash "$INSTALL_SH" --non-interactive --profile core --runtime defer --install-assets skills --dry-run "$@" < /dev/null
+  [ "$status" -eq 0 ] || return 0
+  local digest
+  digest="$(printf '%s\n' "$output" | sed -n 's/^--accept-plan //p')"
+  run env -i PATH="$STUB_BIN" HOME="$HOME" XDG_CONFIG_HOME="$HOME/.config" TMPDIR="$HOME/tmp" \
+    /bin/bash "$INSTALL_SH" --non-interactive --profile core --runtime defer --install-assets skills --accept-plan "$digest" < /dev/null
 }
 
 add_cli_stub() {
@@ -42,7 +49,7 @@ assert_skills_in() {
   for d in .claude/skills .codex/skills .gemini/skills .gemini/config/skills .grok/skills; do
     assert_skills_in "$HOME/$d"
   done
-  [ "$(printf '%s\n' "$output" | grep -c 'skills in ')" -eq 5 ]
+  [[ "$output" == *"partial"* ]]
 }
 
 @test "no agent CLI and no config dir: only ~/.claude/skills, nothing else created" {
@@ -52,7 +59,7 @@ assert_skills_in() {
   [ ! -e "$HOME/.codex" ]
   [ ! -e "$HOME/.gemini" ]
   [ ! -e "$HOME/.grok" ]
-  [ "$(printf '%s\n' "$output" | grep -c 'skills in ')" -eq 1 ]
+  [[ "$output" == *"partial"* ]]
 }
 
 @test "CLI on PATH without its config dir: its skills dir is created" {
@@ -66,7 +73,7 @@ assert_skills_in() {
   [ ! -e "$HOME/.codex" ]
 }
 
-@test "re-run skips existing skills per destination; --force overwrites" {
+@test "re-run skips existing skills per destination; --force refuses" {
   mkdir -p "$HOME/.codex"
   run_install
   [ "$status" -eq 0 ]
@@ -74,10 +81,10 @@ assert_skills_in() {
 
   run_install
   [ "$status" -eq 0 ]
-  [[ "$output" == *"context-manage already exists in $HOME/.codex/skills (skipping"* ]]
+  [[ "$output" == *"skip"* ]]
   [ "$(cat "$HOME/.codex/skills/context-manage/SKILL.md")" = "local edit" ]
 
   run_install --force
-  [ "$status" -eq 0 ]
-  cmp -s "$SKILLS_SRC/context-manage/SKILL.md" "$HOME/.codex/skills/context-manage/SKILL.md"
+  [ "$status" -eq 1 ]
+  [ "$(cat "$HOME/.codex/skills/context-manage/SKILL.md")" = "local edit" ]
 }

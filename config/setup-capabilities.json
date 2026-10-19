@@ -1,0 +1,400 @@
+{
+  "revision": 1,
+  "scope": "configure-only preferences and explicit partial bundled assets; profile/runtime installation unavailable",
+  "runtimes": [
+    {
+      "id": "defer",
+      "hosts": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "preference": true,
+      "executables": [],
+      "disclosure": "No runtime action; local preference write only.",
+      "architecture": "unverified",
+      "license_cost": "unknown; no acceptance",
+      "data_services_privilege": "unknown; no changes",
+      "installation": false,
+      "verification": "not-verified"
+    },
+    {
+      "id": "native-srt",
+      "hosts": [
+        "darwin",
+        "linux"
+      ],
+      "preference": true,
+      "executables": [],
+      "disclosure": "Existing native runner requirements and effective confinement unverified; preference only.",
+      "architecture": "unverified",
+      "license_cost": "unknown; no acceptance",
+      "data_services_privilege": "unknown; no changes",
+      "installation": false,
+      "verification": "not-verified"
+    },
+    {
+      "id": "docker-desktop",
+      "hosts": [
+        "darwin",
+        "win32"
+      ],
+      "preference": false,
+      "executables": [
+        "docker"
+      ],
+      "disclosure": "VM storage, OS integration and possible privileged helper require primary-source/native evidence.",
+      "architecture": "unverified",
+      "license_cost": "unknown; no acceptance",
+      "data_services_privilege": "unknown; no changes",
+      "installation": false,
+      "verification": "not-verified"
+    },
+    {
+      "id": "docker-engine-rootless",
+      "hosts": [
+        "linux"
+      ],
+      "preference": false,
+      "executables": [
+        "dockerd"
+      ],
+      "disclosure": "Rootless operation, namespaces, service/network/image storage unverified. No rootful fallback.",
+      "architecture": "unverified",
+      "license_cost": "unknown; no acceptance",
+      "data_services_privilege": "unknown; no changes",
+      "installation": false,
+      "verification": "not-verified"
+    },
+    {
+      "id": "podman",
+      "hosts": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "preference": false,
+      "executables": [
+        "podman"
+      ],
+      "disclosure": "Native/managed VM, network and storage semantics unverified.",
+      "architecture": "unverified",
+      "license_cost": "unknown; no acceptance",
+      "data_services_privilege": "unknown; no changes",
+      "installation": false,
+      "verification": "not-verified"
+    },
+    {
+      "id": "rancher-desktop",
+      "hosts": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "preference": false,
+      "executables": [
+        "rdctl"
+      ],
+      "disclosure": "Engine mode, VM and privileged integration unverified.",
+      "architecture": "unverified",
+      "license_cost": "unknown; no acceptance",
+      "data_services_privilege": "unknown; no changes",
+      "installation": false,
+      "verification": "not-verified"
+    },
+    {
+      "id": "orbstack",
+      "hosts": [
+        "darwin"
+      ],
+      "preference": false,
+      "executables": [
+        "orb"
+      ],
+      "disclosure": "Host integration and entitlement unverified.",
+      "architecture": "unverified",
+      "license_cost": "unknown; no acceptance",
+      "data_services_privilege": "unknown; no changes",
+      "installation": false,
+      "verification": "not-verified"
+    }
+  ],
+  "assets": {
+    "revision": 1,
+    "inventory": [
+      {
+        "source": "hud/simple-status.sh",
+        "sha256": "aa3ac0e7718f6ce998fd3dc3d1518ad949dc16ef4503628ee84277e7b97bc1a5",
+        "action": "install-bundled-hud",
+        "destinationSuffix": "simple-status.sh",
+        "mode": "0700"
+      },
+      {
+        "source": "skills/ambiguity-gate/SKILL.md",
+        "sha256": "d1cf9cc75089483ba753db2159e9f101e210ddbf64ca2226622428770592cff6",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "ambiguity-gate/SKILL.md",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/ambiguity-gate/tests/01-fire-a5-unbounded-reset.md",
+        "sha256": "500686d95a2b8675258e20b04e7de6bdec89b61b23eb8869048ffe9cd9852838",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "ambiguity-gate/tests/01-fire-a5-unbounded-reset.md",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/ambiguity-gate/tests/02-fire-a6-vague-verb.md",
+        "sha256": "4f6e770a069d8cc72f4b650b007297aa089f21c97eaa4f10ea899c3a94595537",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "ambiguity-gate/tests/02-fire-a6-vague-verb.md",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/ambiguity-gate/tests/03-fire-a1-target-survives-reading.md",
+        "sha256": "3747e091f8b6f5f0bfc6a7eb19948274958e8b67522e02740f1737e7d4f1a0c7",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "ambiguity-gate/tests/03-fire-a1-target-survives-reading.md",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/ambiguity-gate/tests/04-fire-a2-a3-cut-point.md",
+        "sha256": "ca4bda86df353d6c806834c92cf7bff93c7425d731c9a7614ecc75e58e81856c",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "ambiguity-gate/tests/04-fire-a2-a3-cut-point.md",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/ambiguity-gate/tests/05-fire-a7-constraint-conflict.md",
+        "sha256": "f03bdfe11d88ce3782663b5189997d62d0c92da0aad4cba2b6288f0a1634f126",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "ambiguity-gate/tests/05-fire-a7-constraint-conflict.md",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/ambiguity-gate/tests/06-nofire-brake-resolves.md",
+        "sha256": "6b09a0f83985aceac661c0af055571f69ffc069efa38d501a0a1dddc245b097d",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "ambiguity-gate/tests/06-nofire-brake-resolves.md",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/ambiguity-gate/tests/07-nofire-gate-a-status-query.md",
+        "sha256": "77690146edfdeb0f0abeba74ec5a6daf450c5af47125e5dd8cb54c476be1a0b6",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "ambiguity-gate/tests/07-nofire-gate-a-status-query.md",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/ambiguity-gate/tests/08-nofire-write-two-fails.md",
+        "sha256": "b1b7e59b603a514b7fa927b383bf6ec808f748a6d2473bbe4194b7a4ebf1cc4c",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "ambiguity-gate/tests/08-nofire-write-two-fails.md",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/ambiguity-gate/tests/09-nofire-mode-directive-and-ack.md",
+        "sha256": "c97484510f1eca2d3a67b3d215f5b1d0a87d82d00a2a81c01f21cfae7e9bd7c6",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "ambiguity-gate/tests/09-nofire-mode-directive-and-ack.md",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/ambiguity-gate/tests/10-nofire-operational-condition.md",
+        "sha256": "c5592c59d7193433faac4a25b729382d29434d4611e5ce3f99a7e36bd4cfb246",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "ambiguity-gate/tests/10-nofire-operational-condition.md",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/ambiguity-gate/tests/README.md",
+        "sha256": "20bbea7f1908d4af3cd2d2db49ced23c108dd9981d6ba2d097642c9f86463d2b",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "ambiguity-gate/tests/README.md",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/auto-multi-llm-review/SKILL.md",
+        "sha256": "d8c33d3ecf23c5351b808fa79605909b16adeec35957370608c4b5bc85211c91",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "auto-multi-llm-review/SKILL.md",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/caveman/SKILL.md",
+        "sha256": "ed1e19ddc501d01a1a617b49f4fe0c160a13bfb6e384ae6c35bddc1ae45e09a2",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "caveman/SKILL.md",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/context-manage/SKILL.md",
+        "sha256": "50c1b1ba37fe10c5b1a81acc5b7f46f05216313acff59716e98fcb86357e42b3",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "context-manage/SKILL.md",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/deliberation-executor/SKILL.md",
+        "sha256": "99708437bf5e802c848e37b4bfe9ec64079df8f90d093a548e175b082838bda8",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "deliberation-executor/SKILL.md",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/deliberation-gate/SKILL.md",
+        "sha256": "0c431c0ad85fd2950f00de24c55a34e04a3da87db325dba26d3dbeb1861a14e9",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "deliberation-gate/SKILL.md",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/deliberation-test/SKILL.md",
+        "sha256": "c3f06984a460cb1d82021ea229ea6aa21e2f6d8fe0535749ebfc8d3f34608534",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "deliberation-test/SKILL.md",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/deliberation/SKILL.md",
+        "sha256": "e286b14c91f3c6ac50007756905814ea03290c667da41ebcc73db67020cc326b",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "deliberation/SKILL.md",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/diagnose/SKILL.md",
+        "sha256": "73776b0a92f677bfc93bcf54de5080daa11c598b3d08f52b4c423f1dd1ff0352",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "diagnose/SKILL.md",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/diagnose/scripts/hitl-loop.template.sh",
+        "sha256": "b2932630950e5210075bcd6f850e5accf30c101c5367b29eac3a29b4dd8084c8",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "diagnose/scripts/hitl-loop.template.sh",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/env-manager/SKILL.md",
+        "sha256": "94155f3aaecf41da7c48d1a1cf0683f815cba17734b28656cc08b3e1b049e491",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "env-manager/SKILL.md",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/grill-with-adr/SKILL.md",
+        "sha256": "ae197b51047435e6a1c7cc3b871bc3822e8c9f78b118df87f7ca65078b55dea0",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "grill-with-adr/SKILL.md",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/npm-release/SKILL.md",
+        "sha256": "ac74efbaf2288e43f0750ff62f3976ac02cc4d80cd30db512bdf5fe77bd27569",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "npm-release/SKILL.md",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/orchestrator-response-style/SKILL.md",
+        "sha256": "35c4495aaf01e833969f0da6c76e20f9edbbef9bec81ef8dbc65b4a137754df3",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "orchestrator-response-style/SKILL.md",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/sawe/SKILL.md",
+        "sha256": "a660f5fa33d64a6219482790c7b68076b16b52940edbb553d4d31910dc3c3534",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "sawe/SKILL.md",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/session-create/SKILL.md",
+        "sha256": "349152f1c0f715e949a4045a83835fe2b202c95294c78a70b7b9e556f9299ddd",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "session-create/SKILL.md",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/telepty-deliberate/SKILL.md",
+        "sha256": "a3ef04317d25d24564ddb20c7c58a4bfab9f743c15241a90745ac01a0120eeb5",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "telepty-deliberate/SKILL.md",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/telepty-deliberate/scripts/telepty_deliberation_helper.py",
+        "sha256": "5c6d02cb2556edac256d93c279e41c82689925ecdf5e6a0143d5d0dad620b4e2",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "telepty-deliberate/scripts/telepty_deliberation_helper.py",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/upsell-trigger/SKILL.md",
+        "sha256": "e97240a22930c78831d447eb5997636223465d6dcbb132cebcf3a48addd6326e",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "upsell-trigger/SKILL.md",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/work-breakdown/SKILL.md",
+        "sha256": "c1d4e6946e5314cda4acfb3d59496a5b44dea8fef97ba75866bf91bf111d9350",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "work-breakdown/SKILL.md",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/workspace-lifecycle/SKILL.md",
+        "sha256": "53e9d76a1b2326830eb97bf0e42c8342a3ef2cebe8a042567d9294d4a64a0cac",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "workspace-lifecycle/SKILL.md",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/workspace-lifecycle/scripts/run-once.sh",
+        "sha256": "e1e0c23d0b9c6fa0b359db33c537526331f06ba2bc0d0413da84541413a64ee1",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "workspace-lifecycle/scripts/run-once.sh",
+        "mode": "0600"
+      },
+      {
+        "source": "skills/workspace-lifecycle/scripts/wait.sh",
+        "sha256": "4cdc8544f0588bf8bc3c7795d3f6f301b99976eba9761d40eb0cdd3aa33c3494",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "workspace-lifecycle/scripts/wait.sh",
+        "mode": "0600"
+      },
+      {
+        "source": "templates/skills/propose-next-task/SKILL.md",
+        "sha256": "a1d7c48dd83da4a2670834184dc3bbd9d6c9c7fa7b4700c3f57f9f706a1025fc",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "propose-next-task/SKILL.md",
+        "mode": "0600"
+      },
+      {
+        "source": "templates/skills/propose-next-task/tests/baseline-no-skill.md",
+        "sha256": "e0e1c16d7b10f725f61f29b4155106fe2fd6ce6fb075eba9f91865417310f8df",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "propose-next-task/tests/baseline-no-skill.md",
+        "mode": "0600"
+      },
+      {
+        "source": "templates/skills/propose-next-task/tests/post-skill-pass.md",
+        "sha256": "362d573d99a9c03d4bc897a2d8f2870cce5e742221ac5096c7edd9f5bc11a625",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "propose-next-task/tests/post-skill-pass.md",
+        "mode": "0600"
+      },
+      {
+        "source": "templates/skills/propose-next-task/tests/refactor-iterations.md",
+        "sha256": "d8cc3075881a5922f8aa3f37890c81afcaf166d9f0e129cf7ec796511ae48d39",
+        "action": "install-bundled-skills",
+        "destinationSuffix": "propose-next-task/tests/refactor-iterations.md",
+        "mode": "0600"
+      }
+    ]
+  }
+}
