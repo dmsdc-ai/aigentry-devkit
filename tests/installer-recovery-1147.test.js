@@ -1330,7 +1330,58 @@ test("configure-only shared writer preserves unresolved history and refuses stal
     fs.mkdirSync(sb.stateDir,{recursive:true,mode:0o700});
     const prior={schema:shared.SCHEMA,attempts:[{run_id:"prior",outcome:"running",phases:[{phase:5,status:"running"}]}]};
     fs.writeFileSync(sb.journal,JSON.stringify(prior),{mode:0o600});
-    const observed=shared.inspectSetupStorage(sb.stateDir);
+    const ancestorPaths=new Set();
+    let cursor=path.parse(sb.stateDir).root;
+    for(const part of sb.stateDir.slice(cursor.length).split(path.sep).filter(Boolean)){
+      cursor=path.join(cursor,part);ancestorPaths.add(cursor);
+    }
+    const reads=[],uid=typeof process.getuid==="function"?process.getuid():null;
+    let readCount=0,firstRejected=null,observed,inspectionError,inspectionFailed=false;
+    const originalLstat=fs.lstatSync;
+    const record=row=>{
+      readCount++;
+      if(reads.length<64)reads.push(row);
+      if(!firstRejected&&!['accepted-metadata','absent'].includes(row.predicate))firstRejected=row;
+    };
+    fs.lstatSync=function(file,...args){
+      if(!ancestorPaths.has(file))return originalLstat.call(this,file,...args);
+      let s;
+      try{s=originalLstat.call(this,file,...args);}
+      catch(error){record({path:file,errno:error.code||null,predicate:error.code==="ENOENT"?"absent":"metadata-read-error"});throw error;}
+      const privateMode=file===sb.stateDir;
+      const predicate=s.isSymbolicLink()?"symlink":!s.isDirectory()?"not-directory":
+        (s.uid!==uid&&!(s.uid===0&&!privateMode))?"owner":
+        (privateMode?(s.mode&0o777)!==0o700:(s.mode&0o022)!==0)?"mode":"accepted-metadata";
+      record({path:file,type:s.isDirectory()?"directory":s.isFile()?"file":"other",link:s.isSymbolicLink(),
+        uid:s.uid,mode:s.mode,nlink:s.nlink,size:s.size,privateMode,predicate});
+      return s;
+    };
+    try{observed=shared.inspectSetupStorage(sb.stateDir);}
+    catch(error){inspectionFailed=true;inspectionError=error;}
+    finally{fs.lstatSync=originalLstat;}
+    if(inspectionFailed){
+      let clipped=false;
+      const clip=value=>{
+        let text=String(value);
+        while(Buffer.byteLength(JSON.stringify(text))>2048){clipped=true;text=text.slice(0,Math.floor(text.length/2));}
+        return text;
+      };
+      const bounded=row=>({...row,path:clip(row.path)});
+      const receipt={diagnostic:"setup-storage-ancestor",platform:process.platform,processUid:uid,
+        statePath:clip(sb.stateDir),fixtureRoot:clip(sb.root),
+        canonicalRoot:{status:"unavailable",reason:"fixture does not retain canonical root; no extra metadata read"},
+        error:{name:clip(inspectionError.name),code:inspectionError.code?clip(inspectionError.code):null,message:clip(inspectionError.message)},
+        firstRejected:firstRejected?bounded(firstRejected):null,
+        classification:firstRejected?"from actual delegated ancestor metadata":"unavailable: no rejected ancestor metadata captured",
+        reads:reads.map(bounded),readCount,omittedRows:Math.max(0,readCount-reads.length),truncated:false};
+      receipt.truncated=clipped||receipt.omittedRows>0;
+      const prefix="AIGENTRY_STORAGE_DIAGNOSTIC ";
+      while(Buffer.byteLength(prefix+JSON.stringify(receipt)+"\n")>32768&&receipt.reads.length){
+        receipt.reads.pop();receipt.omittedRows++;receipt.truncated=true;
+      }
+      console.log(prefix+JSON.stringify(receipt));
+      throw inspectionError;
+    }
     const choice={profile:"core",runtime:"native-srt",outcome:"selected",verification:"not-verified",catalogue_revision:1,plan_digest:"b".repeat(64)};
     shared.saveSetupChoice(sb.stateDir,choice,observed);
     const after=journal(sb);

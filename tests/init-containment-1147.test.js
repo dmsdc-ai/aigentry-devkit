@@ -8,7 +8,8 @@ const SOURCES=["bin/aigentry-devkit.js","lib/workspace-init.js","lib/bootstrap.j
  "lib/scaffold/project/stdout.js","lib/scaffold/project/uninstall.js","lib/scaffold/project/sentinel.js"];
 const GUARD=String.raw`"use strict";
 const fs=require("fs"),path=require("path"),Module=require("module");
-const pkg=path.resolve(__dirname,"../tree/package"),dest=path.resolve(__dirname,"../tree/home/.config/aigentry/aigentry.yml");
+const pkg=path.resolve(__dirname,"../tree/package");
+let dest=path.resolve(__dirname,"../tree/home/.config/aigentry/aigentry.yml");
 const allowed=new Set(JSON.parse(fs.readFileSync(path.join(__dirname,"sources.json"))).map(p=>path.join(pkg,p)));
 const events=path.join(__dirname,"effects.jsonl");
 const fail=effect=>()=>{fs.appendFileSync(events,JSON.stringify({effect})+"\n");throw Error("UNEXPECTED_EFFECT:"+effect);};
@@ -26,11 +27,31 @@ Module._load=function(request,parent,isMain){
  return load.apply(this,arguments);
 };
 if(fs.existsSync(path.join(__dirname,"race"))){
+ const declaration=path.join(__dirname,"race-target.json"),file=fs.lstatSync(declaration);
+ if(!file.isFile()||file.isSymbolicLink()||file.nlink!==1||file.size>16384||
+    (process.platform!=="win32"&&((file.mode&0o077)!==0||file.uid!==process.getuid())))throw Error("UNSAFE_RACE_DECLARATION");
+ const race=JSON.parse(fs.readFileSync(declaration,"utf8"));
+ const tree=fs.realpathSync(path.resolve(__dirname,"../tree"));
+ if(race.destination!==path.join(process.env.HOME,".config/aigentry/aigentry.yml")||
+    race.target!==path.join(path.dirname(process.env.HOME),"outside/sentinel")||
+    race.parent.path!==path.join(tree,"home/.config/aigentry"))throw Error("INVALID_RACE_TARGET");
+ dest=race.destination;
+ const inspectParent=()=>{
+  const canonical=fs.realpathSync(path.dirname(dest)),s=fs.lstatSync(canonical);
+  if(canonical!==race.parent.path||!s.isDirectory()||s.isSymbolicLink()||
+     s.dev!==race.parent.dev||s.ino!==race.parent.ino||s.uid!==race.parent.uid||s.mode!==race.parent.mode||
+     (process.platform!=="win32"&&(s.uid!==process.getuid()||(s.mode&0o077)!==0)))throw Error("RACE_PARENT_CHANGED");
+  return {path:canonical,dev:s.dev,ino:s.ino,uid:s.uid,mode:s.mode};
+ };
+ inspectParent();
+ let hits=0;
  const copy=fs.copyFileSync;
  fs.copyFileSync=function(src,dst,flags){
   if(dst===dest){
-   fs.symlinkSync(path.resolve(__dirname,"../tree/outside/sentinel"),dest);
-   fs.writeFileSync(path.join(__dirname,"race.json"),JSON.stringify({destination:dest,target:fs.readlinkSync(dest)}));
+   if(++hits!==1)throw Error("DUPLICATE_RACE_HIT");
+   const parent=inspectParent();
+   fs.symlinkSync(race.target,dst);
+   fs.writeFileSync(path.join(__dirname,"race.json"),JSON.stringify({hits,src,dst,flags,destination:dest,target:fs.readlinkSync(dst),parent}),{flag:"wx",mode:0o600});
   }
   return copy.apply(this,arguments);
  };
@@ -102,6 +123,23 @@ function runCase(name,prepare,verify){
  test(name,()=>{const f=fixture();try{prepare(f);const observed=invoke(f);verify(f,observed);}finally{if(!KEEP)fs.rmSync(f.root,{recursive:true,force:true});}});
 }
 function parents(f){fs.mkdirSync(path.dirname(f.dest),{recursive:true,mode:0o700});}
+function armRace(f){
+ const canonical=fs.realpathSync(path.dirname(f.dest)),s=fs.lstatSync(canonical);
+ assert.ok(s.isDirectory()&&!s.isSymbolicLink());
+ assert.equal(canonical,path.join(fs.realpathSync(f.tree),"home/.config/aigentry"));
+ if(process.platform!=="win32"){assert.equal(s.uid,process.getuid());assert.equal(s.mode&0o777,0o700);}
+ const declaration={destination:f.dest,target:path.join(f.tree,"outside/sentinel"),parent:{path:canonical,dev:s.dev,ino:s.ino,uid:s.uid,mode:s.mode}};
+ fs.writeFileSync(path.join(f.observer,"race-target.json"),JSON.stringify(declaration),{flag:"wx",mode:0o600});
+ fs.writeFileSync(path.join(f.observer,"race"),"enabled",{flag:"wx",mode:0o600});
+}
+function assertRace(f,record){
+ const declared=JSON.parse(fs.readFileSync(path.join(f.observer,"race-target.json"),"utf8"));
+ assert.equal(record.hits,1,"exactly one real copy call inserts the racing entry");
+ assert.equal(record.dst,f.dest);assert.equal(record.destination,declared.destination);
+ assert.equal(record.target,declared.target);assert.deepEqual(record.parent,declared.parent);
+ assert.equal(record.src,path.join(fs.realpathSync(f.tree),"package/config/aigentry.yml.template"));
+ assert.equal(record.flags,fs.constants.COPYFILE_EXCL,"original exclusive-copy flags retained");
+}
 function refused(f,{before,after,result}){
  assert.deepEqual(after,before,"refusal must preserve complete tree/bytes/modes/link text");
  assert.equal(result.status,1);
@@ -113,11 +151,12 @@ runCase("init refuses ancestor link",f=>{fs.symlinkSync(path.join(f.tree,"outsid
 runCase("init refuses HOME link",f=>{fs.rmdirSync(f.home);fs.symlinkSync(path.join(f.tree,"outside"),f.home,"dir");},refused);
 runCase("init refuses non-directory ancestor",f=>{fs.writeFileSync(path.join(f.home,".config"),"keep");},refused);
 runCase("init refuses nonregular destination",f=>{parents(f);fs.mkdirSync(f.dest);},refused);
-runCase("init preserves entry appearing after check",f=>{parents(f);fs.writeFileSync(path.join(f.observer,"race"),"enabled");},(f,{before,after,result})=>{
+runCase("init preserves entry appearing after check",f=>{parents(f);armRace(f);},(f,{before,after,result})=>{
  const expected=structuredClone(before);
  addExpected(f,expected,"home/.config/aigentry/aigentry.yml",{...f.metadata.symlink,value:path.join(f.tree,"outside/sentinel")},false,true);
  fs.writeFileSync(path.join(f.observer,"expected.json"),JSON.stringify(expected,null,2));
  assert.equal(fs.existsSync(path.join(f.observer,"race.json")),true,"real copy call must reach deterministic replacement");
+ assertRace(f,JSON.parse(fs.readFileSync(path.join(f.observer,"race.json"),"utf8")));
  assert.deepEqual(after,expected,"only deliberate racing entry may change");
  assert.equal(result.status,1);
  assert.match(fs.readFileSync(path.join(f.observer,"stderr"),"utf8"),/EEXIST/);
@@ -171,17 +210,18 @@ if(process.platform==="darwin")test("native diagnostic: ordinary versus owned an
      canonicalDestinationParent:fs.realpathSync(path.dirname(f.dest)),
      canonicalTarget:fs.realpathSync(target)
     };
-    // Instrument only the diagnostic copy of the preloader, without changing
-    // its destination comparison, symlink operand, module guard or copy flags.
+    // Instrument the same declared-target protocol after validation, without
+    // changing its destination comparison, symlink operand, module guard or copy flags.
     const diagnosticGuard=GUARD.replace(
-     'if(fs.existsSync(path.join(__dirname,"race"))){',
-     'fs.writeFileSync(path.join(__dirname,"loaded.json"),JSON.stringify({dirname:__dirname,dest,canonicalParent:fs.realpathSync(path.dirname(dest))}),{flag:"wx"});\nif(fs.existsSync(path.join(__dirname,"race"))){'
+     'const copy=fs.copyFileSync;',
+     'fs.writeFileSync(path.join(__dirname,"loaded.json"),JSON.stringify({dirname:__dirname,dest,canonicalParent:fs.realpathSync(path.dirname(dest))}),{flag:"wx"});\n const copy=fs.copyFileSync;'
     ).replace(
      'fs.copyFileSync=function(src,dst,flags){',
      'fs.copyFileSync=function(src,dst,flags){\n  fs.writeFileSync(path.join(__dirname,"copy-entry.json"),JSON.stringify({src,dst,flags,dest,matched:dst===dest}),{flag:"wx"});'
     );
     fs.writeFileSync(path.join(f.observer,"guard.cjs"),diagnosticGuard);
-    fs.writeFileSync(path.join(f.observer,"race"),"enabled",{flag:"wx"});
+    armRace(f);
+    record.raceDeclaration=JSON.parse(fs.readFileSync(path.join(f.observer,"race-target.json"),"utf8"));
     record.before=snapshot(f.tree);
     record.expected=structuredClone(record.before);
     addExpected(f,record.expected,"home/.config/aigentry/aigentry.yml",{...f.metadata.symlink,value:target},false,true);
@@ -226,6 +266,11 @@ if(process.platform==="darwin")test("native diagnostic: ordinary versus owned an
     assert.ok(r.guard["copy-entry.json"],"real copy wrapper must be reached");
     assert.deepEqual(r.after["outside/sentinel"],r.before["outside/sentinel"]);
     assert.ok(r.guard["race.json"],"real copy call must reach deterministic replacement");
+    const race=JSON.parse(r.guard["race.json"]);
+    assert.equal(race.hits,1);assert.equal(race.dst,r.paths.destination);
+    assert.equal(race.destination,r.raceDeclaration.destination);assert.deepEqual(race.parent,r.raceDeclaration.parent);
+    assert.equal(race.src,path.join(path.dirname(path.dirname(r.paths.canonicalGuard)),"tree/package/config/aigentry.yml.template"));
+    assert.equal(race.flags,fs.constants.COPYFILE_EXCL);
     assert.equal(JSON.parse(r.guard["race.json"]).target,r.target,"exact independently defined link target");
     assert.deepEqual(r.after,r.expected,"only deliberate racing entry may change");
     assert.equal(r.result.status,1);assert.match(r.stderr,/EEXIST/);

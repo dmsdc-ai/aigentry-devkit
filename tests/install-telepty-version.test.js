@@ -982,12 +982,13 @@ if(IS_WIN)for(const caller of ["pwsh","ps51"])test("native diagnostic: "+caller+
   // Compare exact changed fields only: no AppData filtering or learned baseline.
   const [host,installer]=observations;
   const hostDelta=new Map((host.delta||[]).map(row=>[row.path,row]));
-  write("comparison.json",{
+  const comparison={
    scope:"Only this native shell and fabricated environment; matches support attribution, unmatched fields remain unresolved.",
    exactMatches:(installer.delta||[]).filter(row=>JSON.stringify(row)===JSON.stringify(hostDelta.get(row.path))),
    unmatchedInstaller:(installer.delta||[]).filter(row=>JSON.stringify(row)!==JSON.stringify(hostDelta.get(row.path))),
    unmatchedHost:(host.delta||[]).filter(row=>!(installer.delta||[]).some(other=>JSON.stringify(row)===JSON.stringify(other)))
-  });
+  };
+  write("comparison.json",comparison);
   const failures=[];
   for(const r of observations){
    try{
@@ -1004,6 +1005,53 @@ if(IS_WIN)for(const caller of ["pwsh","ps51"])test("native diagnostic: "+caller+
    }catch(error){failures.push({stage:r.stage,message:error.message});}
   }
   write("assertions.json",failures);
+  // Report only already captured data; full snapshots remain in owned evidence.
+  let clipped=false,entryCount=0;
+  const clip=(value,limit)=>{
+   if(value===undefined||value===null)return null;
+   let text=String(value);
+   while(Buffer.byteLength(JSON.stringify(text))>limit){clipped=true;text=text.slice(0,Math.floor(text.length/2));}
+   return text;
+  };
+  const metadata=row=>{
+   if(!row)return null;
+   const kind=row[1]&0o170000,type=kind===0o040000?"directory":kind===0o120000?"symlink":kind===0o100000?"file":"other";
+   const bytes=row[3]===null?null:Buffer.from(row[3],type==="symlink"?"utf8":"base64");
+   return {type,mode:row[1],nlink:row[2],byteLength:bytes?bytes.length:0,
+    sha256:bytes?crypto.createHash("sha256").update(bytes).digest("hex"):null};
+  };
+  const receipt={diagnostic:"tpv-native-comparison",caller,entryLimit:64,byteLimit:65536,
+   truncated:false,stages:observations.map(r=>{
+    const changes=[];
+    for(const row of r.delta||[]){
+     if(entryCount>=64)break;
+     const unmatched=r.stage==="host"?comparison.unmatchedHost:comparison.unmatchedInstaller;
+     const classification=unmatched.some(other=>JSON.stringify(other)===JSON.stringify(row))?
+      (r.stage==="host"?"unmatchedHost":"unmatchedInstaller"):"exactMatch";
+     changes.push({path:clip(row.path,1024),before:metadata(row.before),after:metadata(row.after),classification});entryCount++;
+    }
+    const argv=(r.argv||[]).slice(0,8).map(value=>clip(value,512));
+    const stderr=clip(r.stderr,4096);
+    const omittedEntries=(r.delta||[]).length-changes.length;
+    const truncatedArgv=(r.argv||[]).length>argv.length||argv.some((value,i)=>value!==r.argv[i]);
+    if(truncatedArgv||omittedEntries)clipped=true;
+    return {stage:r.stage,availability:r.availability,shell:clip(r.argv&&r.argv[0],2048),argv,truncatedArgv,
+     script:r.script?{path:clip(r.script.path,2048),sha256:r.script.sha256}:null,
+     result:r.result?{status:r.result.status,signal:r.result.signal,error:r.result.error?
+      {code:clip(r.result.error.code,128),message:clip(r.result.error.message,1024)}:null}:null,
+     error:r.error?{code:clip(r.error.code,128),message:clip(r.error.message,1024)}:null,
+     observationError:r.observationError?{code:clip(r.observationError.code,128),message:clip(r.observationError.message,1024)}:null,
+     stderr,stderrTruncated:typeof r.stderr==="string"&&stderr!==r.stderr,
+     changedPathCount:(r.delta||[]).length,omittedEntries,changes};
+   })};
+  receipt.truncated=clipped;
+  const prefix="AIGENTRY_NATIVE_COMPARISON ";
+  while(Buffer.byteLength(prefix+JSON.stringify(receipt)+"\n")>65536){
+   const stage=[...receipt.stages].reverse().find(r=>r.changes.length);
+   if(!stage)throw Error("bounded native diagnostic header exceeds limit");
+   stage.changes.pop();stage.omittedEntries++;receipt.truncated=true;
+  }
+  console.log(prefix+JSON.stringify(receipt));
   assert.deepEqual(failures,[]);
  }finally{
   const summary={diagnostic:"tpv-native",caller,evidence,cases:observations.map(r=>({stage:r.stage,availability:r.availability,root:r.root||null,status:r.result?r.result.status:null,changedPathCount:(r.delta||[]).length,changedPaths:(r.delta||[]).slice(0,32).map(row=>row.path)}))};
