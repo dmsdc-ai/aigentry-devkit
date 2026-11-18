@@ -46,7 +46,7 @@ Fallback — do the same work without the skill:
 | --- | --- |
 | `clipboard-image` | macOS `pbpaste`, Linux `xclip -selection clipboard -t image/png -o > /tmp/clip.png`, then point your CLI at the file. Or copy `skills/clipboard-image/` from this repo into `~/.claude/skills/` yourself. |
 | `youtube-analyzer` | `pip install yt-dlp`, then `yt-dlp --skip-download --write-auto-sub --sub-lang en <url>` and feed the `.vtt` to your CLI. Or copy `skills/youtube-analyzer/` into `~/.claude/skills/`. |
-| `project-ops` | `gh secret set NPM_TOKEN --repo <org>/<repo>` per repository, and copy `.github/workflows/release.yml` from an already-configured repo. Or copy `skills/project-ops/` into `~/.claude/skills/`. |
+| `project-ops` | For an npm package repository, register a trusted publisher on npmjs.com (the package → Settings → Trusted publishing → GitHub Actions: organization or user `dmsdc-ai`, the repository name, workflow filename `release.yml`, no environment, `npm publish` in allowed actions) rather than setting an `NPM_TOKEN` secret, and copy `.github/workflows/release.yml` from an already-configured repo. Or copy `skills/project-ops/` into `~/.claude/skills/`. |
 
 Installing a fallback copy by hand is supported: `cp -R skills/<name> ~/.claude/skills/`.
 
@@ -648,7 +648,7 @@ aigentry-devkit is one component of the aigentry platform — an open-source eng
 | **telepty** | `@dmsdc-ai/aigentry-telepty` | 0.7.1 | Cross-terminal / cross-machine prompt transport (PTY daemon) | Shipping |
 | **brain** | `@dmsdc-ai/aigentry-brain` | 0.3.1 | Persistent cross-session memory (MCP server) | Early |
 | **deliberation** | `@dmsdc-ai/aigentry-deliberation` | 0.0.47 | Multi-AI structured debate + synthesis (MCP server) | Early |
-| **devkit** | `@dmsdc-ai/aigentry-devkit` | 0.1.14 | Installer/scaffold for the AI dev environment | Early |
+| **devkit** | `@dmsdc-ai/aigentry-devkit` | 0.1.15 | Installer/scaffold for the AI dev environment | Early |
 | **aterm** | `@dmsdc-ai/aterm` | 0.2.14 | Terminal launcher with native session IPC | Early |
 | **orchestrator** | *(unpublished)* | — | Control tower that drives sessions via telepty | Internal |
 

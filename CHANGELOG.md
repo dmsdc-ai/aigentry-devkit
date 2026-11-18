@@ -3,6 +3,25 @@
 All notable changes to `@dmsdc-ai/aigentry-devkit` are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.1.15 — 2026-11-18
+
+### Changed
+
+- **Publication moved from a stored `NPM_TOKEN` to npm trusted publishing
+  (OIDC).** In `.github/workflows/release.yml` only the `publish` job holds
+  `id-token: write`; the publishing toolchain is Node 24 and the job fails
+  unless the measured `npm --version` is at least 11.5.1; there is no
+  `NODE_AUTH_TOKEN`, no `registry-url` npmrc on the publishing setup, and the
+  publish runs with an empty user-level npmrc, so a failed OIDC exchange fails
+  the run instead of falling back to a token.
+- README and the `npm-release` / `project-ops` skills no longer tell a reader
+  to rely on `NPM_TOKEN` for packages that publish through OIDC.
+
+The package contents are otherwise identical to 0.1.14. This release is the
+proof run of the new publishing path; this workflow has no registry read-back,
+so the publish is verified by hand (`npm view @dmsdc-ai/aigentry-devkit@0.1.15
+dist.shasum`).
+
 ## 0.1.14 — 2026-07-26
 
 ### Removed
