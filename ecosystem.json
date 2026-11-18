@@ -28,7 +28,7 @@
     {
       "name": "devkit",
       "package": "@dmsdc-ai/aigentry-devkit",
-      "version": "0.1.14",
+      "version": "0.1.15",
       "role": "Installer/scaffold for the AI dev environment",
       "maturity": "Early",
       "license": "MIT"
