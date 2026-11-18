@@ -1,5 +1,55 @@
 name: Release
 
+# HOW THIS PUBLISHES — npm TRUSTED PUBLISHING (OIDC). No npm token takes part in a release any
+# more. The `publish` job alone holds the `id-token` permission (it appears once in this file, in
+# that job); npm exchanges the GitHub OIDC token it enables for its own short-lived publish
+# credential. Three absences in that job are load-bearing and must stay absent: no token in the
+# step environment (GitHub injects only the secrets a workflow names, and this file names none),
+# no npmrc from `setup-node`, which is used there without `registry-url`, and no user npmrc — the
+# publish command points `npm_config_userconfig` at an empty file. With no credential reachable, a
+# failed OIDC exchange FAILS the publish instead of silently succeeding some other way, which is
+# the only reason a green run here can be read as "OIDC worked".
+#
+# The `validate` job below keeps its `registry-url` deliberately: it never publishes, and the
+# npmrc setup-node writes there carries an unset NODE_AUTH_TOKEN, so it has no effect.
+#
+# WHY ONE SETUP-NODE IS ENOUGH HERE. Trusted publishing needs npm >= 11.5.1, so the publish job
+# moves from Node 20 to Node 24 — a single bump, with no second setup-node and no
+# `--ignore-scripts`, because package.json declares NO publish lifecycle hook at all: no
+# `prepublishOnly`, `prepack`, `prepare`, `postpack`, `publish` or `postpublish`. Nothing is built
+# or tested as a side effect of publishing, so no certified ci.yml matrix row (node 18, 20, 22)
+# describes work that this bump moves. The only other things running in this job are `npm ci` and
+# the cosmetic README regen, which is already `continue-on-error`.
+#
+# THE NPM-SIDE REGISTRATION THIS FILE DEPENDS ON. npmjs.com -> @dmsdc-ai/aigentry-devkit ->
+# Settings -> Trusted publishing -> GitHub Actions. All fields are case-sensitive and exact, and
+# npm does not validate them when they are saved — a wrong field surfaces only as a failed
+# publish:
+#   organization or user   dmsdc-ai
+#   repository             aigentry-devkit
+#   workflow filename      release.yml   (the filename only, never a path, and never this file's
+#                                        `name:` above, which is `Release`)
+#   environment name       empty — no job here uses a GitHub environment
+#   allowed actions        `npm publish` must be ALLOWED explicitly. A configuration created
+#                          after 2026-09-03 defaults to stage publish only, and the publish step
+#                          below runs `npm publish`, so the default would fail the release.
+# CREATE IT ON THE DAY OF THE RELEASE: a new configuration expires unless a publish succeeds
+# within 2 days, and it cannot be edited afterwards — a wrong field is fixed by deleting and
+# recreating it, which restarts that 2-day clock.
+#
+# THE FIRST OIDC PUBLISH MUST BE CHECKED BY HAND. This workflow has no registry read-back, so a
+# green run is not by itself evidence that npm serves this version. After the first OIDC release,
+# read it back:
+#   npm view @dmsdc-ai/aigentry-devkit@<version> dist.shasum
+#
+# ROLLBACK, if an OIDC publish cannot be made to work: `git revert` the commit that moved this
+# file to trusted publishing, which puts the publish job's `registry-url` and the publish step's
+# token environment back. The repository secret NPM_TOKEN is deliberately LEFT IN PLACE until a
+# first OIDC publish has been verified; nothing in this file references it, and GitHub injects
+# only referenced secrets, so it cannot be the thing that made a run pass. Delete it only after
+# the proof. There is no `workflow_dispatch` here, so a rejected publish cannot be retried at the
+# same tag — npm versions are immutable, so recovery costs a patch version and a new tag.
+
 on:
   push:
     tags:
@@ -23,21 +73,49 @@ jobs:
   publish:
     needs: validate
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # the README sync step below pushes to main
+      id-token: write  # npm trusted publishing (OIDC); the only job in this file that holds it
     steps:
       - uses: actions/checkout@v4
+      # Node 24 for npm >= 11.5.1 (measured below, not assumed).
+      #
+      # NO `registry-url` HERE, deliberately: with it, setup-node writes a
+      # `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` line into this job's npmrc, which is
+      # precisely the mechanism that would let a stored token publish this package again. The
+      # publish target is unchanged either way — package.json declares
+      # `publishConfig.registry: "https://registry.npmjs.org/"`.
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
+          node-version: '24'
       - run: npm ci
       # Regenerate README from template + ecosystem.json so the published tarball
       # carries a fresh README. Fail-open: a cosmetic regen must NEVER abort a publish.
       - name: Regenerate README (pre-publish)
         run: node scripts/gen-readme.mjs
         continue-on-error: true
-      - run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: The publishing toolchain must be able to do OIDC (npm >= 11.5.1)
+        run: |
+          set -euo pipefail
+          node --version
+          npm --version
+          node -e '
+            const measured = process.argv[1];
+            const [major, minor, patch] = measured.split(".").map(Number);
+            if (major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) {
+              console.error("::error::npm " + measured + " is below 11.5.1, the floor npm trusted publishing requires. This job cannot exchange an OIDC token for a publish credential, so it refuses here rather than at npm publish. Raise this job node-version until npm reports >= 11.5.1.");
+              process.exit(1);
+            }
+            console.log("npm " + measured + " >= 11.5.1: this toolchain can publish through OIDC");' "$(npm --version)"
+      # Trusted publishing and nothing else. This step declares no credential environment; the
+      # setup-node above wrote no `_authToken` npmrc because it has no `registry-url`; and the
+      # command runs with `npm_config_userconfig` pointed at a file it creates empty, so no user-
+      # or global-level npmrc can supply auth either.
+      - run: |
+          set -euo pipefail
+          : > "${RUNNER_TEMP}/empty-npmrc"
+          npm_config_userconfig="${RUNNER_TEMP}/empty-npmrc" \
+            npm publish --access public
       # Sync the regenerated README back to main via github-actions[bot] (GITHUB_TOKEN
       # pushes don't retrigger workflows; [skip ci] + no-op guard are belt-and-suspenders).
       - name: Sync regenerated README to main

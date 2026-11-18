@@ -46,7 +46,7 @@ Fallback — do the same work without the skill:
 | --- | --- |
 | `clipboard-image` | macOS `pbpaste`, Linux `xclip -selection clipboard -t image/png -o > /tmp/clip.png`, then point your CLI at the file. Or copy `skills/clipboard-image/` from this repo into `~/.claude/skills/` yourself. |
 | `youtube-analyzer` | `pip install yt-dlp`, then `yt-dlp --skip-download --write-auto-sub --sub-lang en <url>` and feed the `.vtt` to your CLI. Or copy `skills/youtube-analyzer/` into `~/.claude/skills/`. |
-| `project-ops` | `gh secret set NPM_TOKEN --repo <org>/<repo>` per repository, and copy `.github/workflows/release.yml` from an already-configured repo. Or copy `skills/project-ops/` into `~/.claude/skills/`. |
+| `project-ops` | For an npm package repository, register a trusted publisher on npmjs.com (the package → Settings → Trusted publishing → GitHub Actions: organization or user `dmsdc-ai`, the repository name, workflow filename `release.yml`, no environment, `npm publish` in allowed actions) rather than setting an `NPM_TOKEN` secret, and copy `.github/workflows/release.yml` from an already-configured repo. Or copy `skills/project-ops/` into `~/.claude/skills/`. |
 
 Installing a fallback copy by hand is supported: `cp -R skills/<name> ~/.claude/skills/`.
 
