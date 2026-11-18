@@ -17,10 +17,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - README and the `npm-release` / `project-ops` skills no longer tell a reader
   to rely on `NPM_TOKEN` for packages that publish through OIDC.
 
-The package contents are otherwise identical to 0.1.14. This release is the
-proof run of the new publishing path; this workflow has no registry read-back,
-so the publish is verified by hand (`npm view @dmsdc-ai/aigentry-devkit@0.1.15
-dist.shasum`).
+This workflow has no registry read-back, so a publish is verified by hand
+(`npm view @dmsdc-ai/aigentry-devkit@0.1.15 dist.shasum`).
+
+### Also contained in this version (merged to `main` after 0.1.14, not released before)
+
+A release of this version ships everything on `main` since 0.1.14, not only the
+publishing change. Those commits, oldest first, by subject (not yet written up
+as release notes):
+
+  - feat(skills): ambiguity-gate skill + M2 fixture set (#759 W1a, #763)
+  - fix(skills): sync ambiguity-gate A5 to ADR r2 (second limb) — #759 W1a
+  - fix(skills): sync ambiguity-gate to ADR r3 — sweep marker, fail-open, brake (#759 W1a)
+  - chore: apply approved over-engineering cuts (#769 Phase C, #773)
+  - chore: drop orphaned exec-mode fixtures (#769 Phase C, #773 v2)
+  - chore: drop remaining orphaned exec-mode fixtures (#769 Phase C, #773 v3)
+  - docs: refresh ecosystem manifest + README table (telepty 0.6.19, devkit 0.1.14 — re-verified 2026-07-26)
+  - docs: ecosystem table — telepty 0.7.0, brain 0.3.0
+  - docs: ecosystem table — brain 0.3.1
+  - docs: ecosystem table — telepty 0.7.1
+  - docs(context-manage): the orchestrator compacts itself through bin/context-compact.sh and the SessionStart hook restores the snapshot (#1203)
+  - feat(context-manage): install the skill into every CLI's skill directory and restore the snapshot after a compaction for claude at user level (#1204)
 
 ## 0.1.14 — 2026-07-26
 
